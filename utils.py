@@ -94,7 +94,7 @@ def args_to_kwargs(
         return args
 
 
-def prepare_batch_data(args, batch, data_loader, device):
+def prepare_batch_data(args, batch, data_loader, device, text=True, label=True, bbox=True):
     """准备批次数据，对整个batch进行tokenization
 
     Args:
@@ -106,51 +106,51 @@ def prepare_batch_data(args, batch, data_loader, device):
         source_data: 源数据字典
         target_data: 目标数据字典
     """
+    source = {}
+    target = {}
     # 处理图像数据
     if "image" in batch:
         batch["image"] = data_to_device(batch["image"], device)
+        source['image'] = batch['image']
 
-    # 对整个batch的文本进行tokenization
-    text_fields = ["findings", "history"]
-    for field in text_fields:
-        if field in batch:
-            # 收集batch中的所有文本
-            texts = batch[field]
+    if text:
+        # 对整个batch的文本进行tokenization
+        text_fields = ["findings", "history"]
+        for field in text_fields:
+            if field in batch:
+                # 收集batch中的所有文本
+                texts = batch[field]
 
-            if field == "history":
-                max_len = args.max_len_history
-            elif field == "findings":
-                max_len = args.max_len_findings
+                if field == "history":
+                    max_len = args.max_len_history
+                elif field == "findings":
+                    max_len = args.max_len_findings
 
-            # 对整个batch进行tokenization
-            encoded = data_loader.dataset.tokenizer(
-                texts,
-                max_length=max_len,
-                padding="max_length",
-                truncation=True,
-                return_tensors="pt",
-            ).to(
-                device
-            )  # [batch_size, max_len]
-            batch[field] = encoded
+                # 对整个batch进行tokenization
+                encoded = data_loader.dataset.tokenizer(
+                    texts,
+                    max_length=max_len,
+                    padding="max_length",
+                    truncation=True,
+                    return_tensors="pt",
+                ).to(
+                    device
+                )  # [batch_size, max_len]
+                batch[field] = encoded
+
+                source[field] = batch[field]
+                target[field] = batch[field]
 
     # 将label移到device上
-    if "label" in batch:
+    if label and "label" in batch:
         batch["label"] = data_to_device(batch["label"], device)
+        source["label"] = batch["label"]
+        target["label"] = batch["label"]
 
     # 将targets移到device上
-    if "bbox_targets" in batch:
+    if bbox and "bbox_targets" in batch:
         batch["bbox_targets"] = data_to_device(batch["bbox_targets"], device)
-
-    # 组装source和target
-    source = []
-    target = []
-
-    for src in data_loader.dataset.sources:
-        source.append(batch[src])
-
-    for tgt in data_loader.dataset.targets:
-        target.append(batch[tgt])
+        source["bbox_targets"] = batch["bbox_targets"]
 
     return source, target, None
 
@@ -178,11 +178,14 @@ def train(
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
         # 准备批次数据
-        source, target, _ = prepare_batch_data(args, batch, data_loader, device)
+        if train_stage == 1:
+            source, target, _ = prepare_batch_data(args, batch, data_loader, device, text=False, label=False)
+        else:
+            source, target, _ = prepare_batch_data(args, batch, data_loader)
 
         # 转换为kwargs格式
-        source = args_to_kwargs(source, kw_src)
-        target = args_to_kwargs(target, kw_tgt)
+        source = args_to_kwargs(source)
+        target = args_to_kwargs(target)
 
         source["train_stage"] = train_stage
         source["mode"] = "train"
@@ -192,7 +195,7 @@ def train(
         if scaler != None:
             with torch.cuda.amp.autocast():
                 output = data_distributor(model, source)
-                output = args_to_kwargs(output, kw_out)
+                output = args_to_kwargs(output)
                 if train_stage == 1:
                     # 汇总所有损失项
                     loss = sum(loss for loss in output.values())

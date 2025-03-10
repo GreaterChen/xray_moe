@@ -388,12 +388,25 @@ if __name__ == "__main__":
                 train_stage=1,
             )
 
-            test_detection(
+            test_loss, result = test_detection(
                 args=args,
                 model=model.object_detector,
                 data_loader=test_loader,
                 logger=logger,
                 epoch=epoch
+            )
+
+            save_path = os.path.join(
+                args.checkpoint_path_to,
+                f'epoch_{epoch}_BLEU_1_{result["overall_metrics"]["mAP"]}.pth',
+            )
+            save(
+                save_path,
+                model,
+                optimizer,
+                scheduler,
+                epoch,
+                (test_loss, result),
             )
 
 
