@@ -108,7 +108,7 @@ def prepare_batch_data(args, batch, data_loader, device):
         batch["image"] = data_to_device(batch["image"], device)
 
     # 对整个batch的文本进行tokenization
-    text_fields = ["findings", "impression", "history"]
+    text_fields = ["findings", "history"]
     for field in text_fields:
         if field in batch:
             # 收集batch中的所有文本
@@ -118,8 +118,6 @@ def prepare_batch_data(args, batch, data_loader, device):
                 max_len = args.max_len_history
             elif field == "findings":
                 max_len = args.max_len_findings
-            elif field == "impression":
-                max_len = args.max_len_impression
 
             # 对整个batch进行tokenization
             encoded = data_loader.dataset.tokenizer(
@@ -131,12 +129,15 @@ def prepare_batch_data(args, batch, data_loader, device):
             ).to(
                 device
             )  # [batch_size, max_len]
-            # encoded.input_ids[:, 0] = data_loader.dataset.tokenizer.bos_token_id
             batch[field] = encoded
 
     # 将label移到device上
     if "label" in batch:
         batch["label"] = data_to_device(batch["label"], device)
+
+    # 将targets移到device上
+    if "bbox_targets" in batch:
+        batch["bbox_targets"] = data_to_device(batch["bbox_targets"], device)
 
     # 组装source和target
     source = []
@@ -173,7 +174,6 @@ def train(
 
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
-        findings_gt = batch["findings"]
         # 准备批次数据
         source, target, _ = prepare_batch_data(args, batch, data_loader, device)
 
@@ -183,17 +183,16 @@ def train(
 
         source["train_stage"] = train_stage
         source["mode"] = "train"
-        source["findings_gt"] = findings_gt
 
         scheduler.step(cur_epoch=current_epoch, cur_step=i)
         current_lr = optimizer.param_groups[0]["lr"]
-
         if scaler != None:
             with torch.cuda.amp.autocast():
                 output = data_distributor(model, source)
                 output = args_to_kwargs(output, kw_out)
                 if train_stage == 1:
-                    loss = output["loss_lm"]
+                    # 汇总所有损失项
+                    loss = sum(loss for loss in output.values())
                 elif train_stage == 2:
                     loss, _ = criterion(output, target)
                     loss = loss + output["impression_loss"]
@@ -283,12 +282,6 @@ def test(
             findings_preds_list.extend([re for re in output["findings_text"]])
             if train_stage != 1:
                 impression_preds_list.extend([re for re in output["impression_text"]])
-
-            # 记录日志
-            # logger.info(f"findings_preds: {output['findings_text'][0]}")
-            # if train_stage == 2:
-            #     logger.info(f"impression_preds: {output['impression_text'][0]}")
-            # logger.info(f"impression_gt: {batch['gts'][1][0]}")
 
             # 计算损失
             if criterion is not None:

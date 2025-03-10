@@ -39,13 +39,16 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         with open(ann_dir, "r") as f:
             annotation_data = json.load(f)
+        
+        new_annotation = {}
+        for mode, data_split in annotation_data.items():
+            new_annotation[mode] = []
+            for key, value in data_split.items():
+                if value["findings"].strip() != "":
+                    value["image_id"] = key
+                    new_annotation[mode].append(value)
 
-        filtered_annotation = {}
-        for key, data_split in annotation_data.items():
-            filtered_annotation[key] = [
-                item for item in data_split if item["findings"].strip() != ""
-            ]
-        cls._shared_data["annotation"] = filtered_annotation
+        cls._shared_data["annotation"] = new_annotation
         cls._shared_data["loaded"] = True
 
     def __init__(
@@ -66,8 +69,8 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         self.eos_token_id = self.tokenizer.sep_token_id  # BERT使用[SEP]作为EOS
         self.pad_token_id = self.tokenizer.pad_token_id
 
-        self.sources = ["image", "findings", "impression", "history"]
-        self.targets = ["findings", "impression", "label"]
+        self.sources = ["image", "findings", "history", "bbox_targets"]
+        self.targets = ["findings", "label"]
 
         self.dir = directory
         self.input_size = input_size
@@ -80,9 +83,9 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         if random_transform:
             self.transform = transforms.Compose(
                 [
-                    transforms.Resize(256),
-                    transforms.RandomCrop(input_size),
-                    transforms.RandomRotation(degrees=5),
+                    transforms.Resize(224),
+                    # transforms.RandomCrop(input_size),
+                    # transforms.RandomRotation(degrees=5),
                     transforms.ToTensor(),
                     transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
                 ]
@@ -90,8 +93,8 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         else:
             self.transform = transforms.Compose(
                 [
-                    transforms.Resize(256),
-                    transforms.CenterCrop(input_size),
+                    transforms.Resize(224),
+                    # transforms.CenterCrop(input_size),
                     transforms.ToTensor(),
                     transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
                 ]
@@ -106,29 +109,39 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
     def __getitem__(self, idx):
         info = self.data[idx]
 
-        impression = self.my_pre_caption(info["impression"])
         findings = self.my_pre_caption(info["findings"])
         history = self.my_pre_caption(info["history"])
-        findings = f"findings {findings} impression {impression}"
-        label = np.array(info["labels"], dtype=np.float32)
+        label = np.array(info["labels"], dtype=np.float16)
+        bbox_data = info["bbox_targets"]
 
         # 获取图像路径
-        img_path = os.path.join(self.dir, "images", info["image_path"][0])
-
-        output = {
-            "findings": findings,
-            "impression": impression,
-            "history": history,
-            "label": label,
-            "gts": [findings, impression],
-            "image_path": img_path,  # 添加完整图像路径
-            "split": self.mode,  # 添加数据集划分信息
-        }
+        image_base_path = '/'.join(info["image_path"][0].split('/')[:-1])
+        img_path = os.path.join(self.dir, "images", image_base_path, info["image_id"] + ".jpg")
 
         # 处理图像
         img = Image.open(img_path).convert("RGB")
         img = self.transform(img)
-        output["image"] = img
+
+        # 处理bbox数据
+        boxes = torch.tensor(bbox_data["boxes"], dtype=torch.float32)
+        labels = torch.tensor(bbox_data["labels"], dtype=torch.int64)  # 标签已经是从1开始的
+
+        target = {
+            'boxes': boxes,          # [N, 4] tensor，格式为 (x1, y1, x2, y2)
+            'labels': labels,        # [N] tensor，已经是从1开始的类别标签
+            'image_id': torch.tensor([idx]),
+            'area': (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]),
+            'iscrowd': torch.zeros((len(boxes),), dtype=torch.int64)
+        }
+
+        output = {
+            "image": img,
+            "bbox_targets": target,
+            "findings": findings,
+            "history": history,
+            "label": label,
+            "image_path": img_path
+        }
 
         return output
 
@@ -194,3 +207,43 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         if len(caption_words) > max_words:
             caption = " ".join(caption_words[:])
         return caption
+
+# 添加collate_fn函数处理变长数据
+def mimic_collate_fn(batch):
+    """
+    自定义collate_fn函数，处理变长的边界框数据
+    
+    Args:
+        batch: 一个批次的数据，每个元素是__getitem__返回的字典
+        
+    Returns:
+        处理后的批次数据，保持字典列表格式
+    """
+    images = []
+    bbox_targets = []
+    findings = []
+    histories = []
+    labels = []
+    image_paths = []
+    
+    for item in batch:
+        images.append(item["image"])
+        bbox_targets.append(item["bbox_targets"])
+        findings.append(item["findings"])
+        histories.append(item["history"])
+        labels.append(item["label"])
+        image_paths.append(item["image_path"])
+    
+    # 将图像堆叠成批次
+    images = torch.stack(images, dim=0)
+    labels = torch.from_numpy(np.stack(labels, axis=0))
+    
+    # 返回字典，其中targets保持为列表形式
+    return {
+        "image": images,
+        "bbox_targets": bbox_targets,  # 保持列表形式，每个元素是一个字典
+        "findings": findings,
+        "history": histories,
+        "label": labels,
+        "image_path": image_paths
+    }

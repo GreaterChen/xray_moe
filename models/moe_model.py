@@ -5,15 +5,17 @@ class MOE(nn.Module):
     def __init__(
         self,
         args,
-        image_encoder,
-        history_encoder,
-        modality_fusion,
-        findings_decoder,
-        cxr_bert_feature_extractor
+        object_detector=None,
+        image_encoder=None,
+        history_encoder=None,
+        modality_fusion=None,
+        findings_decoder=None,
+        cxr_bert_feature_extractor=None
     ):
         super(MOE, self).__init__()
         
         # 初始化各个组件
+        self.object_detector = object_detector
         self.image_encoder = image_encoder
         self.history_encoder = history_encoder
         self.modality_fusion = modality_fusion
@@ -23,6 +25,18 @@ class MOE(nn.Module):
         # 保存参数配置
         self.args = args
 
-    def forward(self, batch):
+    def forward(
+        self,
+        image,
+        bbox_targets=None,
+        findings=None,
+        history=None,
+        targets=None,
+        train_stage=1,
+        mode="train",
+    ):
         # 在这里实现前向传播逻辑
-        pass
+        if train_stage == 1:
+            return self.object_detector(image, bbox_targets)
+
+

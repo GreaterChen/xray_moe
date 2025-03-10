@@ -23,10 +23,11 @@ import argparse
 
 # --- Project Packages ---
 from utils import *
-from datasets import MIMIC
+from datasets import MIMIC, mimic_collate_fn
 from losses import *
 from models.mrgn_model import *
-from models.moe_model import MOE
+from models.moe_model import *
+from models.fast_rcnn_classifier import *
 from metrics import compute_scores
 from tools.optims import *
 
@@ -43,7 +44,7 @@ def parse_args():
     parser.add_argument(
         "--root_dir",
         type=str,
-        default="/home/chenlb/xray_report_generation/",
+        default="/home/chenlb/MOE/",
         help="Root directory.",
     )
 
@@ -56,8 +57,7 @@ def parse_args():
     parser.add_argument(
         "--ann_dir",
         type=str,
-        # default="/mnt/chenlb/datasets/mimic_cxr/mimic_annotation_impression-full.json",
-        default="/mnt/chenlb/datasets/mimic_cxr/mimic_annotation.json",
+        default="/mnt/chenlb/datasets/mimic_cxr/mimic_annotation_moe_bbox_filtered_split_numeric.json",
         help="Path to the annotation file.",
     )
 
@@ -80,7 +80,7 @@ def parse_args():
     parser.add_argument(
         "--max_len_findings",
         type=int,
-        default=196,
+        default=100,
         help="Maximum length of the input text.",
     )
 
@@ -98,41 +98,19 @@ def parse_args():
         help="Maximum length of the tokenizer.",
     )
 
-    # specific settings
-    
-    parser.add_argument(
-        "--sources",
-        type=str,
-        nargs="+",
-        default=["image", "findings", "impression", "history"],
-        help="List of source inputs for the model (e.g., image, findings, impression).",
-    )
-    parser.add_argument(
-        "--targets",
-        type=str,
-        nargs="+",
-        default=["findings", "impression", "label"],
-        help="List of target outputs for the model (e.g., findings, impression).",
-    )
     parser.add_argument(
         "--kw_src",
         type=str,
         nargs="+",
-        default=["image", "findings", "impression", "history"],
+        default=["image", "findings", "history", "bbox_targets"],
         help="Keyword arguments for the source inputs of the model (e.g., image, findings, impression).",
     )
     parser.add_argument(
         "--kw_tgt",
         type=str,
         nargs="+",
-        default=["findings", "impression", "label"],
+        default=["findings", "label"],
         help="Keyword arguments for the target outputs of the model (e.g., findings, impression).",
-    )
-    parser.add_argument(
-        "--kw_out",
-        type=str,
-        default=None,
-        help="Keyword arguments for the output settings of the model (default: None).",
     )
 
     # Training settings
@@ -271,34 +249,47 @@ if __name__ == "__main__":
     # Model-specific settings
     if args.model_name == "MOE":
 
-        resnet101 = ResNet101()
+        if args.phase == "TRAIN_STAGE_1":
+            fast_rcnn = DetectionOnlyFastRCNN()
+            model = MOE(
+                args=args,
+                object_detector=fast_rcnn,
+            )
+            module_parameters = {
+                "FastRCNN": count_parameters(fast_rcnn),
+            }
+        else:
+            fast_rcnn = DetectionOnlyFastRCNN()
 
-        history_encoder = HistoryEncoder(args)
+            resnet101 = ResNet101()
 
-        modality_fusion = ModalityFusion(hidden_size=768)
+            history_encoder = HistoryEncoder(args)
 
-        findings_decoder = BLIP_Decoder(
-            args, tokenizer=tokenizer, max_length=args.max_len_findings
-        )
-        findings_generator = FindingsGenerator(findings_decoder)
-        cxr_bert_feature_extractor = CXR_BERT_FeatureExtractor()
+            modality_fusion = ModalityFusion(hidden_size=768)
 
-        model = MOE(
-            args=args,
-            image_encoder=resnet101,
-            history_encoder=history_encoder,
-            modality_fusion=modality_fusion,
-            findings_decoder=findings_generator,
-            cxr_bert_feature_extractor=cxr_bert_feature_extractor,
-        )
+            findings_decoder = BLIP_Decoder(
+                args, tokenizer=tokenizer, max_length=args.max_len_findings
+            )
+            findings_generator = FindingsGenerator(findings_decoder)
+            cxr_bert_feature_extractor = CXR_BERT_FeatureExtractor()
 
-        # Compute parameters for each module
-        module_parameters = {
-            "ResNet101": count_parameters(resnet101),
-            "Findings Generator": count_parameters(findings_generator),
-            "Modality Fusion": count_parameters(modality_fusion),
-            "CXR BERT Feature Extractor": count_parameters(cxr_bert_feature_extractor),
-        }
+            model = MOE(
+                args=args,
+                object_detector=fast_rcnn,
+                image_encoder=resnet101,
+                history_encoder=history_encoder,
+                modality_fusion=modality_fusion,
+                findings_decoder=findings_generator,
+                cxr_bert_feature_extractor=cxr_bert_feature_extractor,
+            )
+
+            # Compute parameters for each module
+            module_parameters = {
+                "ResNet101": count_parameters(resnet101),
+                "Findings Generator": count_parameters(findings_generator),
+                "Modality Fusion": count_parameters(modality_fusion),
+                "CXR BERT Feature Extractor": count_parameters(cxr_bert_feature_extractor),
+            }
 
         # Print results
         for module_name, param_count in module_parameters.items():
@@ -314,18 +305,21 @@ if __name__ == "__main__":
         shuffle=True,
         num_workers=args.num_workers,
         drop_last=True,
+        collate_fn=mimic_collate_fn,
     )
     val_loader = data.DataLoader(
         val_data,
         batch_size=args.val_batch_size,
         shuffle=False,
         num_workers=args.num_workers,
+        collate_fn=mimic_collate_fn,
     )
     test_loader = data.DataLoader(
         test_data,
         batch_size=args.val_batch_size,
         shuffle=False,
         num_workers=args.num_workers,
+        collate_fn=mimic_collate_fn,
     )
 
     # 打印数量
@@ -390,7 +384,6 @@ if __name__ == "__main__":
                 device="cuda",
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,
-                kw_out=args.kw_out,
                 scaler=scaler,
                 train_stage=1,
             )
@@ -406,7 +399,6 @@ if __name__ == "__main__":
                 device="cuda",
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,
-                kw_out=args.kw_out,
                 train_stage=1,
                 epoch=epoch,
             )
@@ -451,7 +443,6 @@ if __name__ == "__main__":
                 device="cuda",
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,
-                kw_out=args.kw_out,
                 scaler=scaler,
                 train_stage=2,
             )
@@ -467,7 +458,6 @@ if __name__ == "__main__":
                 device="cuda",
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,
-                kw_out=args.kw_out,
                 train_stage=2,
                 epoch=epoch,
             )
@@ -512,7 +502,6 @@ if __name__ == "__main__":
             device="cuda",
             kw_src=args.kw_src,
             kw_tgt=args.kw_tgt,
-            kw_out=args.kw_out,
         )
 
     else:
