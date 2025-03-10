@@ -173,7 +173,7 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_path_to",
         type=str,
-        default="/home/chenlb/xray_report_generation/results/stage1/total",
+        default="/home/chenlb/MOE/results/detection/",
         help="Path to save the checkpoint to.",
     )
     args = parser.parse_args()
@@ -388,38 +388,14 @@ if __name__ == "__main__":
                 train_stage=1,
             )
 
-            test_loss, result = test(
-                args,
-                test_loader,
-                model,
-                logger,
-                mode="test",
-                metric_ftns=metrics,
-                criterion=criterion,
-                device="cuda",
-                kw_src=args.kw_src,
-                kw_tgt=args.kw_tgt,
-                train_stage=1,
-                epoch=epoch,
+            test_detection(
+                args=args,
+                model=model.object_detector,
+                data_loader=test_loader,
+                logger=logger,
+                epoch=epoch
             )
 
-            # 记录测试结果
-            log_metrics(logger, epoch, train_loss, test_loss, result)
-
-            # 保存检查点时使用BLEU_1分数
-            save_path = os.path.join(
-                args.checkpoint_path_to,
-                f'epoch_{epoch}_BLEU_1_{result["metrics_df"]["findings_BLEU_1"].iloc[0]}.pth',
-            )
-            save(
-                save_path,
-                model,
-                optimizer,
-                scheduler,
-                epoch,
-                (test_loss, result),
-            )
-            logger.info(f"Saved To: {save_path}")
 
     elif args.phase == "TRAIN_STAGE_2" and args.mode == "TRAIN":
 
