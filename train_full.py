@@ -117,7 +117,7 @@ def parse_args():
     parser.add_argument(
         "--phase",
         type=str,
-        default="TRAIN_STAGE_1",
+        default="TRAIN_STAGE_2",
         choices=["TRAIN_STAGE_1", "TRAIN_STAGE_2", "TEST", "INFER"],
         help="Phase of the program",
     )
@@ -165,6 +165,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--detection_checkpoint_path_from",
+        type=str,
+        default="/home/chenlb/MOE/results/detection/epoch_9_BLEU_1_0.8791605068503925.pth",
+        help="Path to load the checkpoint from.",
+    )
+
+    parser.add_argument(
         "--checkpoint_path_from",
         type=str,
         default=None,
@@ -205,7 +212,6 @@ if __name__ == "__main__":
     # Dataset-specific settings
     if args.dataset_name == "MIMIC":
         input_size = (args.image_size, args.image_size)
-
         tokenizer = BertTokenizer.from_pretrained(
             "bert-base-uncased", local_files_only=True
         )
@@ -258,40 +264,66 @@ if __name__ == "__main__":
             module_parameters = {
                 "FastRCNN": count_parameters(fast_rcnn),
             }
-        else:
-            fast_rcnn = DetectionOnlyFastRCNN()
-
-            resnet101 = ResNet101()
-
+        elif args.phase == "TRAIN_STAGE_2":
+            # 初始化检测器
+            detection_model = DetectionOnlyFastRCNN()
+            detection_model.load_state_dict(torch.load(args.detection_checkpoint_path_from))
+            
+            # 创建增强型FastRCNN
+            enhanced_rcnn = EnhancedFastRCNN(
+                pretrained_detector=detection_model,
+                num_regions=29,
+                feature_dim=768
+            )
+            
+            # 初始化ViT模型
+            vit_model = ViT(
+                image_size=224,
+                patch_size=16,
+                num_classes=1000,
+                dim=768,
+                depth=12,
+                heads=12,
+                mlp_dim=3072,
+                dropout=0.1,
+                emb_dropout=0.1
+            )
+            
+            # 初始化CXR-BERT
+            cxr_bert = CXR_BERT_FeatureExtractor()
+            
+            # 初始化其他组件
             history_encoder = HistoryEncoder(args)
-
             modality_fusion = ModalityFusion(hidden_size=768)
-
             findings_decoder = BLIP_Decoder(
-                args, tokenizer=tokenizer, max_length=args.max_len_findings
+                args,
+                tokenizer=tokenizer,
+                max_length=args.max_len_findings
             )
             findings_generator = FindingsGenerator(findings_decoder)
-            cxr_bert_feature_extractor = CXR_BERT_FeatureExtractor()
-
+            
+            # 创建MOE模型
             model = MOE(
                 args=args,
-                object_detector=fast_rcnn,
-                image_encoder=resnet101,
+                object_detector=enhanced_rcnn,
+                image_encoder=vit_model,
                 history_encoder=history_encoder,
                 modality_fusion=modality_fusion,
                 findings_decoder=findings_generator,
-                cxr_bert_feature_extractor=cxr_bert_feature_extractor,
+                cxr_bert=cxr_bert
             )
-
-            # Compute parameters for each module
+            
+            # 计算每个模块的参数量
             module_parameters = {
-                "ResNet101": count_parameters(resnet101),
-                "Findings Generator": count_parameters(findings_generator),
+                "Enhanced FastRCNN": count_parameters(enhanced_rcnn),
+                "ViT": count_parameters(vit_model),
+                "CXR-BERT": count_parameters(cxr_bert),
+                "History Encoder": count_parameters(history_encoder),
                 "Modality Fusion": count_parameters(modality_fusion),
-                "CXR BERT Feature Extractor": count_parameters(cxr_bert_feature_extractor),
+                "Findings Generator": count_parameters(findings_generator),
             }
-
-        # Print results
+            
+        # 打印每个模块的参数量
         for module_name, param_count in module_parameters.items():
             logger.info(f"{module_name}: {param_count} parameters")
 
