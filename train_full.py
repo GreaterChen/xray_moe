@@ -398,7 +398,7 @@ if __name__ == "__main__":
 
             save_path = os.path.join(
                 args.checkpoint_path_to,
-                f'epoch_{epoch}_BLEU_1_{result["overall_metrics"]["mAP"]}.pth',
+                f'epoch_{epoch}_{result["overall_metrics"]["mAP"]}.pth',
             )
             save(
                 save_path,

@@ -136,8 +136,11 @@ class EnhancedFastRCNN(nn.Module):
         feature_maps = []
         for img in images:
             feature_dict = self.detector.backbone(img.unsqueeze(0))
-            # 使用适当的特征层级
-            feature = list(feature_dict.values())[3]  # 使用较高级别的特征
+            # 特征层级与spatial_scale的对应关系
+            # feature = list(feature_dict.values())[0]  # P2 -> spatial_scale=1/4
+            # feature = list(feature_dict.values())[1]  # P3 -> spatial_scale=1/8
+            feature = list(feature_dict.values())[2]  # P4 -> spatial_scale=1/16
+            # feature = list(feature_dict.values())[3]  # P5 -> spatial_scale=1/32
             feature_maps.append(feature)
         
         for i in range(batch_size):
