@@ -94,7 +94,7 @@ def args_to_kwargs(
         return args
 
 
-def prepare_batch_data(args, batch, data_loader, device, text=True, label=True, bbox=True):
+def prepare_batch_data(args, batch, data_loader, device, findings=True, history=True, label=True, bbox=True):
     """准备批次数据，对整个batch进行tokenization
 
     Args:
@@ -113,33 +113,39 @@ def prepare_batch_data(args, batch, data_loader, device, text=True, label=True, 
         batch["image"] = data_to_device(batch["image"], device)
         source['image'] = batch['image']
 
-    if text:
-        # 对整个batch的文本进行tokenization
-        text_fields = ["findings", "history"]
-        for field in text_fields:
-            if field in batch:
-                # 收集batch中的所有文本
-                texts = batch[field]
+    # 根据参数确定需要处理的文本字段
+    text_fields = []
+    if findings and "findings" in batch:
+        text_fields.append("findings")
+    if history and "history" in batch:
+        text_fields.append("history")
 
-                if field == "history":
-                    max_len = args.max_len_history
-                elif field == "findings":
-                    max_len = args.max_len_findings
+    # 对整个batch的文本进行tokenization
+    text_fields = ["findings", "history"]
+    for field in text_fields:
+        if field in batch:
+            # 收集batch中的所有文本
+            texts = batch[field]
 
-                # 对整个batch进行tokenization
-                encoded = data_loader.dataset.tokenizer(
-                    texts,
-                    max_length=max_len,
-                    padding="max_length",
-                    truncation=True,
-                    return_tensors="pt",
-                ).to(
-                    device
-                )  # [batch_size, max_len]
-                batch[field] = encoded
+            if field == "history":
+                max_len = args.max_len_history
+            elif field == "findings":
+                max_len = args.max_len_findings
 
-                source[field] = batch[field]
-                target[field] = batch[field]
+            # 对整个batch进行tokenization
+            encoded = data_loader.dataset.tokenizer(
+                texts,
+                max_length=max_len,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            ).to(
+                device
+            )  # [batch_size, max_len]
+            batch[field] = encoded
+
+            source[field] = batch[field]
+            target[field] = batch[field]
 
     # 将label移到device上
     if label and "label" in batch:
@@ -178,17 +184,20 @@ def train(
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
         # 准备批次数据
-        if train_stage == 1:
-            source, target, _ = prepare_batch_data(args, batch, data_loader, device, text=False, label=False)
+        if args.phase == "TRAIN_DETECTION":
+            source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=False, bbox=True)
+        elif args.phase == "PRETRAIN_VIT":
+            source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=True, bbox=True)
         else:
-            source, target, _ = prepare_batch_data(args, batch, data_loader)
-
+            pass
         # 转换为kwargs格式
         source = args_to_kwargs(source)
         target = args_to_kwargs(target)
 
-        source["train_stage"] = train_stage
+        source["phase"] = args.phase
         source["mode"] = "train"
+        source['current_epoch'] = current_epoch
+        source['total_epochs'] = num_epochs
 
         scheduler.step(cur_epoch=current_epoch, cur_step=i)
         current_lr = optimizer.param_groups[0]["lr"]
@@ -196,15 +205,14 @@ def train(
             with torch.cuda.amp.autocast():
                 output = data_distributor(model, source)
                 output = args_to_kwargs(output)
-                if train_stage == 1:
+                if args.phase == "TRAIN_DETECTION":
                     # 汇总所有损失项
                     loss = sum(loss for loss in output.values())
-                elif train_stage == 2:
-                    loss, _ = criterion(output, target)
-                    loss = loss + output["impression_loss"]
-                elif train_stage == 3:
-                    loss, _ = criterion(output, target)
-                    loss = loss + output["loss_lm"]
+                elif args.phase == "PRETRAIN_VIT":
+                    pass
+                else:
+                    pass
+
 
             running_loss += loss.item()
             prog_bar.set_description(f"Loss: {running_loss/(i+1)} | LR: {current_lr}")
@@ -229,7 +237,6 @@ def train(
             optimizer.zero_grad()
 
     return running_loss / len(data_loader)
-
 
 def test(
     args,
@@ -271,13 +278,18 @@ def test(
             impression_gts_list.extend([gt for gt in batch["gts"][1]])
 
             # 准备批次数据
-            source, target, _ = prepare_batch_data(args, batch, data_loader, device)
+            if args.phase == "TRAIN_DETECTION":
+                source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=False, bbox=True)
+            elif args.phase == "PRETRAIN_VIT":
+                source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=True, bbox=True)
+            else:
+                pass
 
             # 转换为kwargs格式
             source = args_to_kwargs(source, kw_src)
             target = args_to_kwargs(target, kw_tgt)
 
-            source["train_stage"] = train_stage
+            source["phase"] = args.phase
             source["mode"] = mode
 
             # 模型推理
@@ -372,6 +384,45 @@ def test(
 
     return running_loss / len(data_loader), result
 
+def infer_bert(
+    args,
+    data_loader,
+    model,
+    num_epochs,
+    current_epoch,
+    train_stage=3,
+    device="cuda",
+    kw_src=None,
+    kw_tgt=None,
+    kw_out=None,
+    scaler=None,
+):
+    model.eval()
+    running_loss = 0
+
+    prog_bar = tqdm(data_loader)
+    for i, batch in enumerate(prog_bar):
+        source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=True, history=False, label=True, bbox=False)
+        # 转换为kwargs格式
+        source = args_to_kwargs(source)
+        target = args_to_kwargs(target)
+
+        source["phase"] = args.phase
+        source["mode"] = "train"
+        source['current_epoch'] = current_epoch
+        source['total_epochs'] = num_epochs
+
+        output = data_distributor(model, source)
+        output = args_to_kwargs(output)
+
+    save_path = os.path.join(args.checkpoint_path_to, "negative_pool", "pool.npy")
+    if not os.path.exists(os.path.dirname(save_path)):
+        os.makedirs(os.path.dirname(save_path))
+
+    model.negative_pool.save(save_path)
+
+    return output
+
 def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
     if not os.path.exists(os.path.dirname(path)):
         os.makedirs(os.path.dirname(path))
@@ -396,11 +447,39 @@ def load(path, model, optimizer=None, scheduler=None):
     # --- Model Statistics ---
     epoch = checkpoint["epoch"]
     stats = checkpoint["stats"]
-    # --- Model Parameters ---
-    # model.load_state_dict(checkpoint["model_state_dict"])
-    missing_keys, unexpected_keys = model.load_state_dict(
-        checkpoint["model_state_dict"], strict=False
-    )
+    
+    # --- 提取detector部分的参数 ---
+    if "model_state_dict" in checkpoint:
+        checkpoint_state_dict = checkpoint["model_state_dict"]
+        
+        # 检查是否是MOE模型的检查点
+        is_moe_checkpoint = any(key.startswith("object_detector.") for key in checkpoint_state_dict.keys())
+        
+        if is_moe_checkpoint:
+            print("检测到MOE模型检查点，正在提取目标检测器参数...")
+            # 创建一个新的state_dict，只包含detector部分
+            detector_state_dict = {}
+            
+            # 遍历checkpoint中的所有键
+            for key, value in checkpoint_state_dict.items():
+                # 如果键以"object_detector."开头，则提取
+                if key.startswith("object_detector."):
+                    # 去掉"object_detector."前缀
+                    new_key = key[len("object_detector."):]
+                    detector_state_dict[new_key] = value
+            
+            # 加载提取后的state_dict到模型
+            missing_keys, unexpected_keys = model.load_state_dict(
+                detector_state_dict, strict=False
+            )
+        else:
+            # 如果不是MOE检查点，直接尝试加载
+            missing_keys, unexpected_keys = model.load_state_dict(
+                checkpoint_state_dict, strict=False
+            )
+    else:
+        print("检查点中没有找到模型状态字典！")
+        return epoch, stats
 
     # 打印未加载和多余的参数信息
     if len(missing_keys) > 0:
@@ -413,11 +492,7 @@ def load(path, model, optimizer=None, scheduler=None):
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         except:  # Input optimizer doesn't fit the checkpoint one --> should be ignored
             print("Cannot load the optimizer")
-    # if scheduler != None:
-    #     try:
-    #         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-    #     except:  # Input scheduler doesn't fit the checkpoint one --> should be ignored
-    #         print("Cannot load the scheduler")
+    
     return epoch, stats
 
 

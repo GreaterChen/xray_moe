@@ -111,7 +111,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         findings = self.my_pre_caption(info["findings"])
         history = self.my_pre_caption(info["history"])
-        label = np.array(info["labels"], dtype=np.float16)
+        disease_label = np.array(info["labels"], dtype=np.float16)
         bbox_data = info["bbox_targets"]
 
         # 获取图像路径
@@ -158,7 +158,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             "bbox_targets": target,
             "findings": findings,
             "history": history,
-            "label": label,
+            "label": disease_label,
             "image_path": img_path
         }
 

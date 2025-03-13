@@ -28,6 +28,7 @@ from losses import *
 from models.mrgn_model import *
 from models.moe_model import *
 from models.fast_rcnn_classifier import *
+from models.vit import *
 from metrics import compute_scores
 from tools.optims import *
 
@@ -117,8 +118,8 @@ def parse_args():
     parser.add_argument(
         "--phase",
         type=str,
-        default="TRAIN_STAGE_2",
-        choices=["TRAIN_STAGE_1", "TRAIN_STAGE_2", "TEST", "INFER"],
+        default="INFER_BERT",
+        choices=["TRAIN_DETECTION", "INFER_BERT", "PRE_TRAIN_VIT", "TEST", "INFER"],
         help="Phase of the program",
     )
 
@@ -132,7 +133,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--train_batch_size", type=int, default=32, help="Batch size for training."
+        "--train_batch_size", type=int, default=256, help="Batch size for training."
     )
     parser.add_argument(
         "--val_batch_size", type=int, default=8, help="Batch size for validation."
@@ -180,7 +181,7 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_path_to",
         type=str,
-        default="/home/chenlb/MOE/results/detection/",
+        default="/home/chenlb/MOE/results/ltc/",
         help="Path to save the checkpoint to.",
     )
     args = parser.parse_args()
@@ -255,7 +256,7 @@ if __name__ == "__main__":
     # Model-specific settings
     if args.model_name == "MOE":
 
-        if args.phase == "TRAIN_STAGE_1":
+        if args.phase == "TRAIN_DETECTION":
             fast_rcnn = DetectionOnlyFastRCNN()
             model = MOE(
                 args=args,
@@ -264,10 +265,10 @@ if __name__ == "__main__":
             module_parameters = {
                 "FastRCNN": count_parameters(fast_rcnn),
             }
-        elif args.phase == "TRAIN_STAGE_2":
+        elif args.phase == "PRETRAIN_VIT":
             # 初始化检测器
             detection_model = DetectionOnlyFastRCNN()
-            detection_model.load_state_dict(torch.load(args.detection_checkpoint_path_from))
+            _, _ = load(args.detection_checkpoint_path_from, detection_model)
             
             # 创建增强型FastRCNN
             enhanced_rcnn = EnhancedFastRCNN(
@@ -277,50 +278,30 @@ if __name__ == "__main__":
             )
             
             # 初始化ViT模型
-            vit_model = ViT(
-                image_size=224,
-                patch_size=16,
-                num_classes=1000,
-                dim=768,
-                depth=12,
-                heads=12,
-                mlp_dim=3072,
-                dropout=0.1,
-                emb_dropout=0.1
-            )
-            
-            # 初始化CXR-BERT
-            cxr_bert = CXR_BERT_FeatureExtractor()
-            
-            # 初始化其他组件
-            history_encoder = HistoryEncoder(args)
-            modality_fusion = ModalityFusion(hidden_size=768)
-            findings_decoder = BLIP_Decoder(
-                args,
-                tokenizer=tokenizer,
-                max_length=args.max_len_findings
-            )
-            findings_generator = FindingsGenerator(findings_decoder)
+            vit_model = MedicalVisionTransformer()
             
             # 创建MOE模型
             model = MOE(
                 args=args,
                 object_detector=enhanced_rcnn,
                 image_encoder=vit_model,
-                history_encoder=history_encoder,
-                modality_fusion=modality_fusion,
-                findings_decoder=findings_generator,
-                cxr_bert=cxr_bert
             )
             
             # 计算每个模块的参数量
             module_parameters = {
                 "Enhanced FastRCNN": count_parameters(enhanced_rcnn),
                 "ViT": count_parameters(vit_model),
-                "CXR-BERT": count_parameters(cxr_bert),
-                "History Encoder": count_parameters(history_encoder),
-                "Modality Fusion": count_parameters(modality_fusion),
-                "Findings Generator": count_parameters(findings_generator),
+            }
+        elif args.phase == "INFER_BERT":
+            cxr_bert = CXR_BERT_FeatureExtractor()
+            model = MOE(
+                args=args,
+                cxr_bert=cxr_bert
+            )
+
+            # 计算每个模块的参数量
+            module_parameters = {
+                "CXR BERT": count_parameters(cxr_bert),
             }
             
         # 打印每个模块的参数量
@@ -395,13 +376,14 @@ if __name__ == "__main__":
     metrics = compute_scores
 
     # Training phase
-    if args.phase == "TRAIN_STAGE_1" and args.mode == "TRAIN":
+    if args.phase == "TRAIN_DETECTION" or args.phase == "PRETRAIN_VIT":
         if args.checkpoint_path_from:
             _, _ = load(args.checkpoint_path_from, model, optimizer, scheduler)
 
         criterion = None
         scaler = torch.cuda.amp.GradScaler()
-
+        train_stage = 1 if args.phase == "TRAIN_DETECTION" else 2
+ 
         for epoch in range(last_epoch + 1, args.epochs):
             print(f"Epoch: {epoch}")
             train_loss = train(
@@ -417,21 +399,23 @@ if __name__ == "__main__":
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,
                 scaler=scaler,
-                train_stage=1,
+                train_stage=1
             )
+            if args.phase == "TRAIN_DETECTION":
+                test_loss, result = test_detection(
+                    args=args,
+                    model=model.object_detector,
+                    data_loader=test_loader,
+                    logger=logger,
+                    epoch=epoch
+                )
+                save_path = os.path.join(
+                    args.checkpoint_path_to,
+                    f'epoch_{epoch}_{result["overall_metrics"]["mAP"]}.pth',
+                )
+            else:
+                pass
 
-            test_loss, result = test_detection(
-                args=args,
-                model=model.object_detector,
-                data_loader=test_loader,
-                logger=logger,
-                epoch=epoch
-            )
-
-            save_path = os.path.join(
-                args.checkpoint_path_to,
-                f'epoch_{epoch}_{result["overall_metrics"]["mAP"]}.pth',
-            )
             save(
                 save_path,
                 model,
@@ -440,67 +424,20 @@ if __name__ == "__main__":
                 epoch,
                 (test_loss, result),
             )
-
-
-    elif args.phase == "TRAIN_STAGE_2" and args.mode == "TRAIN":
-
-        _, _ = load(args.checkpoint_path_from, model, optimizer, scheduler)
-        logger.info(f"从 {args.checkpoint_path_from} 加载模型权重")
-
-        criterion = CombinedLoss(pad_id=pad_id).cuda()
-        scaler = torch.cuda.amp.GradScaler()
-
+    elif args.phase == "INFER_BERT":
         for epoch in range(last_epoch + 1, args.epochs):
             print(f"Epoch: {epoch}")
-            train_loss = train(
+            train_loss = infer_bert(
                 args,
                 train_loader,
                 model,
-                optimizer,
-                criterion,
-                scheduler=scheduler,
                 num_epochs=args.epochs,
                 current_epoch=epoch,
                 device="cuda",
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,
-                scaler=scaler,
-                train_stage=2,
+                train_stage=3
             )
-
-            test_loss, result = test(
-                args,
-                test_loader,
-                model,
-                logger,
-                mode="test",
-                metric_ftns=metrics,
-                criterion=criterion,
-                device="cuda",
-                kw_src=args.kw_src,
-                kw_tgt=args.kw_tgt,
-                train_stage=2,
-                epoch=epoch,
-            )
-
-            # 记录测试结果
-            log_metrics(logger, epoch, train_loss, test_loss, result)
-
-            # 保存检查点时使用BLEU_1分数
-            save_path = os.path.join(
-                args.checkpoint_path_to,
-                f'epoch_{epoch}_BLEU_1_{result["metrics_df"]["impression_BLEU_1"].iloc[0]}.pth',
-            )
-            save(
-                save_path,
-                model,
-                optimizer,
-                scheduler,
-                epoch,
-                (test_loss, result),
-            )
-
-            logger.info(f"Saved To: {save_path}")
 
     elif args.mode == "TEST":
         # 确保提供了checkpoint路径
