@@ -144,62 +144,94 @@ class MOE(nn.Module):
 
     def compute_global_ltc_loss(self, visual_cls, text_cls, negative_samples):
         """
-        计算使用全局负样本池的语言-视觉对比损失(LTC)
+        计算使用全局负样本池的语言-视觉对比损失(LTC)，完全并行处理
         
         参数:
             visual_cls: 映射后的视觉特征 [B, hidden_size]
             text_cls: 映射后的文本特征 [B, hidden_size]
-            negative_samples: 映射后的负样本列表，每个元素是一个tensor或None
+            negative_samples: 负样本列表，假设每个元素都是相同大小的tensor [K, hidden_size]
                 
         返回:
             全局对比损失值
         """
         batch_size = visual_cls.size(0)
-        total_loss = 0.0
-        valid_samples = 0
+        hidden_size = visual_cls.size(1)
         temperature = 0.07  # 温度参数
+        device = visual_cls.device
         
         # 归一化特征
-        visual_cls = F.normalize(visual_cls, p=2, dim=1)
-        text_cls = F.normalize(text_cls, p=2, dim=1)
+        visual_cls = F.normalize(visual_cls, p=2, dim=1)  # [B, hidden_size]
+        text_cls = F.normalize(text_cls, p=2, dim=1)     # [B, hidden_size]
         
-        # 对每个样本单独计算对比损失
-        for i in range(batch_size):
-            # 获取当前样本的视觉和文本特征
-            current_visual = visual_cls[i].unsqueeze(0)  # [1, hidden_size]
-            current_text = text_cls[i].unsqueeze(0)      # [1, hidden_size]
+        # 检查并构建负样本张量
+        # 假设每个样本都有K个负样本
+        if all(ns is not None and ns.size(0) > 0 for ns in negative_samples):
+            # 获取负样本数量K
+            K = negative_samples[0].size(0)
             
-            # 计算视觉与匹配文本的相似度（正样本相似度）
-            pos_similarity = torch.matmul(current_visual, current_text.t()).squeeze()  # 标量
+            # 创建一个包含所有负样本的批次张量 [B, K, hidden_size]
+            all_neg_samples = torch.stack([
+                F.normalize(ns, p=2, dim=1) for ns in negative_samples
+            ], dim=0)
             
-            # 检查是否有可用的负样本
-            if negative_samples[i] is None or negative_samples[i].size(0) == 0:
-                continue
+            # 计算每个样本的正样本相似度 [B]
+            pos_similarities = torch.sum(visual_cls * text_cls, dim=1)
             
-            # 归一化负样本
-            neg_samples = F.normalize(negative_samples[i], p=2, dim=1)  # [K, hidden_size]
+            # 为batch中每个样本计算与其负样本的相似度
+            # 重塑visual_cls为 [B, 1, hidden_size]
+            visual_cls_expanded = visual_cls.unsqueeze(1)
             
-            # 计算视觉特征与所有负样本的相似度
-            neg_similarities = torch.matmul(current_visual, neg_samples.t()).squeeze(0)  # [K]
+            # 使用批量矩阵乘法计算每个样本与其对应的K个负样本的相似度
+            # [B, 1, hidden_size] x [B, hidden_size, K] -> [B, 1, K] -> [B, K]
+            neg_similarities = torch.bmm(
+                visual_cls_expanded, 
+                all_neg_samples.transpose(1, 2)
+            ).squeeze(1)
             
-            # 构建相似度向量和标签（正样本在第一位）
-            all_similarities = torch.cat([pos_similarity.unsqueeze(0), neg_similarities], dim=0)  # [K+1]
-            # 将相似度调整为所需的维度 [1, K+1]
-            all_similarities = all_similarities.unsqueeze(0)
-            labels = torch.zeros(1, dtype=torch.long, device=visual_cls.device)  # 正样本的索引是0
+            # 合并正样本和负样本相似度 [B, K+1]
+            all_similarities = torch.cat([pos_similarities.unsqueeze(1), neg_similarities], dim=1)
             
-            # 计算InfoNCE损失
+            # 创建标签张量，对每个样本来说，正样本的索引都是0
+            labels = torch.zeros(batch_size, dtype=torch.long, device=device)
+            
+            # 一次性计算整个批次的对比损失
             loss = F.cross_entropy(all_similarities / temperature, labels)
-
-            loss = F.cross_entropy(all_similarities / temperature, labels)
-            total_loss += loss
-            valid_samples += 1
-        
-        # 避免除零错误
-        if valid_samples == 0:
-            return torch.tensor(0.0, device=visual_cls.device, requires_grad=True)
-        
-        return total_loss / valid_samples
+            
+            return loss
+        else:
+            # 如果有些样本没有负样本，则回退到逐个样本处理
+            total_loss = 0.0
+            valid_samples = 0
+            
+            for i in range(batch_size):
+                if negative_samples[i] is None or negative_samples[i].size(0) == 0:
+                    continue
+                    
+                # 获取当前样本的特征
+                current_visual = visual_cls[i].unsqueeze(0)  # [1, hidden_size]
+                current_text = text_cls[i].unsqueeze(0)      # [1, hidden_size]
+                
+                # 计算正样本相似度
+                pos_similarity = torch.matmul(current_visual, current_text.t()).squeeze()
+                
+                # 归一化负样本
+                neg_samples = F.normalize(negative_samples[i], p=2, dim=1)  # [K, hidden_size]
+                
+                # 计算负样本相似度
+                neg_similarities = torch.matmul(current_visual, neg_samples.t()).squeeze(0)
+                
+                # 合并相似度
+                all_similarities = torch.cat([pos_similarity.unsqueeze(0), neg_similarities], dim=0).unsqueeze(0)
+                
+                # 标签
+                labels = torch.zeros(1, dtype=torch.long, device=device)
+                
+                # 计算损失
+                loss = F.cross_entropy(all_similarities / temperature, labels)
+                total_loss += loss
+                valid_samples += 1
+            
+            return total_loss / valid_samples if valid_samples > 0 else torch.tensor(0.0, device=device, requires_grad=True)
 
     def compute_batch_ltc_loss(self, visual_cls, text_cls):
         """
