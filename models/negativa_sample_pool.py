@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 class NegativeSamplePool:
@@ -22,6 +23,10 @@ class NegativeSamplePool:
         # 记录添加的样本数和去重的样本数
         self.sample_count = 0
         self.duplicate_count = 0
+        
+        # 添加缓存
+        self.similarity_cache = {}  # 缓存标签相似度计算结果
+        self.cache_size = 1000  # 最大缓存条目数
         
         # 检查是否可以使用CUDA
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -203,95 +208,73 @@ class NegativeSamplePool:
     
     def _compute_all_similarities(self, target_label):
         """
-        计算目标标签与所有存储标签的相似度
-        
-        Args:
-            target_label: 目标标签向量 [num_diseases]
-            
-        Returns:
-            similarities: 包含(key, similarity)元组的列表，按相似度升序排序
+        计算目标标签与所有存储标签的相似度，使用缓存加速
         """
-        # 确保目标标签是设备上的tensor
-        target_tensor = target_label.to(self.device)
+        # 将target_label转换为字符串键
+        target_key = self._label_to_key(target_label)
         
-        # 创建标签键和向量的列表
+        # 检查缓存
+        if target_key in self.similarity_cache:
+            return self.similarity_cache[target_key]
+            
+        # 计算相似度
+        target_tensor = target_label.to(self.device)
         keys = list(self.label_vectors.keys())
         similarities_list = []
         
         if keys:
-            # 将所有标签向量堆叠成一个批次
+            # 批量计算相似度
             vectors_tensor = torch.stack([self.label_vectors[key] for key in keys], dim=0)
+            similarities = F.cosine_similarity(vectors_tensor, target_tensor.unsqueeze(0), dim=1)
             
-            # 批量计算余弦相似度
-            similarities = torch.nn.functional.cosine_similarity(vectors_tensor, target_tensor.unsqueeze(0), dim=1)
-            
-            # 创建(key, similarity)元组列表
+            # 创建并排序结果
             similarities_list = [(keys[i], similarities[i].item()) for i in range(len(keys))]
-            
-            # 按相似度升序排序（最不相似的在前面）
             similarities_list.sort(key=lambda x: x[1])
+            
+            # 更新缓存
+            if len(self.similarity_cache) >= self.cache_size:
+                # 移除最旧的缓存条目
+                oldest_key = next(iter(self.similarity_cache))
+                del self.similarity_cache[oldest_key]
+            
+            self.similarity_cache[target_key] = similarities_list
         
         return similarities_list
     
     def get_negative_samples(self, target_label, k=10):
         """
-        获取与目标标签相似度最低的k个样本
-        
-        Args:
-            target_label: 目标标签向量 [num_diseases]
-            k: 需要的负样本数量
-            
-        Returns:
-            negative_samples: 负样本tensor [k, hidden_dim]
+        获取负样本，使用缓存的相似度结果
         """
-        # 计算目标标签与所有标签的相似度并排序
         sorted_similarities = self._compute_all_similarities(target_label)
         
-        # 按相似度升序遍历，收集k个样本
+        # 使用torch.cat一次性收集样本
         collected_samples = []
+        total_samples = 0
         
-        for label_key, similarity in sorted_similarities:
-            # 获取当前标签的样本tensor
+        for label_key, _ in sorted_similarities:
             current_samples = self.pool[label_key]
-            
-            # 确保有样本可用
             if current_samples.size(0) == 0:
                 continue
                 
-            # 计算要从当前池中选择的样本数
-            samples_needed = k - len(collected_samples)
-            
-            # 如果当前池中样本数量足够，随机选择需要的数量
+            samples_needed = k - total_samples
+            if samples_needed <= 0:
+                break
+                
             if current_samples.size(0) <= samples_needed:
                 collected_samples.append(current_samples)
+                total_samples += current_samples.size(0)
             else:
-                # 随机选择不重复的样本索引
                 selected_indices = torch.randperm(current_samples.size(0), device=self.device)[:samples_needed]
                 selected_samples = current_samples[selected_indices]
                 collected_samples.append(selected_samples)
-            
-            # 如果已收集足够样本，退出循环
-            if sum(tensor.size(0) for tensor in collected_samples) >= k:
-                break
+                total_samples += samples_needed
         
-        # 如果收集到的样本非空，将它们连接成一个tensor
-        total_collected = sum(tensor.size(0) for tensor in collected_samples)
-        
-        if total_collected == 0:
-            print("警告: 未找到任何负样本")
+        if not collected_samples:
             return None
             
-        if total_collected < k:
-            print(f"警告: 只找到 {total_collected} 个负样本，少于请求的 {k} 个")
-        
-        # 连接所有收集到的样本
+        # 一次性连接所有样本
         negative_samples = torch.cat(collected_samples, dim=0)
-        
-        # 如果样本超过了k个，截取前k个
-        if negative_samples.size(0) > k:
-            negative_samples = negative_samples[:k]
-            
-        return negative_samples
+        return negative_samples[:k] if negative_samples.size(0) > k else negative_samples
     
     def get_negative_samples_batch(self, target_labels, k=10):
         """
