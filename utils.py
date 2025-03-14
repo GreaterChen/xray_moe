@@ -11,6 +11,8 @@ import os
 from datetime import datetime
 from tqdm import tqdm
 import pandas as pd
+import metrics
+from sklearn.metrics import roc_auc_score
 
 
 # ------ Helper Functions ------
@@ -212,7 +214,6 @@ def train(
                 else:
                     pass
 
-
             running_loss += loss.item()
             prog_bar.set_description(f"Loss: {running_loss/(i+1)} | LR: {current_lr}")
 
@@ -360,6 +361,7 @@ def test(
         }
 
     return running_loss / len(data_loader), result
+    
 
 def infer_bert(
     args,
@@ -1037,6 +1039,335 @@ def test_detection(
     }
     
     return running_loss / len(data_loader) if running_loss > 0 else 0.0, result
+
+
+def test_vit(
+    args,
+    data_loader,
+    model,
+    logger,
+    mode="val",
+    device="cuda",
+    epoch=None,
+):
+    """
+    评估PRETRAIN_VIT阶段的模型性能，包括每一层的区域分类准确率和全图分类准确率
+    
+    参数:
+        args: 配置参数
+        data_loader: 测试数据加载器
+        model: MOE模型实例
+        logger: 日志记录器
+        mode: 评估模式 ("val" 或 "test")
+        device: 计算设备
+        epoch: 当前训练轮次
+    
+    返回:
+        float: 平均损失
+        dict: 包含评估结果的字典
+    """
+    model.eval()
+    running_loss = 0
+    
+    # 获取ViT模型的层数
+    num_layers = model.image_encoder.num_layers
+    
+    # 初始化存储结构
+    image_paths_list = []
+    labels_list = []
+    
+    # 为每一层初始化评估指标存储
+    all_layer_region_preds = [[] for _ in range(num_layers)]
+    all_layer_image_preds = [[] for _ in range(num_layers)]
+    all_labels = []
+    
+    # 创建进度条
+    prog_bar = tqdm(data_loader, desc=f"{mode} ViT Evaluation")
+    
+    with torch.no_grad():
+        for i, batch in enumerate(prog_bar):
+            # 收集图像路径和标签
+            image_paths_list.extend(batch["image_path"])
+            labels = batch["label"].to(device)
+            labels_list.extend(labels.cpu().numpy().tolist())
+            all_labels.append(labels)  # 现在labels已经在正确的设备上了
+
+            source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=True, bbox=True)
+            # 转换为kwargs格式
+            source = args_to_kwargs(source)
+            target = args_to_kwargs(target)
+
+            source["phase"] = args.phase
+            source["mode"] = "test"
+
+            outputs = data_distributor(model, source)
+            outputs = args_to_kwargs(outputs)
+            
+            # 收集每一层的预测结果
+            for layer_idx in range(num_layers):
+                region_preds = outputs['region_preds'][layer_idx]  # [B, num_regions, num_diseases]
+                image_preds = outputs['image_preds'][layer_idx]    # [B, num_diseases]
+                
+                all_layer_region_preds[layer_idx].append(region_preds.detach().cpu())
+                all_layer_image_preds[layer_idx].append(image_preds.detach().cpu())
+    
+    # 合并所有批次的预测和标签，并确保它们都在同一个设备上
+    all_labels = torch.cat(all_labels, dim=0)  # 已经在device上了
+    for layer_idx in range(num_layers):
+        all_layer_region_preds[layer_idx] = torch.cat(all_layer_region_preds[layer_idx], dim=0).to(device)
+        all_layer_image_preds[layer_idx] = torch.cat(all_layer_image_preds[layer_idx], dim=0).to(device)
+    
+    # 计算每一层的评估指标
+    logger.info("计算ViT模型评估指标...")
+    
+    # 创建结果目录
+    results_dir = os.path.join(args.checkpoint_path_to, "vit_results")
+    os.makedirs(results_dir, exist_ok=True)
+    
+    # 初始化结果数据
+    metrics_data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": mode,
+        "epoch": str(epoch) if epoch is not None else "TEST",
+    }
+    
+    # 计算每一层的指标
+    for layer_idx in range(num_layers):
+        # 获取当前层的预测
+        region_preds = all_layer_region_preds[layer_idx]  # [N, num_regions, num_diseases]
+        image_preds = all_layer_image_preds[layer_idx]    # [N, num_diseases]
+        
+        # 应用sigmoid获取概率
+        region_probs = torch.sigmoid(region_preds)
+        image_probs = torch.sigmoid(image_preds)
+        
+        # 使用0.5作为阈值获取二值预测
+        region_binary = (region_probs > 0.5).float()
+        image_binary = (image_probs > 0.5).float()
+        
+        # 计算区域级指标
+        num_regions = region_preds.size(1)
+        num_diseases = region_preds.size(2)
+        
+        # 初始化区域级指标
+        region_metrics = {
+            "accuracy": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "auc": 0.0
+        }
+        
+        # 为每个区域初始化单独的指标字典
+        per_region_metrics = {}
+        for region_idx in range(num_regions):
+            per_region_metrics[region_idx] = {
+                "accuracy": 0.0,
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "auc": 0.0,
+                "num_samples": 0  # 记录该区域的有效样本数
+            }
+        
+        # 计算每个区域的指标
+        for region_idx in range(num_regions):
+            region_pred = region_binary[:, region_idx, :]  # [N, num_diseases]
+            region_prob = region_probs[:, region_idx, :]   # [N, num_diseases]
+            
+            # 使用图像级标签作为区域级标签（因为没有区域级标签）
+            region_label = all_labels  # 已经在正确的设备上了
+            
+            # 计算准确率
+            correct = (region_pred == region_label).float().mean().item()
+            region_metrics["accuracy"] += correct / num_regions
+            per_region_metrics[region_idx]["accuracy"] = correct
+            
+            # 初始化该区域的统计数据
+            tp_total = 0
+            fp_total = 0
+            fn_total = 0
+            auc_total = 0
+            valid_diseases = 0
+            
+            # 计算每个疾病的指标
+            for disease_idx in range(num_diseases):
+                disease_pred = region_pred[:, disease_idx]
+                disease_prob = region_prob[:, disease_idx]
+                disease_label = region_label[:, disease_idx]
+                
+                # 跳过没有正样本的疾病
+                if disease_label.sum() == 0:
+                    continue
+                
+                valid_diseases += 1
+                
+                # 计算TP, FP, FN
+                tp = ((disease_pred == 1) & (disease_label == 1)).float().sum().item()
+                fp = ((disease_pred == 1) & (disease_label == 0)).float().sum().item()
+                fn = ((disease_pred == 0) & (disease_label == 1)).float().sum().item()
+                
+                tp_total += tp
+                fp_total += fp
+                fn_total += fn
+                
+                # 计算AUC
+                try:
+                    disease_prob_np = disease_prob.cpu().numpy()
+                    disease_label_np = disease_label.cpu().numpy()
+                    if len(np.unique(disease_label_np)) > 1:  # 确保有正负样本
+                        auc = roc_auc_score(disease_label_np, disease_prob_np)
+                        auc_total += auc
+                except Exception as e:
+                    pass
+            
+            # 计算该区域的总体指标
+            if valid_diseases > 0:
+                per_region_metrics[region_idx]["precision"] = tp_total / (tp_total + fp_total) if tp_total + fp_total > 0 else 0
+                per_region_metrics[region_idx]["recall"] = tp_total / (tp_total + fn_total) if tp_total + fn_total > 0 else 0
+                per_region_metrics[region_idx]["f1"] = 2 * per_region_metrics[region_idx]["precision"] * per_region_metrics[region_idx]["recall"] / (per_region_metrics[region_idx]["precision"] + per_region_metrics[region_idx]["recall"]) if per_region_metrics[region_idx]["precision"] + per_region_metrics[region_idx]["recall"] > 0 else 0
+                per_region_metrics[region_idx]["auc"] = auc_total / valid_diseases
+                per_region_metrics[region_idx]["num_samples"] = valid_diseases
+                
+                # 累加到总体区域指标
+                region_metrics["precision"] += per_region_metrics[region_idx]["precision"] / num_regions
+                region_metrics["recall"] += per_region_metrics[region_idx]["recall"] / num_regions
+                region_metrics["f1"] += per_region_metrics[region_idx]["f1"] / num_regions
+                region_metrics["auc"] += per_region_metrics[region_idx]["auc"] / num_regions
+        
+        # 计算图像级指标
+        image_metrics = {
+            "accuracy": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "auc": 0.0
+        }
+        
+        # 计算整体准确率
+        correct = (image_binary == all_labels).float().mean().item()
+        image_metrics["accuracy"] = correct
+        
+        # 计算每个疾病的指标
+        for disease_idx in range(num_diseases):
+            disease_pred = image_binary[:, disease_idx]
+            disease_label = all_labels[:, disease_idx]
+            
+            # 跳过没有正样本的疾病
+            if disease_label.sum() == 0:
+                continue
+            
+            # 计算TP, FP, FN
+            tp = ((disease_pred == 1) & (disease_label == 1)).float().sum().item()
+            fp = ((disease_pred == 1) & (disease_label == 0)).float().sum().item()
+            fn = ((disease_pred == 0) & (disease_label == 1)).float().sum().item()
+            
+            # 计算精确度和召回率
+            precision = tp / (tp + fp) if tp + fp > 0 else 0
+            recall = tp / (tp + fn) if tp + fn > 0 else 0
+            
+            # 计算F1
+            f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0
+            
+            image_metrics["precision"] += precision / num_diseases
+            image_metrics["recall"] += recall / num_diseases
+            image_metrics["f1"] += f1 / num_diseases
+            
+            # 计算AUC
+            try:
+                disease_prob = image_probs[:, disease_idx].cpu().numpy()
+                disease_label_np = disease_label.cpu().numpy()
+                if len(np.unique(disease_label_np)) > 1:  # 确保有正负样本
+                    auc = roc_auc_score(disease_label_np, disease_prob)
+                    image_metrics["auc"] += auc / num_diseases
+            except:
+                pass
+        
+        # 将当前层的指标添加到结果数据中
+        for metric_name, value in region_metrics.items():
+            metrics_data[f"layer_{layer_idx}_region_{metric_name}"] = value
+        
+        for metric_name, value in image_metrics.items():
+            metrics_data[f"layer_{layer_idx}_image_{metric_name}"] = value
+            
+        # 添加每个区域的具体指标
+        for region_idx, region_metric in per_region_metrics.items():
+            for metric_name, value in region_metric.items():
+                metrics_data[f"layer_{layer_idx}_region_{region_idx}_{metric_name}"] = value
+    
+    # 计算最后一层的指标作为整体指标
+    final_layer_idx = num_layers - 1
+    overall_metrics = {
+        "region_accuracy": metrics_data[f"layer_{final_layer_idx}_region_accuracy"],
+        "region_precision": metrics_data[f"layer_{final_layer_idx}_region_precision"],
+        "region_recall": metrics_data[f"layer_{final_layer_idx}_region_recall"],
+        "region_f1": metrics_data[f"layer_{final_layer_idx}_region_f1"],
+        "region_auc": metrics_data[f"layer_{final_layer_idx}_region_auc"],
+        "image_accuracy": metrics_data[f"layer_{final_layer_idx}_image_accuracy"],
+        "image_precision": metrics_data[f"layer_{final_layer_idx}_image_precision"],
+        "image_recall": metrics_data[f"layer_{final_layer_idx}_image_recall"],
+        "image_f1": metrics_data[f"layer_{final_layer_idx}_image_f1"],
+        "image_auc": metrics_data[f"layer_{final_layer_idx}_image_auc"]
+    }
+    
+    # 添加每个区域的最终指标到overall_metrics
+    for region_idx in range(num_regions):
+        region_metrics = {
+            "accuracy": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_accuracy"],
+            "precision": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_precision"],
+            "recall": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_recall"],
+            "f1": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_f1"],
+            "auc": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_auc"],
+            "num_samples": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_num_samples"]
+        }
+        overall_metrics[f"region_{region_idx}_metrics"] = region_metrics
+    
+    # 添加整体指标到结果数据
+    for metric_name, value in overall_metrics.items():
+        if isinstance(value, dict):
+            for sub_metric_name, sub_value in value.items():
+                metrics_data[f"overall_{metric_name}_{sub_metric_name}"] = sub_value
+        else:
+            metrics_data[f"overall_{metric_name}"] = value
+    
+    # 保存评估指标
+    metrics_df = pd.DataFrame([metrics_data])
+    epoch_str = str(epoch) if epoch is not None else "TEST"
+    metrics_filename = f"{mode}_vit_metrics_epoch_{epoch_str}.csv"
+    metrics_df.to_csv(os.path.join(results_dir, metrics_filename), index=False)
+    logger.info(f"ViT评估指标已保存到CSV文件: {metrics_filename}")
+    
+    # 打印主要指标
+    logger.info(f"整体区域分类指标:")
+    logger.info(f"准确率: {overall_metrics['region_accuracy']:.4f}")
+    logger.info(f"F1分数: {overall_metrics['region_f1']:.4f}")
+    logger.info(f"AUC: {overall_metrics['region_auc']:.4f}")
+    
+    logger.info(f"\n图像分类指标:")
+    logger.info(f"准确率: {overall_metrics['image_accuracy']:.4f}")
+    logger.info(f"F1分数: {overall_metrics['image_f1']:.4f}")
+    logger.info(f"AUC: {overall_metrics['image_auc']:.4f}")
+    
+    # 打印每个区域的指标
+    logger.info(f"\n各解剖区域分类指标:")
+    for region_idx in range(num_regions):
+        region_metrics = overall_metrics[f"region_{region_idx}_metrics"]
+        if region_metrics["num_samples"] > 0:  # 只打印有效样本的区域
+            logger.info(f"\n区域 {region_idx}:")
+            logger.info(f"准确率: {region_metrics['accuracy']:.4f}")
+            logger.info(f"精确率: {region_metrics['precision']:.4f}")
+            logger.info(f"召回率: {region_metrics['recall']:.4f}")
+            logger.info(f"F1分数: {region_metrics['f1']:.4f}")
+            logger.info(f"AUC: {region_metrics['auc']:.4f}")
+            logger.info(f"有效样本数: {region_metrics['num_samples']}")
+    
+    # 返回结果
+    result = {
+        "overall_metrics": overall_metrics,
+        "metrics_df": metrics_df
+    }
+    
+    return 0.0, result
 
 
 def calculate_detection_metrics(predictions, ground_truths, iou_threshold=0.5):

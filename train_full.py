@@ -39,7 +39,7 @@ logger = setup_logger(log_dir="logs")
 def parse_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--debug", default=False, help="Debug mode.")
+    parser.add_argument("--debug", default=True, help="Debug mode.")
 
     # Data input settings
     parser.add_argument(
@@ -143,7 +143,7 @@ def parse_args():
         "--train_batch_size", type=int, default=32, help="Batch size for training."
     )
     parser.add_argument(
-        "--val_batch_size", type=int, default=8, help="Batch size for validation."
+        "--val_batch_size", type=int, default=32, help="Batch size for validation."
     )
     parser.add_argument(
         "--num_workers", type=int, default=6, help="Number of workers for training."
@@ -421,6 +421,20 @@ if __name__ == "__main__":
                 save_path = os.path.join(
                     args.checkpoint_path_to,
                     f'epoch_{epoch}_{result["overall_metrics"]["mAP"]}.pth',
+                )
+                
+            elif args.phase == "PRETRAIN_VIT":
+                test_loss, result = test_vit(
+                    args=args,
+                    model=model,
+                    data_loader=test_loader,
+                    logger=logger,
+                    mode="test",
+                    epoch=epoch
+                )
+                save_path = os.path.join(
+                    args.checkpoint_path_to,
+                    f'epoch_{epoch}_image_acc_{result["overall_metrics"]["image_accuracy"]:.4f}.pth',
                 )
             else:
                 pass
