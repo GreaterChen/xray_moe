@@ -135,19 +135,6 @@ class MedicalVisionTransformer(nn.Module):
         self.num_regions = num_regions
         
     def forward(self, region_features, region_detected=None, region_labels=None, image_labels=None):
-        """
-        Args:
-            region_features: [batch_size, num_regions=29, hidden_size=768] - 从EnhancedFastRCNN提取的特征
-            region_detected: [batch_size, num_regions] - 布尔掩码，表示哪些区域实际被检测到
-            region_labels: [batch_size, num_regions, num_diseases] 或 None - 区域级疾病标签
-            image_labels: [batch_size, num_diseases] 或 None - 图像级疾病标签
-            
-        Returns:
-            all_hidden_states: 所有层的隐藏状态
-            all_region_preds: 每层的区域级预测
-            all_image_preds: 每层的图像级预测
-            final_cls_output: 最终的CLS token输出，用于下游任务
-        """
         batch_size = region_features.shape[0]
         device = region_features.device
         
@@ -155,29 +142,16 @@ class MedicalVisionTransformer(nn.Module):
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         x = torch.cat((cls_tokens, region_features), dim=1)  # [B, 1+num_regions, 768]
         
-        # 创建注意力掩码，考虑未检测到的区域
-        # 默认所有区域都参与注意力计算
-        if region_detected is None:
-            attention_mask = torch.ones(batch_size, x.size(1), device=device)
-        else:
-            # CLS token总是参与注意力计算(值为1)，对于区域特征使用region_detected
-            attention_mask = torch.ones(batch_size, 1, device=device)
-            region_mask = region_detected.float()  # 将布尔掩码转换为浮点数
-            attention_mask = torch.cat([attention_mask, region_mask], dim=1)
-        
-        # 准备ViT encoder的输入
-        extended_attention_mask = self.get_extended_attention_mask(attention_mask)
-        
         # 跟踪每层输出
         all_hidden_states = []
         all_region_preds = []
         all_image_preds = []
         
-        # 通过Transformer层
+        # 通过Transformer层 - 不使用attention mask
         hidden_states = x
         for i, layer_module in enumerate(self.encoder.layer):
-            # 通过Transformer层
-            layer_outputs = layer_module(hidden_states, extended_attention_mask)
+            # 通过Transformer层，不传入attention mask
+            layer_outputs = layer_module(hidden_states)
             hidden_states = layer_outputs[0]
             all_hidden_states.append(hidden_states)
             
@@ -199,13 +173,9 @@ class MedicalVisionTransformer(nn.Module):
         if image_labels is not None:
             loss = 0
             for i in range(self.num_layers):
-                layer_loss = self.classifiers[i].compute_loss(  # TODO loss 有 nan 问题
-                    all_region_preds[i], all_image_preds[i], region_labels, image_labels, region_detected
-                )
                 layer_loss = self.classifiers[i].compute_loss(
                     all_region_preds[i], all_image_preds[i], region_labels, image_labels, region_detected
                 )
-
                 loss += layer_loss
             loss = loss / self.num_layers  # 平均每层的损失
             
@@ -218,19 +188,6 @@ class MedicalVisionTransformer(nn.Module):
             'final_region_features': final_region_features
         }
         
-    def get_extended_attention_mask(self, attention_mask):
-        """
-        将注意力掩码转换为扩展格式
-        """
-        # 创建扩展的注意力掩码 [batch_size, 1, 1, seq_length]
-        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-        
-        # 将0转换为大的负值，1保持不变
-        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-        
-        return extended_attention_mask
-
-
 # 使用示例
 def example_usage():
     batch_size = 4

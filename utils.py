@@ -171,7 +171,6 @@ def train(
     num_epochs,
     current_epoch,
     scheduler=None,
-    train_stage=2,
     device="cpu",
     kw_src=None,
     kw_tgt=None,
@@ -187,7 +186,7 @@ def train(
         if args.phase == "TRAIN_DETECTION":
             source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=False, bbox=True)
         elif args.phase == "PRETRAIN_VIT":
-            source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=True, bbox=True)
+            source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=True, history=False, label=True, bbox=True)
         else:
             pass
         # 转换为kwargs格式
@@ -209,7 +208,7 @@ def train(
                     # 汇总所有损失项
                     loss = sum(loss for loss in output.values())
                 elif args.phase == "PRETRAIN_VIT":
-                    pass
+                    loss = output['ltc_loss'] + output['cls_loss']
                 else:
                     pass
 
@@ -245,7 +244,6 @@ def test(
     logger,
     mode="val",
     metric_ftns=None,
-    train_stage=2,
     criterion=None,
     device="cpu",
     kw_src=None,
@@ -298,8 +296,6 @@ def test(
 
             # 收集预测结果
             findings_preds_list.extend([re for re in output["findings_text"]])
-            if train_stage != 1:
-                impression_preds_list.extend([re for re in output["impression_text"]])
 
             # 计算损失
             if criterion is not None:
@@ -318,23 +314,11 @@ def test(
             * len(findings_gts_list),
         }
 
-        # 添加impression相关数据(如果是第二阶段)
-        if train_stage != 1:
-            results_data["impression_gt"] = impression_gts_list
-            results_data["impression_pred"] = impression_preds_list
-
         # 计算评估指标
         findings_met = metric_ftns(
             {i: [gt] for i, gt in enumerate(findings_gts_list)},
             {i: [re] for i, re in enumerate(findings_preds_list)},
         )
-
-        impression_met = None
-        if train_stage != 1:
-            impression_met = metric_ftns(
-                {i: [gt] for i, gt in enumerate(impression_gts_list)},
-                {i: [re] for i, re in enumerate(impression_preds_list)},
-            )
 
         # 创建结果目录
         results_dir = os.path.join(args.checkpoint_path_to, "test_results")
@@ -353,7 +337,6 @@ def test(
         metrics_data = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "mode": mode,
-            "train_stage": train_stage,
             "epoch": epoch_str,
             "loss": running_loss / len(data_loader),
         }
@@ -361,11 +344,6 @@ def test(
         # 添加findings指标
         for metric_name, value in findings_met.items():
             metrics_data[f"findings_{metric_name}"] = value
-
-        # 添加impression指标(如果是第二阶段)
-        if train_stage != 1 and impression_met:
-            for metric_name, value in impression_met.items():
-                metrics_data[f"impression_{metric_name}"] = value
 
         # 保存评估指标，添加epoch信息
         metrics_df = pd.DataFrame([metrics_data])
@@ -376,7 +354,6 @@ def test(
         # 返回结果
         result = {
             "findings_met": findings_met,
-            "impression_met": impression_met,
             "loss": running_loss / len(data_loader),
             "results_df": results_df,
             "metrics_df": metrics_df,
@@ -390,7 +367,6 @@ def infer_bert(
     model,
     num_epochs,
     current_epoch,
-    train_stage=3,
     device="cuda",
     kw_src=None,
     kw_tgt=None,
@@ -757,7 +733,6 @@ def save_generations(
     logger,
     save_dir,
     mode="test",
-    train_stage=2,
     device="cpu",
     kw_src=None,
     kw_tgt=None,
@@ -772,7 +747,6 @@ def save_generations(
         logger: 日志记录器
         save_dir: 保存结果的目录
         mode: 运行模式，默认为"test"
-        train_stage: 训练阶段，默认为2
         device: 计算设备
         kw_src: source关键字参数列表
         kw_tgt: target关键字参数列表
@@ -808,7 +782,6 @@ def save_generations(
             source = args_to_kwargs(source, kw_src)
             target = args_to_kwargs(target, kw_tgt)
 
-            source["train_stage"] = train_stage
             source["mode"] = mode
 
             # 模型推理
@@ -817,8 +790,6 @@ def save_generations(
 
             # 收集预测结果
             findings_preds_list.extend([re for re in output["findings_text"]])
-            if train_stage != 1:
-                impression_preds_list.extend([re for re in output["impression_text"]])
 
     # 创建保存目录
     os.makedirs(save_dir, exist_ok=True)
@@ -833,11 +804,6 @@ def save_generations(
         "timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
         * len(findings_gts_list),
     }
-
-    # 添加impression相关数据(如果是第二阶段)
-    if train_stage == 2:
-        results_data["impression_gt"] = impression_gts_list
-        results_data["impression_pred"] = impression_preds_list
 
     # 将结果转换为DataFrame并保存
     results_df = pd.DataFrame(results_data)

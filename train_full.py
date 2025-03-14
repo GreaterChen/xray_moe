@@ -63,6 +63,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--negative_pool_dir",
+        type=str,
+        default="/home/chenlb/MOE/results/ltc/negative_pool/pool.npy",
+        help="Path to load the negative pool.",
+    )
+
+    parser.add_argument(
         "--model_name",
         type=str,
         default="MOE",
@@ -118,7 +125,7 @@ def parse_args():
     parser.add_argument(
         "--phase",
         type=str,
-        default="INFER_BERT",
+        default="PRETRAIN_VIT",
         choices=["TRAIN_DETECTION", "INFER_BERT", "PRE_TRAIN_VIT", "TEST", "INFER"],
         help="Phase of the program",
     )
@@ -133,7 +140,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--train_batch_size", type=int, default=256, help="Batch size for training."
+        "--train_batch_size", type=int, default=32, help="Batch size for training."
     )
     parser.add_argument(
         "--val_batch_size", type=int, default=8, help="Batch size for validation."
@@ -169,7 +176,7 @@ def parse_args():
         "--detection_checkpoint_path_from",
         type=str,
         default="/home/chenlb/MOE/results/detection/epoch_9_BLEU_1_0.8791605068503925.pth",
-        help="Path to load the checkpoint from.",
+        help="Path to load the detection checkpoint from.",
     )
 
     parser.add_argument(
@@ -279,18 +286,22 @@ if __name__ == "__main__":
             
             # 初始化ViT模型
             vit_model = MedicalVisionTransformer()
+
+            cxr_bert = CXR_BERT_FeatureExtractor()
             
             # 创建MOE模型
             model = MOE(
                 args=args,
                 object_detector=enhanced_rcnn,
                 image_encoder=vit_model,
+                cxr_bert=cxr_bert
             )
             
             # 计算每个模块的参数量
             module_parameters = {
                 "Enhanced FastRCNN": count_parameters(enhanced_rcnn),
                 "ViT": count_parameters(vit_model),
+                "CXR BERT": count_parameters(cxr_bert)
             }
         elif args.phase == "INFER_BERT":
             cxr_bert = CXR_BERT_FeatureExtractor()
@@ -382,7 +393,6 @@ if __name__ == "__main__":
 
         criterion = None
         scaler = torch.cuda.amp.GradScaler()
-        train_stage = 1 if args.phase == "TRAIN_DETECTION" else 2
  
         for epoch in range(last_epoch + 1, args.epochs):
             print(f"Epoch: {epoch}")
@@ -399,7 +409,6 @@ if __name__ == "__main__":
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,
                 scaler=scaler,
-                train_stage=1
             )
             if args.phase == "TRAIN_DETECTION":
                 test_loss, result = test_detection(
@@ -436,7 +445,6 @@ if __name__ == "__main__":
                 device="cuda",
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,
-                train_stage=3
             )
 
     elif args.mode == "TEST":
@@ -456,7 +464,6 @@ if __name__ == "__main__":
             logger,
             save_dir=os.path.join(args.checkpoint_path_to, "generations"),
             mode="test",
-            train_stage=1,
             device="cuda",
             kw_src=args.kw_src,
             kw_tgt=args.kw_tgt,
