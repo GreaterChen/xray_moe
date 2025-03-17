@@ -26,7 +26,7 @@ class NegativeSamplePool:
         
         # 添加缓存
         self.similarity_cache = {}  # 缓存标签相似度计算结果
-        self.cache_size = 1000  # 最大缓存条目数
+        self.cache_size = 2000  # 最大缓存条目数
         
         # 检查是否可以使用CUDA
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -68,47 +68,49 @@ class MOE(nn.Module):
             visual_tokens = image_encoder_outputs['final_region_features']  # [B, 29, hidden_size]
             
             if mode == "train":
-                # 使用CXR-BERT编码findings，获取text_cls_token
-                with torch.no_grad():  # 冻结CXR-BERT
-                    text_cls_token = self.cxr_bert(findings)
+                # # 使用CXR-BERT编码findings，获取text_cls_token
+                # with torch.no_grad():  # 冻结CXR-BERT
+                #     text_cls_token = self.cxr_bert(findings)
                 
-                # 将文本和视觉特征映射到共享空间
-                mapped_visual_cls = self.visual_projection(cls_token)
-                mapped_text_cls = self.text_projection(text_cls_token)
+                # # 将文本和视觉特征映射到共享空间
+                # mapped_visual_cls = self.visual_projection(cls_token)
+                # mapped_text_cls = self.text_projection(text_cls_token)
                 
-                # 获取当前批次的疾病标签/预测
-                # disease_labels = image_encoder_outputs['image_preds'] if 'image_preds' in image_encoder_outputs else None
-                disease_labels = label
+                # # 获取当前批次的疾病标签/预测
+                # # disease_labels = image_encoder_outputs['image_preds'] if 'image_preds' in image_encoder_outputs else None
+                # disease_labels = label
                 
-                # 计算全局对比损失(LTC)
-                if disease_labels is not None and self.negative_pool is not None:
-                    # 使用negative pool获取困难负样本
-                    batch_size = mapped_visual_cls.size(0)
-                    neg_samples_per_instance = batch_size - 1
+                # # 计算全局对比损失(LTC)
+                # if disease_labels is not None and self.negative_pool is not None:
+                #     # 使用negative pool获取困难负样本
+                #     batch_size = mapped_visual_cls.size(0)
+                #     neg_samples_per_instance = batch_size - 1
                     
-                    # 为每个样本获取对应的负样本
-                    negative_samples = self.negative_pool.get_negative_samples_batch(
-                        disease_labels,
-                        k=neg_samples_per_instance
-                    )
+                #     # 为每个样本获取对应的负样本
+                #     negative_samples = self.negative_pool.get_negative_samples_batch(
+                #         disease_labels,
+                #         k=neg_samples_per_instance
+                #     )
                     
-                    # 将负样本也映射到共享空间
-                    mapped_negative_samples = []
-                    for sample_batch in negative_samples:
-                        if sample_batch is not None:
-                            mapped_negative_samples.append(self.text_projection(sample_batch))
-                        else:
-                            mapped_negative_samples.append(None)
+                #     # 将负样本也映射到共享空间
+                #     mapped_negative_samples = []
+                #     for sample_batch in negative_samples:
+                #         if sample_batch is not None:
+                #             mapped_negative_samples.append(self.text_projection(sample_batch))
+                #         else:
+                #             mapped_negative_samples.append(None)
                     
-                    # 使用困难负样本计算对比损失
-                    ltc_loss = self.compute_global_ltc_loss(
-                        mapped_visual_cls,
-                        mapped_text_cls,
-                        mapped_negative_samples
-                    )
-                else:
-                    # 如果没有负样本池，使用批内对比
-                    ltc_loss = self.compute_batch_ltc_loss(mapped_visual_cls, mapped_text_cls)
+                #     # 使用困难负样本计算对比损失
+                #     ltc_loss = self.compute_global_ltc_loss(
+                #         mapped_visual_cls,
+                #         mapped_text_cls,
+                #         mapped_negative_samples
+                #     )
+                # else:
+                #     # 如果没有负样本池，使用批内对比
+                #     ltc_loss = self.compute_batch_ltc_loss(mapped_visual_cls, mapped_text_cls)
+
+                ltc_loss = 0
                 
                 # 返回包含LTC损失的结果
                 results = {

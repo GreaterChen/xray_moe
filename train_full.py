@@ -140,10 +140,10 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--train_batch_size", type=int, default=128, help="Batch size for training."
+        "--train_batch_size", type=int, default=32, help="Batch size for training."
     )
     parser.add_argument(
-        "--val_batch_size", type=int, default=128, help="Batch size for validation."
+        "--val_batch_size", type=int, default=16, help="Batch size for validation."
     )
     parser.add_argument(
         "--num_workers", type=int, default=7, help="Number of workers for training."
@@ -188,7 +188,7 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_path_to",
         type=str,
-        default="/home/chenlb/MOE/results/ltc/",
+        default="/home/chenlb/MOE/results/ltc/cls_only/",
         help="Path to save the checkpoint to.",
     )
     args = parser.parse_args()
