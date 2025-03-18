@@ -178,9 +178,15 @@ def train(
     kw_tgt=None,
     kw_out=None,
     scaler=None,
+    writer=None,
 ):
     model.train()
     running_loss = 0
+    
+    # 记录当前学习率
+    if writer is not None:
+        current_lr = optimizer.param_groups[0]["lr"]
+        writer.add_scalar('Learning Rate', current_lr, current_epoch)
 
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
@@ -209,8 +215,19 @@ def train(
                 if args.phase == "TRAIN_DETECTION":
                     # 汇总所有损失项
                     loss = sum(loss for loss in output.values())
+                    
+                    # 记录每个损失项到 TensorBoard
+                    if writer is not None:
+                        for loss_name, loss_value in output.items():
+                            writer.add_scalar(f'Train/Detection/{loss_name}', loss_value.item(), current_epoch * len(data_loader) + i)
+                            
                 elif args.phase == "PRETRAIN_VIT":
                     loss = output['ltc_loss'] + output['cls_loss']
+                    
+                    # 记录 ViT 相关损失到 TensorBoard
+                    if writer is not None:
+                        writer.add_scalar('Train/ViT/LTC_Loss', output['ltc_loss'].item(), current_epoch * len(data_loader) + i)
+                        writer.add_scalar('Train/ViT/CLS_Loss', output['cls_loss'].item(), current_epoch * len(data_loader) + i)
                 else:
                     pass
 
@@ -221,6 +238,11 @@ def train(
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+            
+            # 记录总损失到 TensorBoard
+            if writer is not None:
+                writer.add_scalar('Train/Total_Loss', loss.item(), current_epoch * len(data_loader) + i)
+                
         else:
             output = data_distributor(model, source)
             output = args_to_kwargs(output, kw_out)
@@ -235,8 +257,17 @@ def train(
             torch.nn.utils.clip_grad_value_(model.parameters(), 0.1)
             optimizer.step()
             optimizer.zero_grad()
+            
+            # 记录损失到 TensorBoard
+            if writer is not None:
+                writer.add_scalar('Train/Loss', loss.item(), current_epoch * len(data_loader) + i)
 
-    return running_loss / len(data_loader)
+    # 记录每个 epoch 的平均损失
+    epoch_loss = running_loss / len(data_loader)
+    if writer is not None:
+        writer.add_scalar('Train/Epoch_Loss', epoch_loss, current_epoch)
+
+    return epoch_loss
 
 def test(
     args,
@@ -421,7 +452,7 @@ def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
 
 
 def load(path, model, optimizer=None, scheduler=None):
-    checkpoint = torch.load(path)
+    checkpoint = torch.load(path, weights_only=False)
     # --- Model Statistics ---
     epoch = checkpoint["epoch"]
     stats = checkpoint["stats"]
@@ -830,6 +861,7 @@ def test_detection(
     confidence_threshold=0.5,
     device="cuda",
     epoch=None,
+    writer=None,
 ):
     """
     评估目标检测模型性能 - 简化版
@@ -1027,6 +1059,20 @@ def test_detection(
         metrics = class_metrics[class_id]
         logger.info(f"区域 {class_id}: AP={ap:.4f}, Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}")
     
+    # 记录评估指标到 TensorBoard
+    if writer is not None and epoch is not None:
+        writer.add_scalar(f'{mode}/Detection/mAP', metrics_data['mAP'], epoch)
+        writer.add_scalar(f'{mode}/Detection/Mean_Recall', metrics_data['mRecall'], epoch)
+        writer.add_scalar(f'{mode}/Detection/Mean_F1', metrics_data['mF1'], epoch)
+        writer.add_scalar(f'{mode}/Detection/Loss', metrics_data['loss'], epoch)
+        
+        # 记录每个类别的指标
+        for class_id, metrics in class_metrics.items():
+            writer.add_scalar(f'{mode}/Detection/Class_{class_id}/AP', metrics['AP'], epoch)
+            writer.add_scalar(f'{mode}/Detection/Class_{class_id}/Precision', metrics['precision'], epoch)
+            writer.add_scalar(f'{mode}/Detection/Class_{class_id}/Recall', metrics['recall'], epoch)
+            writer.add_scalar(f'{mode}/Detection/Class_{class_id}/F1', metrics['f1_score'], epoch)
+
     # 返回结果
     result = {
         "overall_metrics": overall_metrics,
@@ -1049,6 +1095,7 @@ def test_vit(
     mode="val",
     device="cuda",
     epoch=None,
+    writer=None,
 ):
     """
     评估PRETRAIN_VIT阶段的模型性能，包括每一层的区域分类准确率和全图分类准确率
@@ -1361,6 +1408,26 @@ def test_vit(
             logger.info(f"AUC: {region_metrics['auc']:.4f}")
             logger.info(f"有效样本数: {region_metrics['num_samples']}")
     
+    # 记录评估指标到 TensorBoard
+    if writer is not None and epoch is not None:
+        # 记录整体指标
+        writer.add_scalar(f'{mode}/ViT/Region_Accuracy', overall_metrics['region_accuracy'], epoch)
+        writer.add_scalar(f'{mode}/ViT/Region_F1', overall_metrics['region_f1'], epoch)
+        writer.add_scalar(f'{mode}/ViT/Region_AUC', overall_metrics['region_auc'], epoch)
+        writer.add_scalar(f'{mode}/ViT/Image_Accuracy', overall_metrics['image_accuracy'], epoch)
+        writer.add_scalar(f'{mode}/ViT/Image_F1', overall_metrics['image_f1'], epoch)
+        writer.add_scalar(f'{mode}/ViT/Image_AUC', overall_metrics['image_auc'], epoch)
+        
+        # 记录每个区域的指标
+        for region_idx in range(num_regions):
+            region_metrics = overall_metrics[f"region_{region_idx}_metrics"]
+            if region_metrics["num_samples"] > 0:
+                writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/Accuracy', region_metrics['accuracy'], epoch)
+                writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/Precision', region_metrics['precision'], epoch)
+                writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/Recall', region_metrics['recall'], epoch)
+                writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/F1', region_metrics['f1'], epoch)
+                writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/AUC', region_metrics['auc'], epoch)
+
     # 返回结果
     result = {
         "overall_metrics": overall_metrics,

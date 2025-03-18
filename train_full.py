@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data as data
+from torch.utils.tensorboard import SummaryWriter
 
 import torchvision.models as models
 import torchvision.datasets as datasets
@@ -188,9 +189,18 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_path_to",
         type=str,
-        default="/home/chenlb/MOE/results/ltc/cls_only/",
+        default="/home/chenlb/MOE/results/ltc/local_cls_only/",
         help="Path to save the checkpoint to.",
     )
+
+    # TensorBoard settings
+    parser.add_argument(
+        "--tensorboard_dir",
+        type=str,
+        default="runs",
+        help="TensorBoard 日志目录",
+    )
+
     args = parser.parse_args()
 
     # Convert args to dictionary
@@ -262,6 +272,12 @@ if __name__ == "__main__":
 
     # Model-specific settings
     if args.model_name == "MOE":
+
+        # 初始化 TensorBoard writer
+        current_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        tensorboard_log_dir = os.path.join(args.tensorboard_dir, f"{args.model_name}_{args.phase}_{args.checkpoint_path_to.split('results/')[-1][:-1].replace('/', '_')}-{current_time}")
+        writer = SummaryWriter(tensorboard_log_dir)
+        logger.info(f"TensorBoard 日志目录: {tensorboard_log_dir}")
 
         if args.phase == "TRAIN_DETECTION":
             fast_rcnn = DetectionOnlyFastRCNN()
@@ -395,7 +411,7 @@ if __name__ == "__main__":
 
         criterion = None
         scaler = torch.cuda.amp.GradScaler()
- 
+    
         for epoch in range(last_epoch + 1, args.epochs):
             print(f"Epoch: {epoch}")
             train_loss = train(
@@ -411,6 +427,7 @@ if __name__ == "__main__":
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,
                 scaler=scaler,
+                writer=writer,
             )
             if args.phase == "TRAIN_DETECTION":
                 test_loss, result = test_detection(
@@ -418,7 +435,8 @@ if __name__ == "__main__":
                     model=model.object_detector,
                     data_loader=test_loader,
                     logger=logger,
-                    epoch=epoch
+                    epoch=epoch,
+                    writer=writer,
                 )
                 save_path = os.path.join(
                     args.checkpoint_path_to,
@@ -432,7 +450,8 @@ if __name__ == "__main__":
                     data_loader=test_loader,
                     logger=logger,
                     mode="test",
-                    epoch=epoch
+                    epoch=epoch,
+                    writer=writer,
                 )
                 save_path = os.path.join(
                     args.checkpoint_path_to,
@@ -449,6 +468,9 @@ if __name__ == "__main__":
                 epoch,
                 (test_loss, result),
             )
+            
+        # 关闭 TensorBoard writer
+        writer.close()
     elif args.phase == "INFER_BERT":
         for epoch in range(last_epoch + 1, args.epochs):
             print(f"Epoch: {epoch}")

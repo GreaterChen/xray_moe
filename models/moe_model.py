@@ -110,7 +110,7 @@ class MOE(nn.Module):
                 #     # 如果没有负样本池，使用批内对比
                 #     ltc_loss = self.compute_batch_ltc_loss(mapped_visual_cls, mapped_text_cls)
 
-                ltc_loss = 0
+                ltc_loss = torch.tensor(0.)
                 
                 # 返回包含LTC损失的结果
                 results = {

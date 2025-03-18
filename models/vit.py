@@ -5,12 +5,21 @@ from transformers import ViTModel, ViTConfig
 
 class RegionClassifier(nn.Module):
     """
-    简化版区域分类器: 保持基本功能，移除复杂处理逻辑
+    分离的全局和区域分类器
     """
     def __init__(self, hidden_size, num_diseases, num_regions=29, dropout_rate=0.3):
         super(RegionClassifier, self).__init__()
         
-        # 区域级分类器
+        # 全局分类器 (用于CLS token)
+        self.global_classifier = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.LayerNorm(hidden_size // 2),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size // 2, num_diseases)
+        )
+        
+        # 区域分类器
         self.region_classifier = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.LayerNorm(hidden_size // 2),
@@ -19,90 +28,65 @@ class RegionClassifier(nn.Module):
             nn.Linear(hidden_size // 2, num_diseases)
         )
         
-        # 疾病特异性权重
-        self.disease_region_weights = nn.Parameter(torch.ones(num_diseases, num_regions))
-        
         # 记录维度
         self.num_diseases = num_diseases
         self.num_regions = num_regions
         
-    def forward(self, region_features, region_detected=None):
+    def forward(self, hidden_states, region_detected=None):
         """
-        简化的前向传播
+        分离的前向传播
         
         Args:
-            region_features: [batch_size, num_regions, hidden_size]
+            hidden_states: [batch_size, 1+num_regions, hidden_size] - 包含CLS token
             region_detected: [batch_size, num_regions] - 未使用，保留参数兼容性
         """
-        batch_size = region_features.shape[0]
+        batch_size = hidden_states.shape[0]
         
-        # 1. 区域级预测 [batch_size, num_regions, num_diseases]
-        region_preds = self.region_classifier(region_features)
+        # 1. 全局预测 (使用CLS token)
+        cls_output = hidden_states[:, 0, :]  # [batch_size, hidden_size]
+        global_preds = self.global_classifier(cls_output)  # [batch_size, num_diseases]
         
-        # 2. 获取区域权重 [num_diseases, num_regions]
-        # 使用sigmoid确保权重为正值
-        weights = torch.sigmoid(self.disease_region_weights)
+        # 2. 区域预测 (使用其他tokens)
+        region_features = hidden_states[:, 1:, :]  # [batch_size, num_regions, hidden_size]
+        region_preds = self.region_classifier(region_features)  # [batch_size, num_regions, num_diseases]
         
-        # 3. 对每个疾病的权重归一化 [num_diseases, num_regions]
-        normalized_weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-8)
-        
-        # 4. 批量扩展权重 [batch_size, num_diseases, num_regions]
-        batch_weights = normalized_weights.unsqueeze(0).expand(batch_size, -1, -1)
-        
-        # 5. 简单直接的图像级预测计算
-        # 重塑区域预测 [batch_size, num_regions, num_diseases] -> [batch_size, num_diseases, num_regions]
-        region_preds_t = region_preds.transpose(1, 2)
-        
-        # 批量矩阵乘法 [batch_size, num_diseases, num_regions] @ [batch_size, num_regions, 1]
-        # 创建一个全1向量用于求和 [batch_size, num_regions, 1]
-        ones = torch.ones(batch_size, region_features.shape[1], 1, device=region_features.device)
-        
-        # 加权求和: [batch_size, num_diseases, 1]
-        image_preds = torch.bmm(region_preds_t * batch_weights, ones).squeeze(-1)
-        
-        return region_preds, image_preds, batch_weights
+        return region_preds, global_preds
     
-    def compute_loss(self, region_preds, image_preds, region_labels, image_labels, region_detected=None, attention_weights=None):
+    def compute_loss(self, region_preds, global_preds, region_labels, image_labels, region_detected=None, attention_weights=None):
         """
-        简化的损失计算
+        分离的损失计算
         
         Args:
             region_detected: 未使用，保留参数兼容性
             attention_weights: 未使用，保留参数兼容性
         """
-        # 处理可能的NaN值（安全措施）
-        if torch.isnan(image_preds).any():
-            image_preds = torch.nan_to_num(image_preds, nan=0.0)
+        # 全局损失
+        global_loss = F.binary_cross_entropy_with_logits(global_preds, image_labels)
         
-        # 图像级损失
-        image_loss = F.binary_cross_entropy_with_logits(image_preds, image_labels)
-        
-        # 区域级损失（如果提供了区域标签）
+        # 区域级损失
         region_loss = 0
         
         # 如果没有提供区域标签，则使用图像标签作为每个区域的标签
         if region_labels is None and image_labels is not None:
             batch_size, num_regions = region_preds.shape[0], region_preds.shape[1]
-            # 将图像标签扩展到每个区域
             region_labels = image_labels.unsqueeze(1).expand(-1, num_regions, -1)
         
         # 计算区域级损失（如果有标签）
         if region_labels is not None:
             if torch.isnan(region_preds).any():
                 region_preds = torch.nan_to_num(region_preds, nan=0.0)
-            
             region_loss = F.binary_cross_entropy_with_logits(region_preds, region_labels)
         
-        # 总损失
-        region_weight = 0.3 if region_labels is not None else 0.5
-        total_loss = image_loss + region_weight * region_loss
+        # 总损失 - 可以调整权重
+        total_loss = global_loss + 0.3 * region_loss
         
         return total_loss
 
 
-class MedicalVisionTransformer(nn.Module):
+class MedicalVisionTransformer(nn.Module):  
     """
     基于解剖区域特征的医学视觉Transformer模型
+    只在偶数层使用分类器进行预测
     """
     def __init__(self, pretrained_vit_name="google/vit-base-patch16-224", num_diseases=14, num_regions=29):
         super(MedicalVisionTransformer, self).__init__()
@@ -121,11 +105,12 @@ class MedicalVisionTransformer(nn.Module):
         # 初始化归一化层
         self.layernorm = nn.LayerNorm(self.hidden_size)
         
-        # 为每个Transformer层创建分类器
+        # 只为偶数层创建分类器
         self.num_layers = self.config.num_hidden_layers
         self.classifiers = nn.ModuleList([
             RegionClassifier(self.hidden_size, num_diseases) 
-            for _ in range(self.num_layers)
+            if i % 2 == 0 else None  # 只在偶数层创建分类器
+            for i in range(self.num_layers)
         ])
         
         # 初始化cls_token
@@ -147,21 +132,19 @@ class MedicalVisionTransformer(nn.Module):
         all_region_preds = []
         all_image_preds = []
         
-        # 通过Transformer层 - 不使用attention mask
+        # 通过Transformer层 
         hidden_states = x
         for i, layer_module in enumerate(self.encoder.layer):
-            # 通过Transformer层，不传入attention mask
             layer_outputs = layer_module(hidden_states)
             hidden_states = layer_outputs[0]
             all_hidden_states.append(hidden_states)
             
-            # 提取区域特征（排除CLS token）
-            region_features_layer = hidden_states[:, 1:, :]
-            
-            # 通过分类器
-            region_preds, image_preds, normalized_weights = self.classifiers[i](region_features_layer, region_detected)
-            all_region_preds.append(region_preds)
-            all_image_preds.append(image_preds)
+            # 只在偶数层进行分类预测
+            if i % 2 == 0:
+                # 通过分类器
+                region_preds, global_preds = self.classifiers[i](hidden_states, region_detected)
+                all_region_preds.append(region_preds)
+                all_image_preds.append(global_preds)
         
         # 最终输出
         final_hidden_states = self.layernorm(hidden_states)
@@ -172,12 +155,13 @@ class MedicalVisionTransformer(nn.Module):
         loss = None
         if image_labels is not None:
             loss = 0
-            for i in range(self.num_layers):
-                layer_loss = self.classifiers[i].compute_loss(
-                    all_region_preds[i], all_image_preds[i], region_labels, image_labels, region_detected
+            num_classifier_layers = len(all_region_preds)  # 实际使用分类器的层数
+            for i, (region_preds, image_preds) in enumerate(zip(all_region_preds, all_image_preds)):
+                layer_loss = self.classifiers[i*2].compute_loss(  # 注意这里使用i*2因为是偶数层
+                    region_preds, image_preds, region_labels, image_labels, region_detected
                 )
                 loss += layer_loss
-            loss = loss / self.num_layers  # 平均每层的损失
+            loss = loss / num_classifier_layers  # 平均每个分类器的损失
             
         return {
             'loss': loss,
