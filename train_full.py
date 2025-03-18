@@ -189,7 +189,7 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_path_to",
         type=str,
-        default="/home/chenlb/MOE/results/ltc/local_cls_only/",
+        default="/home/chenlb/MOE/results/ltc/cls_only/",
         help="Path to save the checkpoint to.",
     )
 
@@ -263,7 +263,7 @@ if __name__ == "__main__":
             random_transform=False,
             tokenizer=tokenizer,
             mode="test",
-            subset_size=10 if args.debug else None,
+            subset_size=100 if args.debug else None,
         )
 
         comment = f"Stage{args.phase}"

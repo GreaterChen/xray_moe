@@ -2,3 +2,4 @@ checkpoints/
 results/
 logs/
 pycocoevalcap/
+runs/

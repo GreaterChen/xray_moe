@@ -153,7 +153,7 @@ def prepare_batch_data(args, batch, data_loader, device, findings=True, history=
     if label and "label" in batch:
         batch["label"] = data_to_device(batch["label"], device)
         source["label"] = batch["label"]
-        target["label"] = batch["label"]
+        source["label"] = batch["label"]
 
     # 将targets移到device上
     if bbox and "bbox_targets" in batch:
@@ -209,7 +209,7 @@ def train(
         scheduler.step(cur_epoch=current_epoch, cur_step=i)
         current_lr = optimizer.param_groups[0]["lr"]
         if scaler != None:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 output = data_distributor(model, source)
                 output = args_to_kwargs(output)
                 if args.phase == "TRAIN_DETECTION":
@@ -228,6 +228,8 @@ def train(
                     if writer is not None:
                         writer.add_scalar('Train/ViT/LTC_Loss', output['ltc_loss'].item(), current_epoch * len(data_loader) + i)
                         writer.add_scalar('Train/ViT/CLS_Loss', output['cls_loss'].item(), current_epoch * len(data_loader) + i)
+                        writer.add_scalar('Train/ViT/CLS_GLOBAL_Loss', output['cls_global_loss'].item(), current_epoch * len(data_loader) + i)
+                        writer.add_scalar('Train/ViT/CLS_REGION_Loss', output['cls_region_loss'].item(), current_epoch * len(data_loader) + i)
                 else:
                     pass
 
@@ -1116,16 +1118,17 @@ def test_vit(
     model.eval()
     running_loss = 0
     
-    # 获取ViT模型的层数
-    num_layers = model.image_encoder.num_layers
+    # 获取ViT模型的总层数和实际有分类器的层数
+    total_layers = model.image_encoder.num_layers
+    classifier_layers = total_layers // 2  # 只有偶数层有分类器
     
     # 初始化存储结构
     image_paths_list = []
     labels_list = []
     
-    # 为每一层初始化评估指标存储
-    all_layer_region_preds = [[] for _ in range(num_layers)]
-    all_layer_image_preds = [[] for _ in range(num_layers)]
+    # 为每个有分类器的层初始化评估指标存储
+    all_layer_region_preds = [[] for _ in range(classifier_layers)]
+    all_layer_image_preds = [[] for _ in range(classifier_layers)]
     all_labels = []
     
     # 创建进度条
@@ -1137,7 +1140,7 @@ def test_vit(
             image_paths_list.extend(batch["image_path"])
             labels = batch["label"].to(device)
             labels_list.extend(labels.cpu().numpy().tolist())
-            all_labels.append(labels)  # 现在labels已经在正确的设备上了
+            all_labels.append(labels)
 
             source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=True, bbox=True)
             # 转换为kwargs格式
@@ -1150,8 +1153,8 @@ def test_vit(
             outputs = data_distributor(model, source)
             outputs = args_to_kwargs(outputs)
             
-            # 收集每一层的预测结果
-            for layer_idx in range(num_layers):
+            # 收集每个有分类器的层的预测结果
+            for layer_idx in range(classifier_layers):
                 region_preds = outputs['region_preds'][layer_idx]  # [B, num_regions, num_diseases]
                 image_preds = outputs['image_preds'][layer_idx]    # [B, num_diseases]
                 
@@ -1160,7 +1163,7 @@ def test_vit(
     
     # 合并所有批次的预测和标签，并确保它们都在同一个设备上
     all_labels = torch.cat(all_labels, dim=0)  # 已经在device上了
-    for layer_idx in range(num_layers):
+    for layer_idx in range(classifier_layers):
         all_layer_region_preds[layer_idx] = torch.cat(all_layer_region_preds[layer_idx], dim=0).to(device)
         all_layer_image_preds[layer_idx] = torch.cat(all_layer_image_preds[layer_idx], dim=0).to(device)
     
@@ -1178,8 +1181,10 @@ def test_vit(
         "epoch": str(epoch) if epoch is not None else "TEST",
     }
     
-    # 计算每一层的指标
-    for layer_idx in range(num_layers):
+    # 计算每个有分类器的层的指标
+    for layer_idx in range(classifier_layers):
+        actual_layer = layer_idx * 2  # 转换为实际的层索引（偶数层）
+        
         # 获取当前层的预测
         region_preds = all_layer_region_preds[layer_idx]  # [N, num_regions, num_diseases]
         image_preds = all_layer_image_preds[layer_idx]    # [N, num_diseases]
@@ -1332,18 +1337,18 @@ def test_vit(
         
         # 将当前层的指标添加到结果数据中
         for metric_name, value in region_metrics.items():
-            metrics_data[f"layer_{layer_idx}_region_{metric_name}"] = value
+            metrics_data[f"layer_{actual_layer}_region_{metric_name}"] = value
         
         for metric_name, value in image_metrics.items():
-            metrics_data[f"layer_{layer_idx}_image_{metric_name}"] = value
+            metrics_data[f"layer_{actual_layer}_image_{metric_name}"] = value
             
         # 添加每个区域的具体指标
         for region_idx, region_metric in per_region_metrics.items():
             for metric_name, value in region_metric.items():
-                metrics_data[f"layer_{layer_idx}_region_{region_idx}_{metric_name}"] = value
+                metrics_data[f"layer_{actual_layer}_region_{region_idx}_{metric_name}"] = value
     
-    # 计算最后一层的指标作为整体指标
-    final_layer_idx = num_layers - 1
+    # 计算最后一个有分类器的层的指标作为整体指标
+    final_layer_idx = (classifier_layers - 1) * 2  # 最后一个有分类器的层的实际索引
     overall_metrics = {
         "region_accuracy": metrics_data[f"layer_{final_layer_idx}_region_accuracy"],
         "region_precision": metrics_data[f"layer_{final_layer_idx}_region_precision"],

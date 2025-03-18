@@ -80,7 +80,7 @@ class RegionClassifier(nn.Module):
         # 总损失 - 可以调整权重
         total_loss = global_loss + 0.3 * region_loss
         
-        return total_loss
+        return total_loss, global_loss, region_loss
 
 
 class MedicalVisionTransformer(nn.Module):  
@@ -157,7 +157,7 @@ class MedicalVisionTransformer(nn.Module):
             loss = 0
             num_classifier_layers = len(all_region_preds)  # 实际使用分类器的层数
             for i, (region_preds, image_preds) in enumerate(zip(all_region_preds, all_image_preds)):
-                layer_loss = self.classifiers[i*2].compute_loss(  # 注意这里使用i*2因为是偶数层
+                layer_loss, global_loss, region_loss = self.classifiers[i*2].compute_loss(  # 注意这里使用i*2因为是偶数层
                     region_preds, image_preds, region_labels, image_labels, region_detected
                 )
                 loss += layer_loss
@@ -165,6 +165,8 @@ class MedicalVisionTransformer(nn.Module):
             
         return {
             'loss': loss,
+            'global_loss': global_loss,
+            'region_loss': region_loss,
             'hidden_states': all_hidden_states,
             'region_preds': all_region_preds,
             'image_preds': all_image_preds,

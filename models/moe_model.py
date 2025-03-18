@@ -119,7 +119,10 @@ class MOE(nn.Module):
                     'region_preds': image_encoder_outputs['region_preds'],
                     'image_preds': image_encoder_outputs['image_preds'],
                     'ltc_loss': ltc_loss,
-                    'cls_loss': image_encoder_outputs['loss']
+                    'cls_loss': image_encoder_outputs['loss'],
+                    'cls_global_loss': image_encoder_outputs['global_loss'],
+                    'cls_region_loss': image_encoder_outputs['region_loss']
+
                 }
                 return results
             
