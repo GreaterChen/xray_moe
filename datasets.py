@@ -83,7 +83,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         if random_transform:
             self.transform = transforms.Compose(
                 [
-                    transforms.Resize(224),
+                    # transforms.Resize(224),
                     # transforms.RandomCrop(input_size),
                     # transforms.RandomRotation(degrees=5),
                     transforms.ToTensor(),
@@ -93,7 +93,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         else:
             self.transform = transforms.Compose(
                 [
-                    transforms.Resize(224),
+                    # transforms.Resize(224),
                     # transforms.CenterCrop(input_size),
                     transforms.ToTensor(),
                     transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
@@ -116,7 +116,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         # 获取图像路径
         image_base_path = '/'.join(info["image_path"][0].split('/')[:-1])
-        img_path = os.path.join(self.dir, "images", image_base_path, info["image_id"] + ".jpg")
+        img_path = os.path.join(self.dir, "images_224", image_base_path, info["image_id"] + ".jpg")
 
         # 处理图像
         img = Image.open(img_path).convert("RGB")

@@ -141,7 +141,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--train_batch_size", type=int, default=32, help="Batch size for training."
+        "--train_batch_size", type=int, default=128, help="Batch size for training."
     )
     parser.add_argument(
         "--val_batch_size", type=int, default=16, help="Batch size for validation."
@@ -455,7 +455,7 @@ if __name__ == "__main__":
                 )
                 save_path = os.path.join(
                     args.checkpoint_path_to,
-                    f'epoch_{epoch}_image_acc_{result["overall_metrics"]["image_accuracy"]:.4f}.pth',
+                    f'epoch_{epoch}_image_acc_{result["overall_metrics"]["ce_f1"]:.4f}.pth',
                 )
             else:
                 pass
