@@ -189,7 +189,7 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_path_to",
         type=str,
-        default="/home/chenlb/MOE/results/ltc/cls_only/",
+        default="/home/chenlb/MOE/results/ltc/all/",
         help="Path to save the checkpoint to.",
     )
 
