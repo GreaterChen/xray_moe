@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+import heapq
 
 
 class NegativeSamplePool:
@@ -206,40 +207,62 @@ class NegativeSamplePool:
         for i, (key, size) in enumerate(key_sizes[-5:], 1):
             print(f"{i}. 标签组合 {key}: {size} 个样本")
     
-    def _compute_all_similarities(self, target_label):
+    def _find_k_smallest_similarities(self, target_label, k=10):
         """
-        计算目标标签与所有存储标签的相似度，使用缓存加速
+        使用torch.topk寻找与目标标签相似度最小的k个标签
+        
+        Args:
+            target_label: 目标标签向量
+            k: 需要的负样本数量
+                
+        Returns:
+            k_smallest: 包含(label_key, similarity)的列表，按相似度升序排列
         """
         # 将target_label转换为字符串键
         target_key = self._label_to_key(target_label)
         
         # 检查缓存
         if target_key in self.similarity_cache:
-            return self.similarity_cache[target_key]
-            
-        # 计算相似度
+            return self.similarity_cache[target_key][:k]  # 只返回前k个
+        
         target_tensor = target_label.to(self.device)
         keys = list(self.label_vectors.keys())
-        similarities_list = []
         
-        if keys:
-            # 批量计算相似度
-            vectors_tensor = torch.stack([self.label_vectors[key] for key in keys], dim=0)
-            similarities = F.cosine_similarity(vectors_tensor, target_tensor.unsqueeze(0), dim=1)
-            
-            # 创建并排序结果
-            similarities_list = [(keys[i], similarities[i].item()) for i in range(len(keys))]
-            similarities_list.sort(key=lambda x: x[1])
-            
-            # 更新缓存
-            if len(self.similarity_cache) >= self.cache_size:
-                # 移除最旧的缓存条目
-                oldest_key = next(iter(self.similarity_cache))
-                del self.similarity_cache[oldest_key]
-            
-            self.similarity_cache[target_key] = similarities_list
+        # 过滤掉没有样本的标签
+        valid_keys = []
+        valid_vectors = []
         
-        return similarities_list
+        for key in keys:
+            if key in self.pool and self.pool[key].size(0) > 0:
+                valid_keys.append(key)
+                valid_vectors.append(self.label_vectors[key])
+        
+        if not valid_keys:
+            return []
+            
+        # 将所有有效标签向量堆叠为一个tensor
+        vectors_tensor = torch.stack(valid_vectors, dim=0)
+        
+        # 计算余弦相似度
+        similarities = F.cosine_similarity(vectors_tensor, target_tensor.unsqueeze(0), dim=1)
+        
+        # 使用topk获取最小的k个相似度（注意是负相似度的最大值）
+        k_actual = min(k, similarities.size(0))
+        neg_similarities = -similarities
+        _, indices = torch.topk(neg_similarities, k=k_actual)
+        
+        # 转换结果
+        result = [(valid_keys[idx], similarities[idx].item()) for idx in indices]
+        result.sort(key=lambda x: x[1])  # 按相似度升序排序
+        
+        # 更新缓存
+        self.similarity_cache[target_key] = result
+        if len(self.similarity_cache) > self.cache_size:
+            # 移除最旧的缓存条目
+            oldest_key = next(iter(self.similarity_cache))
+            del self.similarity_cache[oldest_key]
+            
+        return result
     
     def get_negative_samples_batch(self, target_labels, k=10):
         """
@@ -253,51 +276,31 @@ class NegativeSamplePool:
             negative_samples_batch: 包含每个目标的负样本的列表
         """
         batch_size = target_labels.shape[0]
-        
-        # 1. 批量计算所有目标标签与所有存储标签的相似度
-        batch_similarities = []
-        target_keys = []
-        
-        # 为每个目标标签生成键并获取相似度列表
-        for i in range(batch_size):
-            target_label = target_labels[i]
-            target_key = self._label_to_key(target_label)
-            target_keys.append(target_key)
-            
-            # 检查缓存或计算相似度
-            if target_key in self.similarity_cache:
-                batch_similarities.append(self.similarity_cache[target_key])
-            else:
-                similarities = self._compute_all_similarities(target_label)
-                batch_similarities.append(similarities)
-        
-        # 2. 批量收集负样本
         negative_samples_batch = []
         
-        # 预先计算每个label_key的样本数量和样本总量
-        available_samples = {}
-        for label_key, samples in self.pool.items():
-            available_samples[label_key] = samples.size(0)
+        # 计算每个标签的可用样本数，避免重复计算
+        available_samples = {label_key: samples.size(0) for label_key, samples in self.pool.items()}
         
-        # 并行处理每个目标标签
         for i in range(batch_size):
-            sorted_similarities = batch_similarities[i]
+            target_label = target_labels[i]
             
-            # 使用torch.cat一次性收集样本
+            # 找到相似度最小的k个标签
+            smallest_similarities = self._find_k_smallest_similarities(target_label, k=min(k*2, len(self.label_vectors)))
+            
+            # 收集负样本
             collected_samples = []
             total_samples = 0
             
-            # 对于相似度排序的每个标签组合
-            for label_key, _ in sorted_similarities:
+            # 优先使用相似度最小的标签组合
+            for label_key, _ in smallest_similarities:
                 current_size = available_samples.get(label_key, 0)
                 if current_size == 0:
                     continue
-                    
+                
                 samples_needed = k - total_samples
                 if samples_needed <= 0:
                     break
-                    
-                # 获取当前标签组合对应的池
+                
                 current_samples = self.pool[label_key]
                 
                 # 选择适当数量的样本
@@ -310,6 +313,10 @@ class NegativeSamplePool:
                     selected_samples = current_samples[selected_indices]
                     collected_samples.append(selected_samples)
                     total_samples += samples_needed
+                
+                # 如果已经收集到足够的样本，提前退出
+                if total_samples >= k:
+                    break
             
             # 合并所有收集到的样本
             if collected_samples:

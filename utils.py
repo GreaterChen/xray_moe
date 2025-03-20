@@ -207,7 +207,7 @@ def train(
         
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
-        if enable_profile and i == 1:  # 只在进行性能分析时提前结束
+        if enable_profile and i == 4:  # 只在进行性能分析时提前结束
             break
         # 准备批次数据
         with record_function("data_preparation") if enable_profile else nullcontext():
@@ -282,7 +282,7 @@ def train(
     if enable_profile:
         profiler.stop()
         print(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
-        profiler.export_chrome_trace("trace_optim_tb_od.json")
+        profiler.export_chrome_trace("trace_optim_tb_od_np.json")
                 
     # 记录每个epoch的平均损失
     epoch_loss = running_loss / len(data_loader)
