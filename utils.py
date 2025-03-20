@@ -111,55 +111,59 @@ def prepare_batch_data(args, batch, data_loader, device, findings=True, history=
     """
     source = {}
     target = {}
-    # 处理图像数据
+    
+    # 处理图像数据 - 直接在GPU上处理
     if "image" in batch:
-        batch["image"] = data_to_device(batch["image"], device)
-        source['image'] = batch['image']
+        source['image'] = batch['image'] = batch['image'].to(device, non_blocking=True)
 
-    # 根据参数确定需要处理的文本字段
-    text_fields = []
+    # 确定需要处理的文本字段
+    text_fields_to_process = []
     if findings and "findings" in batch:
-        text_fields.append("findings")
+        text_fields_to_process.append(("findings", args.max_len_findings))
     if history and "history" in batch:
-        text_fields.append("history")
+        text_fields_to_process.append(("history", args.max_len_history))
 
-    # 对整个batch的文本进行tokenization
-    text_fields = ["findings", "history"]
-    for field in text_fields:
-        if field in batch:
-            # 收集batch中的所有文本
-            texts = batch[field]
+    # 优化: 预先创建tokenizer以避免多次创建
+    tokenizer = data_loader.dataset.tokenizer
+    
+    # 批量处理文本字段
+    for field, max_len in text_fields_to_process:
+        texts = batch[field]
+        
+        # 对整个batch进行tokenization，使用non_blocking=True加速GPU传输
+        encoded = tokenizer(
+            texts,
+            max_length=max_len,
+            padding="longest",  # 只padding到批次中最长序列长度
+            truncation=True,
+            return_tensors="pt",
+        ).to(device, non_blocking=True)
+        
+        batch[field] = encoded
+        source[field] = encoded  # 直接使用同一个对象引用
+        target[field] = encoded  # 直接使用同一个对象引用
 
-            if field == "history":
-                max_len = args.max_len_history
-            elif field == "findings":
-                max_len = args.max_len_findings
-
-            # 对整个batch进行tokenization
-            encoded = data_loader.dataset.tokenizer(
-                texts,
-                max_length=max_len,
-                padding="max_length",
-                truncation=True,
-                return_tensors="pt",
-            ).to(
-                device
-            )  # [batch_size, max_len]
-            batch[field] = encoded
-
-            source[field] = batch[field]
-            target[field] = batch[field]
-
-    # 将label移到device上
+    # 优化: 一次性处理标签数据
     if label and "label" in batch:
-        batch["label"] = data_to_device(batch["label"], device)
-        source["label"] = batch["label"]
-        source["label"] = batch["label"]
+        source["label"] = target["label"] = batch["label"] = batch["label"].to(device, non_blocking=True)
 
-    # 将targets移到device上
+    # 处理边界框数据 - 注意这是一个列表，每个元素是字典
     if bbox and "bbox_targets" in batch:
-        batch["bbox_targets"] = data_to_device(batch["bbox_targets"], device)
-        source["bbox_targets"] = batch["bbox_targets"]
+        # 创建一个新的bbox_targets列表，将每个字典中的tensor移动到设备上
+        processed_bbox_targets = []
+        
+        for bbox_target in batch["bbox_targets"]:
+            # 对字典中的每个tensor进行处理
+            processed_target = {}
+            for key, value in bbox_target.items():
+                if isinstance(value, torch.Tensor):
+                    processed_target[key] = value.to(device, non_blocking=True)
+                else:
+                    processed_target[key] = value
+            processed_bbox_targets.append(processed_target)
+            
+        batch["bbox_targets"] = processed_bbox_targets
+        source["bbox_targets"] = processed_bbox_targets
 
     return source, target, None
 
