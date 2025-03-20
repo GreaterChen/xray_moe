@@ -13,7 +13,8 @@ from tqdm import tqdm
 import pandas as pd
 import metrics
 from sklearn.metrics import roc_auc_score
-
+from torch.profiler import profile, record_function, ProfilerActivity
+from contextlib import nullcontext
 
 # ------ Helper Functions ------
 def data_to_device(data, device="cpu"):
@@ -179,24 +180,43 @@ def train(
     kw_out=None,
     scaler=None,
     writer=None,
+    enable_profile=False,
 ):
     model.train()
     running_loss = 0
     
-    # 记录当前学习率
+    # 记录当前学习率，仅在每个epoch开始时记录一次
     if writer is not None:
         current_lr = optimizer.param_groups[0]["lr"]
         writer.add_scalar('Learning Rate', current_lr, current_epoch)
 
+    # 设置TensorBoard记录频率，如每10个批次记录一次
+    log_freq = 100
+    
+    # 根据enable_profile参数决定是否使用性能分析器
+    if enable_profile:
+        profiler = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True
+        )
+        profiler.start()
+    else:
+        profiler = None
+        
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
+        if enable_profile and i == 1:  # 只在进行性能分析时提前结束
+            break
         # 准备批次数据
-        if args.phase == "TRAIN_DETECTION":
-            source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=False, bbox=True)
-        elif args.phase == "PRETRAIN_VIT":
-            source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=True, history=False, label=True, bbox=True)
-        else:
-            pass
+        with record_function("data_preparation") if enable_profile else nullcontext():
+            if args.phase == "TRAIN_DETECTION":
+                source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=False, bbox=True)
+            elif args.phase == "PRETRAIN_VIT":
+                source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=True, history=False, label=True, bbox=True)
+            else:
+                pass
         # 转换为kwargs格式
         source = args_to_kwargs(source)
         target = args_to_kwargs(target)
@@ -208,63 +228,63 @@ def train(
 
         scheduler.step(cur_epoch=current_epoch, cur_step=i)
         current_lr = optimizer.param_groups[0]["lr"]
-        if scaler != None:
-            with torch.amp.autocast('cuda'):
+        with torch.amp.autocast('cuda'):
+            with record_function("model_forward") if enable_profile else nullcontext():
                 output = data_distributor(model, source)
-                output = args_to_kwargs(output)
-                if args.phase == "TRAIN_DETECTION":
-                    # 汇总所有损失项
-                    loss = sum(loss for loss in output.values())
-                    
-                    # 记录每个损失项到 TensorBoard
-                    if writer is not None:
-                        for loss_name, loss_value in output.items():
-                            writer.add_scalar(f'Train/Detection/{loss_name}', loss_value.item(), current_epoch * len(data_loader) + i)
-                            
-                elif args.phase == "PRETRAIN_VIT":
-                    loss = output['ltc_loss'] + output['cls_loss']
-                    
-                    # 记录 ViT 相关损失到 TensorBoard
-                    if writer is not None:
-                        writer.add_scalar('Train/ViT/LTC_Loss', output['ltc_loss'].item(), current_epoch * len(data_loader) + i)
-                        writer.add_scalar('Train/ViT/CLS_Loss', output['cls_loss'].item(), current_epoch * len(data_loader) + i)
-                        writer.add_scalar('Train/ViT/CLS_GLOBAL_Loss', output['cls_global_loss'].item(), current_epoch * len(data_loader) + i)
-                        writer.add_scalar('Train/ViT/CLS_REGION_Loss', output['cls_region_loss'].item(), current_epoch * len(data_loader) + i)
-                else:
-                    pass
+            output = args_to_kwargs(output)
+            if args.phase == "TRAIN_DETECTION":
+                # 汇总所有损失项
+                loss = sum(loss for loss in output.values())
+                
+            elif args.phase == "PRETRAIN_VIT":
+                loss = output['ltc_loss'] + output['cls_loss']
+            else:
+                pass
 
-            running_loss += loss.item()
-            prog_bar.set_description(f"Loss: {running_loss/(i+1)} | LR: {current_lr}")
+        running_loss += loss.item()
+        prog_bar.set_description(f"Loss: {running_loss/(i+1)} | LR: {current_lr}")
 
-            optimizer.zero_grad()
+        optimizer.zero_grad()
+        with record_function("backward_update") if enable_profile else nullcontext():
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+        
+        # 每log_freq个批次记录一次TensorBoard
+        if writer is not None and i % log_freq == 0:
+            global_step = current_epoch * len(data_loader) + i
             
-            # 记录总损失到 TensorBoard
-            if writer is not None:
-                writer.add_scalar('Train/Total_Loss', loss.item(), current_epoch * len(data_loader) + i)
+            # 记录总损失
+            writer.add_scalar('Train/Total_Loss', loss.item(), global_step)
+            
+            # 根据阶段记录特定损失
+            if args.phase == "TRAIN_DETECTION":
+                # 批量记录多个损失项
+                for loss_name, loss_value in output.items():
+                    writer.add_scalar(f'Train/Detection/{loss_name}', loss_value.item(), global_step)
+                        
+            elif args.phase == "PRETRAIN_VIT":
+                # 批量记录ViT相关损失
+                vit_losses = {
+                    'Train/ViT/LTC_Loss': output['ltc_loss'].item(),
+                    'Train/ViT/CLS_Loss': output['cls_loss'].item(),
+                    'Train/ViT/CLS_GLOBAL_Loss': output['cls_global_loss'].item(),
+                    'Train/ViT/CLS_REGION_Loss': output['cls_region_loss'].item()
+                }
+                for tag, value in vit_losses.items():
+                    writer.add_scalar(tag, value, global_step)
+
+        # 如果启用了性能分析，调用prof.step()
+        if enable_profile:
+            profiler.step()
+
+    # 如果启用了性能分析，打印和导出结果
+    if enable_profile:
+        profiler.stop()
+        print(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+        profiler.export_chrome_trace("trace_optim_tb_od.json")
                 
-        else:
-            output = data_distributor(model, source)
-            output = args_to_kwargs(output, kw_out)
-            loss = criterion(output, target)
-
-            running_loss += loss.item()
-            prog_bar.set_description(
-                "Loss: {}".format(round(running_loss / (i + 1), 8))
-            )
-
-            loss.backward()
-            torch.nn.utils.clip_grad_value_(model.parameters(), 0.1)
-            optimizer.step()
-            optimizer.zero_grad()
-            
-            # 记录损失到 TensorBoard
-            if writer is not None:
-                writer.add_scalar('Train/Loss', loss.item(), current_epoch * len(data_loader) + i)
-
-    # 记录每个 epoch 的平均损失
+    # 记录每个epoch的平均损失
     epoch_loss = running_loss / len(data_loader)
     if writer is not None:
         writer.add_scalar('Train/Epoch_Loss', epoch_loss, current_epoch)

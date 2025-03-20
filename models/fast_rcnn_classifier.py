@@ -107,113 +107,126 @@ class EnhancedFastRCNN(nn.Module):
         # 保存区域数量
         self.num_regions = num_regions
     
-    def unfreeze_detector(self, unfreeze_all=False):
-        """
-        选择性地解冻检测器参数
-        
-        参数:
-            unfreeze_all (bool): 是否解冻所有参数，默认只解冻最后几层
-        """
-        if unfreeze_all:
-            # 解冻所有参数
-            for param in self.detector.parameters():
-                param.requires_grad = True
-        else:
-            # 只解冻box predictor部分
-            for param in self.detector.roi_heads.box_predictor.parameters():
-                param.requires_grad = True
-    
     def extract_features(self, images, boxes_list, labels_list, scores_list=None):
-        """
-        从指定的边界框中提取特征，每个解剖区域只保留一个置信度最高的边界框
+        """优化版特征提取方法，处理不同格式的输入"""
         
-        参数:
-            images (List[torch.Tensor]): 输入CT图像列表
-            boxes_list (List[torch.Tensor]): 每个图像对应的边界框列表
-            labels_list (List[torch.Tensor]): 每个图像对应的标签列表
-            scores_list (List[torch.Tensor], optional): 每个图像对应的置信度列表，用于选择最好的边界框
+        batch_size = images.size(0)
+        device = images.device
+        stacked_images = images  # 已经是批量格式
+
         
-        返回:
-            Tuple[torch.Tensor, torch.Tensor]: 
-                - 区域特征矩阵 (batch_size, num_regions, feature_dim)
-                - 区域检测标志 (batch_size, num_regions)
-        """
-        batch_size = len(images)
-        device = images[0].device
+        feature_dim = self.feature_projector[-2].out_features
         
-        # 初始化区域特征和检测标志，确保29个解剖区域按固定顺序排列
-        region_features = torch.zeros((batch_size, self.num_regions, self.feature_projector[-2].out_features), device=device)
+        # 初始化输出tensor
+        region_features = torch.zeros((batch_size, self.num_regions, feature_dim), device=device)
         region_detected = torch.zeros((batch_size, self.num_regions), dtype=torch.bool, device=device)
         
-        # 提取特征图
-        feature_maps = []
-        for img in images:
-            feature_dict = self.detector.backbone(img.unsqueeze(0))
-            # 特征层级与spatial_scale的对应关系
-            # P2 -> spatial_scale=1/4, P3 -> spatial_scale=1/8, P4 -> spatial_scale=1/16, P5 -> spatial_scale=1/32
-            feature = list(feature_dict.values())[2]  # 使用P4特征图
-            feature_maps.append(feature)
+        # 批量提取特征图
+        with torch.no_grad(), torch.cuda.amp.autocast():
+            feature_dict = self.detector.backbone(stacked_images)
+            feature_maps = list(feature_dict.values())[2]  # P4特征图
         
-        for i in range(batch_size):
-            current_boxes = boxes_list[i]
-            current_labels = labels_list[i]
-            current_scores = scores_list[i] if scores_list is not None else None
+        # 计算图像和特征尺寸比例
+        image_shapes = torch.tensor(
+            [[images.shape[2], images.shape[3]]] * batch_size, 
+            device=device
+        )
+
+        
+        feature_shape = torch.tensor([feature_maps.shape[-2], feature_maps.shape[-1]], device=device)
+        scale_factors = torch.min(feature_shape.float() / image_shapes, dim=1)[0].unsqueeze(1)
+        
+        # 预分配数据结构
+        all_rois = []
+        roi_batch_indices = []
+        roi_to_region_map = []  # 映射ROI索引到(batch_idx, region_idx)
+        
+        # 高效处理每个批次的框
+        for batch_idx in range(batch_size):
+            current_boxes = boxes_list[batch_idx]
+            current_labels = labels_list[batch_idx]
+            current_scores = scores_list[batch_idx] if scores_list is not None else None
             
-            if len(current_boxes) > 0:
-                # 预处理：为每个区域选择最佳边界框
-                selected_boxes = []
-                selected_labels = []
-                region_best_scores = torch.full((self.num_regions,), -1.0, device=device)  # 初始化为负值
+            if len(current_boxes) == 0:
+                continue
+                
+            # 找出每个区域的最佳边界框
+            if current_scores is not None:
+                # 转换标签从1-indexed到0-indexed
+                region_indices = current_labels.clamp(1, self.num_regions) - 1
+                
+                # 为每个区域找到最高分数的边界框
+                region_best_scores = torch.full((self.num_regions,), -1.0, device=device)
                 region_best_indices = torch.full((self.num_regions,), -1, dtype=torch.long, device=device)
                 
-                # 遍历所有检测框，为每个解剖区域找到最佳的边界框
-                for j, label in enumerate(current_labels):
-                    region_idx = label.item() - 1  # 转为0-indexed
-                    
-                    if 0 <= region_idx < self.num_regions:  # 确保标签在有效范围内
-                        score = current_scores[j].item() if current_scores is not None else 1.0
-                        
-                        # 如果是GT框且没有scores，或者当前框的置信度高于之前的最佳框
-                        if (current_scores is None) or (score > region_best_scores[region_idx]):
-                            region_best_scores[region_idx] = score
-                            region_best_indices[region_idx] = j
-                
-                # 收集每个区域的最佳边界框
-                for region_idx in range(self.num_regions):
-                    best_idx = region_best_indices[region_idx].item()
-                    if best_idx >= 0:  # 如果找到了这个区域的边界框
-                        selected_boxes.append(current_boxes[best_idx])
-                        selected_labels.append(torch.tensor([region_idx + 1], device=device))  # 转回1-indexed
-                        region_detected[i, region_idx] = True
-                
-                # 如果有选中的边界框，则提取特征
-                if len(selected_boxes) > 0:
-                    selected_boxes = torch.stack(selected_boxes) if len(selected_boxes) > 0 else torch.zeros((0, 4), device=device)
-                    selected_labels = torch.cat(selected_labels) if len(selected_labels) > 0 else torch.zeros((0,), dtype=torch.long, device=device)
-                    
-                    # 调整boxes以匹配feature map尺寸
-                    feature_map = feature_maps[i]
-                    image_size = images[i].shape[-2:]
-                    feature_size = feature_map.shape[-2:]
-                    scale_factor = min(feature_size[0] / image_size[0], feature_size[1] / image_size[1])
-                    scaled_boxes = selected_boxes * scale_factor
-                    
-                    # 执行RoI Align获取特征
-                    roi_features = self.roi_align(feature_map, [scaled_boxes])
-                    
-                    # 展平特征并投影到指定维度
-                    flattened_features = roi_features.view(roi_features.size(0), -1)
-                    projected_features = self.feature_projector(flattened_features)
-                    
-                    # 根据标签分配特征到对应区域
-                    for j, label in enumerate(selected_labels):
-                        region_idx = label.item() - 1  # 转为0-indexed
-                        region_features[i, region_idx] = projected_features[j]
+                # 更新最佳索引
+                for j in range(len(current_scores)):
+                    region_idx = region_indices[j].item()
+                    score = current_scores[j].item()
+                    if score > region_best_scores[region_idx]:
+                        region_best_scores[region_idx] = score
+                        region_best_indices[region_idx] = j
+            else:
+                # 对于GT框，每个区域只取第一个框
+                unique_regions, region_first_indices = torch.unique(
+                    current_labels.clamp(1, self.num_regions) - 1, 
+                    return_inverse=True
+                )
+                region_best_indices = torch.full((self.num_regions,), -1, dtype=torch.long, device=device)
+                region_best_indices[unique_regions] = region_first_indices
             
-            # 对于未检测到的区域，使用特殊token填充
-            for j in range(self.num_regions):
-                if not region_detected[i, j]:
-                    region_features[i, j] = self.missing_region_token
+            # 收集所有最佳边界框
+            valid_regions = (region_best_indices >= 0)
+            if valid_regions.any():
+                region_indices = torch.nonzero(valid_regions, as_tuple=True)[0]
+                box_indices = region_best_indices[valid_regions]
+                
+                # 标记检测到的区域
+                region_detected[batch_idx, region_indices] = True
+                
+                # 缩放边界框到特征图尺寸
+                scaled_boxes = current_boxes[box_indices] * scale_factors[batch_idx]
+                
+                # 添加到批处理列表
+                all_rois.append(scaled_boxes)
+                
+                # 添加批次索引
+                batch_indices = torch.full((len(scaled_boxes),), batch_idx, 
+                                        dtype=torch.long, device=device)
+                roi_batch_indices.append(batch_indices)
+                
+                # 记录每个ROI对应的区域
+                for roi_idx, region_idx in enumerate(region_indices):
+                    roi_to_region_map.append((batch_idx, region_idx.item()))
+        
+        # 如果有有效的边界框，进行特征提取
+        if all_rois:
+            # 合并所有ROI和批次索引
+            all_rois = torch.cat(all_rois)
+            roi_batch_indices = torch.cat(roi_batch_indices)
+            
+            # 批量提取ROI特征
+            with torch.no_grad(), torch.cuda.amp.autocast():
+                roi_features = torchvision.ops.roi_align(
+                    feature_maps, 
+                    torch.cat([roi_batch_indices.unsqueeze(1), all_rois], dim=1),
+                    output_size=(7, 7), 
+                    spatial_scale=1.0,
+                    sampling_ratio=2
+                )
+                
+                # 展平特征并批量投影
+                flat_features = roi_features.reshape(roi_features.size(0), -1)
+                projected_features = self.feature_projector(flat_features)
+            
+            # 将特征分配到相应区域
+            for i, (batch_idx, region_idx) in enumerate(roi_to_region_map):
+                region_features[batch_idx, region_idx] = projected_features[i]
+        
+        # 处理未检测区域 - 使用向量化操作
+        missing_regions = ~region_detected
+        if missing_regions.any():
+            region_features[missing_regions] = self.missing_region_token
         
         return region_features, region_detected
     
@@ -291,22 +304,3 @@ class EnhancedFastRCNN(nn.Module):
             'losses': None,  # 第二阶段不计算检测损失
             'using_gt': use_gt  # 返回是否使用了ground truth框
         }
-
-
-class RegionFeatureExtractor(nn.Module):
-    """
-    从训练好的EnhancedFastRCNN中提取特征的独立模块
-    """
-    def __init__(self, enhanced_rcnn):
-        super(RegionFeatureExtractor, self).__init__()
-        
-        if not isinstance(enhanced_rcnn, EnhancedFastRCNN):
-            raise TypeError("Input must be an EnhancedFastRCNN model")
-            
-        self.model = enhanced_rcnn
-        
-    def forward(self, images):
-        """提取区域特征"""
-        with torch.no_grad():
-            results = self.model(images)
-        return results['region_features'], results['region_detected']

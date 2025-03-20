@@ -241,57 +241,83 @@ class NegativeSamplePool:
         
         return similarities_list
     
-    def get_negative_samples(self, target_label, k=10):
-        """
-        获取负样本，使用缓存的相似度结果
-        """
-        sorted_similarities = self._compute_all_similarities(target_label)
-        
-        # 使用torch.cat一次性收集样本
-        collected_samples = []
-        total_samples = 0
-        
-        for label_key, _ in sorted_similarities:
-            current_samples = self.pool[label_key]
-            if current_samples.size(0) == 0:
-                continue
-                
-            samples_needed = k - total_samples
-            if samples_needed <= 0:
-                break
-                
-            if current_samples.size(0) <= samples_needed:
-                collected_samples.append(current_samples)
-                total_samples += current_samples.size(0)
-            else:
-                selected_indices = torch.randperm(current_samples.size(0), device=self.device)[:samples_needed]
-                selected_samples = current_samples[selected_indices]
-                collected_samples.append(selected_samples)
-                total_samples += samples_needed
-        
-        if not collected_samples:
-            return None
-            
-        # 一次性连接所有样本
-        negative_samples = torch.cat(collected_samples, dim=0)
-        return negative_samples[:k] if negative_samples.size(0) > k else negative_samples
-    
     def get_negative_samples_batch(self, target_labels, k=10):
         """
-        批量获取多个目标标签的负样本
+        批量获取多个目标标签的负样本 - 优化版
         
         Args:
             target_labels: 目标标签向量批次 [batch_size, num_diseases]
             k: 每个目标标签需要的负样本数量
-            
+                
         Returns:
             negative_samples_batch: 包含每个目标的负样本的列表
         """
         batch_size = target_labels.shape[0]
+        
+        # 1. 批量计算所有目标标签与所有存储标签的相似度
+        batch_similarities = []
+        target_keys = []
+        
+        # 为每个目标标签生成键并获取相似度列表
+        for i in range(batch_size):
+            target_label = target_labels[i]
+            target_key = self._label_to_key(target_label)
+            target_keys.append(target_key)
+            
+            # 检查缓存或计算相似度
+            if target_key in self.similarity_cache:
+                batch_similarities.append(self.similarity_cache[target_key])
+            else:
+                similarities = self._compute_all_similarities(target_label)
+                batch_similarities.append(similarities)
+        
+        # 2. 批量收集负样本
         negative_samples_batch = []
         
+        # 预先计算每个label_key的样本数量和样本总量
+        available_samples = {}
+        for label_key, samples in self.pool.items():
+            available_samples[label_key] = samples.size(0)
+        
+        # 并行处理每个目标标签
         for i in range(batch_size):
-            negative_samples = self.get_negative_samples(target_labels[i], k)
+            sorted_similarities = batch_similarities[i]
+            
+            # 使用torch.cat一次性收集样本
+            collected_samples = []
+            total_samples = 0
+            
+            # 对于相似度排序的每个标签组合
+            for label_key, _ in sorted_similarities:
+                current_size = available_samples.get(label_key, 0)
+                if current_size == 0:
+                    continue
+                    
+                samples_needed = k - total_samples
+                if samples_needed <= 0:
+                    break
+                    
+                # 获取当前标签组合对应的池
+                current_samples = self.pool[label_key]
+                
+                # 选择适当数量的样本
+                if current_size <= samples_needed:
+                    collected_samples.append(current_samples)
+                    total_samples += current_size
+                else:
+                    # 随机选择部分样本
+                    selected_indices = torch.randperm(current_size, device=self.device)[:samples_needed]
+                    selected_samples = current_samples[selected_indices]
+                    collected_samples.append(selected_samples)
+                    total_samples += samples_needed
+            
+            # 合并所有收集到的样本
+            if collected_samples:
+                all_negative = torch.cat(collected_samples, dim=0)
+                negative_samples = all_negative[:k] if all_negative.size(0) > k else all_negative
+            else:
+                negative_samples = None
+                
             negative_samples_batch.append(negative_samples)
         
         return negative_samples_batch
