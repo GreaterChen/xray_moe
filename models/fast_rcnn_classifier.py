@@ -112,7 +112,7 @@ class EnhancedFastRCNN(nn.Module):
         
         batch_size = images.size(0)
         device = images.device
-        stacked_images = images  # 已经是批量格式
+        stacked_images = images
 
         
         feature_dim = self.feature_projector[-2].out_features
@@ -167,13 +167,18 @@ class EnhancedFastRCNN(nn.Module):
                         region_best_scores[region_idx] = score
                         region_best_indices[region_idx] = j
             else:
-                # 对于GT框，每个区域只取第一个框
-                unique_regions, region_first_indices = torch.unique(
-                    current_labels.clamp(1, self.num_regions) - 1, 
-                    return_inverse=True
-                )
+                # 对于GT框，每个区域最多只有一个框（无重复）
+                region_indices = current_labels.clamp(1, self.num_regions) - 1
+                
+                # 创建一个区域到框索引的映射，默认为-1（表示该区域无框）
                 region_best_indices = torch.full((self.num_regions,), -1, dtype=torch.long, device=device)
-                region_best_indices[unique_regions] = region_first_indices
+                
+                # 框索引数组
+                box_indices = torch.arange(len(region_indices), device=device)
+                
+                # 使用scatter直接分配（后面的值会覆盖前面的，但我们假设每个区域最多只有一个框）
+                if len(region_indices) > 0:  # 确保有框存在
+                    region_best_indices.scatter_(0, region_indices, box_indices)
             
             # 收集所有最佳边界框
             valid_regions = (region_best_indices >= 0)

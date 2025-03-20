@@ -33,20 +33,38 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
     @classmethod
     def load_shared_data(cls, directory, ann_dir, mode, binary_mode=True):
-        """静态方法，用于加载所有数据集共享的数据"""
+        """预处理优化版本"""
         if cls._shared_data["loaded"]:
             return
 
+        # 使用内存映射读取大型JSON文件
+        import mmap
         with open(ann_dir, "r") as f:
-            annotation_data = json.load(f)
+            # 对大文件使用内存映射
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            annotation_data = json.loads(mm.read().decode('utf-8'))
+            mm.close()
         
+        # 并行处理数据拆分
+        import concurrent.futures
         new_annotation = {}
-        for mode, data_split in annotation_data.items():
-            new_annotation[mode] = []
+        
+        def process_split(mode_split):
+            mode, data_split = mode_split
+            result = []
             for key, value in data_split.items():
                 if value["findings"].strip() != "":
                     value["image_id"] = key
-                    new_annotation[mode].append(value)
+                    # 预处理文本，减少__getitem__中的处理时间
+                    value["findings"] = cls._clean_report(value["findings"])
+                    value["history"] = cls._clean_report(value["history"])
+                    result.append(value)
+            return mode, result
+        
+        # 并行处理各个拆分
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for mode, result in executor.map(process_split, annotation_data.items()):
+                new_annotation[mode] = result
 
         cls._shared_data["annotation"] = new_annotation
         cls._shared_data["loaded"] = True
@@ -109,8 +127,8 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
     def __getitem__(self, idx):
         info = self.data[idx]
 
-        findings = self.my_pre_caption(info["findings"])
-        history = self.my_pre_caption(info["history"])
+        findings = info["findings"]
+        history = info["history"]
         disease_label = np.array(info["labels"], dtype=np.float16)
         bbox_data = info["bbox_targets"]
 
@@ -163,8 +181,10 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         }
 
         return output
+    
 
-    def clean_report_mimic_cxr(self, report):
+    @staticmethod
+    def _clean_report(report):
         report_cleaner = (
             lambda t: t.replace("\n", " ")
             .replace("__", "_")
@@ -219,50 +239,37 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         report = " . ".join(tokens) + " ."
         return report
 
-    def my_pre_caption(self, caption, max_words=196):
-        caption = self.clean_report_mimic_cxr(caption)
-        # truncate caption
-        caption_words = caption.split(" ")
-        if len(caption_words) > max_words:
-            caption = " ".join(caption_words[:])
-        return caption
-
 # 添加collate_fn函数处理变长数据
 def mimic_collate_fn(batch):
-    """
-    自定义collate_fn函数，处理变长的边界框数据
+    """优化的collate_fn"""
+    # 使用预分配内存而非动态增长的列表
+    batch_size = len(batch)
     
-    Args:
-        batch: 一个批次的数据，每个元素是__getitem__返回的字典
-        
-    Returns:
-        处理后的批次数据，保持字典列表格式
-    """
-    images = []
-    bbox_targets = []
-    findings = []
-    histories = []
-    labels = []
-    image_paths = []
+    # 预分配NumPy数组
+    images = torch.empty((batch_size, 3, 224, 224), dtype=torch.float32)
+    bbox_targets = [None] * batch_size
+    findings = [None] * batch_size
+    histories = [None] * batch_size
+    labels = np.empty((batch_size, 14), dtype=np.float16)  # 假设有14个标签
+    image_paths = [None] * batch_size
     
-    for item in batch:
-        images.append(item["image"])
-        bbox_targets.append(item["bbox_targets"])
-        findings.append(item["findings"])
-        histories.append(item["history"])
-        labels.append(item["label"])
-        image_paths.append(item["image_path"])
+    # 填充预分配的数组
+    for i, item in enumerate(batch):
+        images[i] = item["image"]
+        bbox_targets[i] = item["bbox_targets"]
+        findings[i] = item["findings"]
+        histories[i] = item["history"]
+        labels[i] = item["label"]
+        image_paths[i] = item["image_path"]
     
-    # 将图像堆叠成批次
-    images = torch.stack(images, dim=0)
-    labels = torch.from_numpy(np.stack(labels, axis=0))
+    # 转换标签
+    label_tensor = torch.from_numpy(labels)
     
-    # 返回字典，其中targets保持为列表形式
     return {
         "image": images,
-        "bbox_targets": bbox_targets,  # 保持列表形式，每个元素是一个字典
+        "bbox_targets": bbox_targets,
         "findings": findings,
         "history": histories,
-        "label": labels,
+        "label": label_tensor,
         "image_path": image_paths
     }
