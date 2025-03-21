@@ -266,12 +266,16 @@ class CXR_BERT_FeatureExtractor(nn.Module):
         self.device = device
         # 加载预训练的 CXR-BERT 模型和对应的分词器
         self.tokenizer = AutoTokenizer.from_pretrained(
-            "microsoft/BiomedVLP-CXR-BERT-specialized", trust_remote_code=True, local_files_only=True
+            "microsoft/BiomedVLP-CXR-BERT-specialized",
+            trust_remote_code=True,
+            local_files_only=True,
         )
         self.model = AutoModel.from_pretrained(
-            "microsoft/BiomedVLP-CXR-BERT-specialized", trust_remote_code=True, local_files_only=True
+            "microsoft/BiomedVLP-CXR-BERT-specialized",
+            trust_remote_code=True,
+            local_files_only=True,
         ).to(self.device)
-        
+
         self.frozen = False
 
     def forward(self, texts):
@@ -295,9 +299,13 @@ class CXR_BERT_FeatureExtractor(nn.Module):
         if isinstance(texts, list) and all(isinstance(item, str) for item in texts):
             # 对输入文本进行编码
             inputs = self.tokenizer(
-                texts, max_length=196, padding=True, truncation=True, return_tensors="pt"
+                texts,
+                max_length=196,
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
             ).to(self.device)
-        elif hasattr(texts, 'input_ids'):
+        elif hasattr(texts, "input_ids"):
             # 已经tokenize过的数据，直接使用
             inputs = texts
         else:
@@ -644,7 +652,6 @@ class HiMrGn(nn.Module):
         elif train_stage == 2:
             F_v = self.image_encoder(image)  # (B, C)
 
-
             # if mode != "train":
             #     history = self.history_encoder(history)
 
@@ -718,7 +725,7 @@ class HiMrGn(nn.Module):
                 "F_I": F_I,
                 "class_logits": class_logits,
             }
-        
+
         elif train_stage == 3:
             F_v = self.image_encoder(image)  # (B, C)
 
@@ -783,4 +790,3 @@ class HiMrGn(nn.Module):
                 "F_I": F_I,
                 "class_logits": class_logits,
             }
-    

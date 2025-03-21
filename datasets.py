@@ -39,16 +39,18 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         # 使用内存映射读取大型JSON文件
         import mmap
+
         with open(ann_dir, "r") as f:
             # 对大文件使用内存映射
             mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-            annotation_data = json.loads(mm.read().decode('utf-8'))
+            annotation_data = json.loads(mm.read().decode("utf-8"))
             mm.close()
-        
+
         # 并行处理数据拆分
         import concurrent.futures
+
         new_annotation = {}
-        
+
         def process_split(mode_split):
             mode, data_split = mode_split
             result = []
@@ -60,7 +62,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                     value["history"] = cls._clean_report(value["history"])
                     result.append(value)
             return mode, result
-        
+
         # 并行处理各个拆分
         with concurrent.futures.ThreadPoolExecutor() as executor:
             for mode, result in executor.map(process_split, annotation_data.items()):
@@ -133,8 +135,10 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         bbox_data = info["bbox_targets"]
 
         # 获取图像路径
-        image_base_path = '/'.join(info["image_path"][0].split('/')[:-1])
-        img_path = os.path.join(self.dir, "images_224", image_base_path, info["image_id"] + ".jpg")
+        image_base_path = "/".join(info["image_path"][0].split("/")[:-1])
+        img_path = os.path.join(
+            self.dir, "images_224", image_base_path, info["image_id"] + ".jpg"
+        )
 
         # 处理图像
         img = Image.open(img_path).convert("RGB")
@@ -142,7 +146,9 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         # 处理bbox数据
         boxes = torch.tensor(bbox_data["boxes"], dtype=torch.float32)
-        labels = torch.tensor(bbox_data["labels"], dtype=torch.int64)  # 标签已经是从1开始的
+        labels = torch.tensor(
+            bbox_data["labels"], dtype=torch.int64
+        )  # 标签已经是从1开始的
 
         # 验证并过滤边界框
         valid_boxes = []
@@ -164,11 +170,11 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             labels = torch.stack(valid_labels)
 
         target = {
-            'boxes': boxes,          # [N, 4] tensor，格式为 (x1, y1, x2, y2)
-            'labels': labels,        # [N] tensor，已经是从1开始的类别标签
-            'image_id': torch.tensor([idx]),
-            'area': (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]),
-            'iscrowd': torch.zeros((len(boxes),), dtype=torch.int64)
+            "boxes": boxes,  # [N, 4] tensor，格式为 (x1, y1, x2, y2)
+            "labels": labels,  # [N] tensor，已经是从1开始的类别标签
+            "image_id": torch.tensor([idx]),
+            "area": (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]),
+            "iscrowd": torch.zeros((len(boxes),), dtype=torch.int64),
         }
 
         output = {
@@ -177,11 +183,10 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             "findings": findings,
             "history": history,
             "label": disease_label,
-            "image_path": img_path
+            "image_path": img_path,
         }
 
         return output
-    
 
     @staticmethod
     def _clean_report(report):
@@ -239,12 +244,13 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         report = " . ".join(tokens) + " ."
         return report
 
+
 # 添加collate_fn函数处理变长数据
 def mimic_collate_fn(batch):
     """优化的collate_fn"""
     # 使用预分配内存而非动态增长的列表
     batch_size = len(batch)
-    
+
     # 预分配NumPy数组
     images = torch.empty((batch_size, 3, 224, 224), dtype=torch.float32)
     bbox_targets = [None] * batch_size
@@ -252,7 +258,7 @@ def mimic_collate_fn(batch):
     histories = [None] * batch_size
     labels = np.empty((batch_size, 14), dtype=np.float16)  # 假设有14个标签
     image_paths = [None] * batch_size
-    
+
     # 填充预分配的数组
     for i, item in enumerate(batch):
         images[i] = item["image"]
@@ -261,15 +267,15 @@ def mimic_collate_fn(batch):
         histories[i] = item["history"]
         labels[i] = item["label"]
         image_paths[i] = item["image_path"]
-    
+
     # 转换标签
     label_tensor = torch.from_numpy(labels)
-    
+
     return {
         "image": images,
         "bbox_targets": bbox_targets,
         "findings": findings,
         "history": histories,
         "label": label_tensor,
-        "image_path": image_paths
+        "image_path": image_paths,
     }

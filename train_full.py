@@ -72,11 +72,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--model_name",
-        type=str,
-        default="MOE",
-        choices=["MOE"],
-        help="模型名称"
+        "--model_name", type=str, default="MOE", choices=["MOE"], help="模型名称"
     )
 
     parser.add_argument("--image_size", type=int, default=224, help="Input image size.")
@@ -276,7 +272,10 @@ if __name__ == "__main__":
 
         # 初始化 TensorBoard writer
         current_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-        tensorboard_log_dir = os.path.join(args.tensorboard_dir, f"{args.model_name}_{args.phase}_{args.checkpoint_path_to.split('results/')[-1][:-1].replace('/', '_')}-{current_time}")
+        tensorboard_log_dir = os.path.join(
+            args.tensorboard_dir,
+            f"{args.model_name}_{args.phase}_{args.checkpoint_path_to.split('results/')[-1][:-1].replace('/', '_')}-{current_time}",
+        )
         writer = SummaryWriter(tensorboard_log_dir)
         logger.info(f"TensorBoard 日志目录: {tensorboard_log_dir}")
 
@@ -293,45 +292,40 @@ if __name__ == "__main__":
             # 初始化检测器
             detection_model = DetectionOnlyFastRCNN()
             _, _ = load(args.detection_checkpoint_path_from, detection_model)
-            
+
             # 创建增强型FastRCNN
             enhanced_rcnn = EnhancedFastRCNN(
-                pretrained_detector=detection_model,
-                num_regions=29,
-                feature_dim=768
+                pretrained_detector=detection_model, num_regions=29, feature_dim=768
             )
-            
+
             # 初始化ViT模型
             vit_model = MedicalVisionTransformer()
 
             cxr_bert = CXR_BERT_FeatureExtractor()
-            
+
             # 创建MOE模型
             model = MOE(
                 args=args,
                 object_detector=enhanced_rcnn,
                 image_encoder=vit_model,
-                cxr_bert=cxr_bert
+                cxr_bert=cxr_bert,
             )
-            
+
             # 计算每个模块的参数量
             module_parameters = {
                 "Enhanced FastRCNN": count_parameters(enhanced_rcnn),
                 "ViT": count_parameters(vit_model),
-                "CXR BERT": count_parameters(cxr_bert)
+                "CXR BERT": count_parameters(cxr_bert),
             }
         elif args.phase == "INFER_BERT":
             cxr_bert = CXR_BERT_FeatureExtractor()
-            model = MOE(
-                args=args,
-                cxr_bert=cxr_bert
-            )
+            model = MOE(args=args, cxr_bert=cxr_bert)
 
             # 计算每个模块的参数量
             module_parameters = {
                 "CXR BERT": count_parameters(cxr_bert),
             }
-            
+
         # 打印每个模块的参数量
         for module_name, param_count in module_parameters.items():
             logger.info(f"{module_name}: {param_count} parameters")
@@ -411,8 +405,8 @@ if __name__ == "__main__":
             _, _ = load(args.checkpoint_path_from, model, optimizer, scheduler)
 
         criterion = None
-        scaler = torch.amp.GradScaler('cuda')
-    
+        scaler = torch.amp.GradScaler("cuda")
+
         for epoch in range(last_epoch + 1, args.epochs):
             print(f"Epoch: {epoch}")
             train_loss = train(
@@ -443,7 +437,7 @@ if __name__ == "__main__":
                     args.checkpoint_path_to,
                     f'epoch_{epoch}_{result["overall_metrics"]["mAP"]}.pth',
                 )
-                
+
             elif args.phase == "PRETRAIN_VIT":
                 test_loss, result = test_vit(
                     args=args,
@@ -469,7 +463,7 @@ if __name__ == "__main__":
                 epoch,
                 (test_loss, result),
             )
-            
+
         # 关闭 TensorBoard writer
         writer.close()
     elif args.phase == "INFER_BERT":

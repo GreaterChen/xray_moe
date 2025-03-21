@@ -17,6 +17,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 from contextlib import nullcontext
 import gc
 
+
 # ------ Helper Functions ------
 def data_to_device(data, device="cpu"):
     if isinstance(data, torch.Tensor):
@@ -98,7 +99,9 @@ def args_to_kwargs(
         return args
 
 
-def prepare_batch_data(args, batch, data_loader, device, findings=True, history=True, label=True, bbox=True):
+def prepare_batch_data(
+    args, batch, data_loader, device, findings=True, history=True, label=True, bbox=True
+):
     """准备批次数据，对整个batch进行tokenization
 
     Args:
@@ -112,10 +115,10 @@ def prepare_batch_data(args, batch, data_loader, device, findings=True, history=
     """
     source = {}
     target = {}
-    
+
     # 处理图像数据 - 直接在GPU上处理
     if "image" in batch:
-        source['image'] = batch['image'] = batch['image'].to(device, non_blocking=True)
+        source["image"] = batch["image"] = batch["image"].to(device, non_blocking=True)
 
     # 确定需要处理的文本字段
     text_fields_to_process = []
@@ -126,11 +129,11 @@ def prepare_batch_data(args, batch, data_loader, device, findings=True, history=
 
     # 优化: 预先创建tokenizer以避免多次创建
     tokenizer = data_loader.dataset.tokenizer
-    
+
     # 批量处理文本字段
     for field, max_len in text_fields_to_process:
         texts = batch[field]
-        
+
         # 对整个batch进行tokenization，使用non_blocking=True加速GPU传输
         encoded = tokenizer(
             texts,
@@ -139,20 +142,22 @@ def prepare_batch_data(args, batch, data_loader, device, findings=True, history=
             truncation=True,
             return_tensors="pt",
         ).to(device, non_blocking=True)
-        
+
         batch[field] = encoded
         source[field] = encoded  # 直接使用同一个对象引用
         target[field] = encoded  # 直接使用同一个对象引用
 
     # 优化: 一次性处理标签数据
     if label and "label" in batch:
-        source["label"] = target["label"] = batch["label"] = batch["label"].to(device, non_blocking=True)
+        source["label"] = target["label"] = batch["label"] = batch["label"].to(
+            device, non_blocking=True
+        )
 
     # 处理边界框数据 - 注意这是一个列表，每个元素是字典
     if bbox and "bbox_targets" in batch:
         # 创建一个新的bbox_targets列表，将每个字典中的tensor移动到设备上
         processed_bbox_targets = []
-        
+
         for bbox_target in batch["bbox_targets"]:
             # 对字典中的每个tensor进行处理
             processed_target = {}
@@ -162,7 +167,7 @@ def prepare_batch_data(args, batch, data_loader, device, findings=True, history=
                 else:
                     processed_target[key] = value
             processed_bbox_targets.append(processed_target)
-            
+
         batch["bbox_targets"] = processed_bbox_targets
         source["bbox_targets"] = processed_bbox_targets
 
@@ -191,27 +196,27 @@ def train(
     gc.collect()
     model.train()
     running_loss = 0
-    
+
     # 记录当前学习率，仅在每个epoch开始时记录一次
     if writer is not None:
         current_lr = optimizer.param_groups[0]["lr"]
-        writer.add_scalar('Learning Rate', current_lr, current_epoch)
+        writer.add_scalar("Learning Rate", current_lr, current_epoch)
 
     # 设置TensorBoard记录频率，如每10个批次记录一次
     log_freq = 500
-    
+
     # 根据enable_profile参数决定是否使用性能分析器
     if enable_profile:
         profiler = profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
             record_shapes=True,
             profile_memory=True,
-            with_stack=True
+            with_stack=True,
         )
         profiler.start()
     else:
         profiler = None
-        
+
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
 
@@ -222,15 +227,32 @@ def train(
             print(f"已缓存: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
             analyze_gpu_memory()  # 详细分析内存使用
 
-
         if enable_profile and i == 4:  # 只在进行性能分析时提前结束
             break
         # 准备批次数据
         with record_function("data_preparation") if enable_profile else nullcontext():
             if args.phase == "TRAIN_DETECTION":
-                source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=False, bbox=True)
+                source, target, _ = prepare_batch_data(
+                    args,
+                    batch,
+                    data_loader,
+                    device,
+                    findings=False,
+                    history=False,
+                    label=False,
+                    bbox=True,
+                )
             elif args.phase == "PRETRAIN_VIT":
-                source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=True, history=False, label=True, bbox=True)
+                source, target, _ = prepare_batch_data(
+                    args,
+                    batch,
+                    data_loader,
+                    device,
+                    findings=True,
+                    history=False,
+                    label=True,
+                    bbox=True,
+                )
             else:
                 pass
         # 转换为kwargs格式
@@ -239,21 +261,21 @@ def train(
 
         source["phase"] = args.phase
         source["mode"] = "train"
-        source['current_epoch'] = current_epoch
-        source['total_epochs'] = num_epochs
+        source["current_epoch"] = current_epoch
+        source["total_epochs"] = num_epochs
 
         scheduler.step(cur_epoch=current_epoch, cur_step=i)
         current_lr = optimizer.param_groups[0]["lr"]
-        with torch.amp.autocast('cuda'):
+        with torch.amp.autocast("cuda"):
             with record_function("model_forward") if enable_profile else nullcontext():
                 output = data_distributor(model, source)
             output = args_to_kwargs(output)
             if args.phase == "TRAIN_DETECTION":
                 # 汇总所有损失项
                 loss = sum(loss for loss in output.values())
-                
+
             elif args.phase == "PRETRAIN_VIT":
-                loss = output['ltc_loss'] + output['cls_loss']
+                loss = output["ltc_loss"] + output["cls_loss"]
             else:
                 pass
 
@@ -265,27 +287,29 @@ def train(
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
-        
+
         # 每log_freq个批次记录一次TensorBoard
         if writer is not None and i % log_freq == 0:
             global_step = current_epoch * len(data_loader) + i
-            
+
             # 记录总损失
-            writer.add_scalar('Train/Total_Loss', loss.item(), global_step)
-            
+            writer.add_scalar("Train/Total_Loss", loss.item(), global_step)
+
             # 根据阶段记录特定损失
             if args.phase == "TRAIN_DETECTION":
                 # 批量记录多个损失项
                 for loss_name, loss_value in output.items():
-                    writer.add_scalar(f'Train/Detection/{loss_name}', loss_value.item(), global_step)
-                        
+                    writer.add_scalar(
+                        f"Train/Detection/{loss_name}", loss_value.item(), global_step
+                    )
+
             elif args.phase == "PRETRAIN_VIT":
                 # 批量记录ViT相关损失
                 vit_losses = {
-                    'Train/ViT/LTC_Loss': output['ltc_loss'].item(),
-                    'Train/ViT/CLS_Loss': output['cls_loss'].item(),
-                    'Train/ViT/CLS_GLOBAL_Loss': output['cls_global_loss'].item(),
-                    'Train/ViT/CLS_REGION_Loss': output['cls_region_loss'].item()
+                    "Train/ViT/LTC_Loss": output["ltc_loss"].item(),
+                    "Train/ViT/CLS_Loss": output["cls_loss"].item(),
+                    "Train/ViT/CLS_GLOBAL_Loss": output["cls_global_loss"].item(),
+                    "Train/ViT/CLS_REGION_Loss": output["cls_region_loss"].item(),
                 }
                 for tag, value in vit_losses.items():
                     writer.add_scalar(tag, value, global_step)
@@ -299,13 +323,14 @@ def train(
         profiler.stop()
         print(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
         profiler.export_chrome_trace("trace_optim_tb_od_np.json")
-                
+
     # 记录每个epoch的平均损失
     epoch_loss = running_loss / len(data_loader)
     if writer is not None:
-        writer.add_scalar('Train/Epoch_Loss', epoch_loss, current_epoch)
+        writer.add_scalar("Train/Epoch_Loss", epoch_loss, current_epoch)
 
     return epoch_loss
+
 
 def test(
     args,
@@ -347,9 +372,27 @@ def test(
 
             # 准备批次数据
             if args.phase == "TRAIN_DETECTION":
-                source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=False, bbox=True)
+                source, target, _ = prepare_batch_data(
+                    args,
+                    batch,
+                    data_loader,
+                    device,
+                    findings=False,
+                    history=False,
+                    label=False,
+                    bbox=True,
+                )
             elif args.phase == "PRETRAIN_VIT":
-                source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=True, bbox=True)
+                source, target, _ = prepare_batch_data(
+                    args,
+                    batch,
+                    data_loader,
+                    device,
+                    findings=False,
+                    history=False,
+                    label=True,
+                    bbox=True,
+                )
             else:
                 pass
 
@@ -430,7 +473,7 @@ def test(
         }
 
     return running_loss / len(data_loader), result
-    
+
 
 def infer_bert(
     args,
@@ -449,15 +492,24 @@ def infer_bert(
 
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
-        source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=True, history=False, label=True, bbox=False)
+        source, target, _ = prepare_batch_data(
+            args,
+            batch,
+            data_loader,
+            device,
+            findings=True,
+            history=False,
+            label=True,
+            bbox=False,
+        )
         # 转换为kwargs格式
         source = args_to_kwargs(source)
         target = args_to_kwargs(target)
 
         source["phase"] = args.phase
         source["mode"] = "train"
-        source['current_epoch'] = current_epoch
-        source['total_epochs'] = num_epochs
+        source["current_epoch"] = current_epoch
+        source["total_epochs"] = num_epochs
 
         output = data_distributor(model, source)
         output = args_to_kwargs(output)
@@ -469,6 +521,7 @@ def infer_bert(
     model.negative_pool.save(save_path)
 
     return output
+
 
 def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
     if not os.path.exists(os.path.dirname(path)):
@@ -494,27 +547,29 @@ def load(path, model, optimizer=None, scheduler=None):
     # --- Model Statistics ---
     epoch = checkpoint["epoch"]
     stats = checkpoint["stats"]
-    
+
     # --- 提取detector部分的参数 ---
     if "model_state_dict" in checkpoint:
         checkpoint_state_dict = checkpoint["model_state_dict"]
-        
+
         # 检查是否是MOE模型的检查点
-        is_moe_checkpoint = any(key.startswith("object_detector.") for key in checkpoint_state_dict.keys())
-        
+        is_moe_checkpoint = any(
+            key.startswith("object_detector.") for key in checkpoint_state_dict.keys()
+        )
+
         if is_moe_checkpoint:
             print("检测到MOE模型检查点，正在提取目标检测器参数...")
             # 创建一个新的state_dict，只包含detector部分
             detector_state_dict = {}
-            
+
             # 遍历checkpoint中的所有键
             for key, value in checkpoint_state_dict.items():
                 # 如果键以"object_detector."开头，则提取
                 if key.startswith("object_detector."):
                     # 去掉"object_detector."前缀
-                    new_key = key[len("object_detector."):]
+                    new_key = key[len("object_detector.") :]
                     detector_state_dict[new_key] = value
-            
+
             # 加载提取后的state_dict到模型
             missing_keys, unexpected_keys = model.load_state_dict(
                 detector_state_dict, strict=False
@@ -539,7 +594,7 @@ def load(path, model, optimizer=None, scheduler=None):
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         except:  # Input optimizer doesn't fit the checkpoint one --> should be ignored
             print("Cannot load the optimizer")
-    
+
     return epoch, stats
 
 
@@ -903,7 +958,7 @@ def test_detection(
 ):
     """
     评估目标检测模型性能 - 简化版
-    
+
     参数:
         args: 配置参数
         data_loader: 测试数据加载器
@@ -914,47 +969,47 @@ def test_detection(
         confidence_threshold: 检测置信度阈值
         device: 计算设备
         epoch: 当前训练轮次
-    
+
     返回:
         float: 平均损失
         dict: 包含评估结果的字典
     """
     model.eval()
     running_loss = 0
-    
+
     # 初始化存储结构
     all_predictions = []
     all_ground_truths = []
     image_paths_list = []
-    
+
     # 按类别存储预测和真值
     num_classes = 29  # 假设有29个区域类别
-    class_predictions = {i: [] for i in range(1, num_classes+1)}
-    class_ground_truths = {i: [] for i in range(1, num_classes+1)}
-    
+    class_predictions = {i: [] for i in range(1, num_classes + 1)}
+    class_ground_truths = {i: [] for i in range(1, num_classes + 1)}
+
     # 创建进度条
     prog_bar = tqdm(data_loader, desc=f"{mode} Detection Evaluation")
-    
+
     with torch.no_grad():
         for i, batch in enumerate(prog_bar):
             # 收集图像路径
             image_paths_list.extend(batch["image_path"])
-            
+
             # 准备数据 - 简化处理
             images = batch["image"].to(device)
             targets = []
-            
+
             for target_dict in batch["bbox_targets"]:
                 # 将目标数据移动到设备上
                 target = {
-                    'boxes': target_dict['boxes'].to(device),
-                    'labels': target_dict['labels'].to(device),
-                    'image_id': target_dict['image_id'].to(device),
-                    'area': target_dict['area'].to(device),
-                    'iscrowd': target_dict['iscrowd'].to(device)
+                    "boxes": target_dict["boxes"].to(device),
+                    "labels": target_dict["labels"].to(device),
+                    "image_id": target_dict["image_id"].to(device),
+                    "area": target_dict["area"].to(device),
+                    "iscrowd": target_dict["iscrowd"].to(device),
                 }
                 targets.append(target)
-            
+
             # 进行前向传播，获取检测结果
             try:
                 # 尝试检测模式
@@ -963,95 +1018,119 @@ def test_detection(
                 # 如果失败，尝试传入空目标以避免计算损失
                 logger.warning(f"检测异常: {e}，尝试传入空目标进行推理")
                 detections = model(images, [])
-            
+
             # 计算损失（如果需要）- 这步是可选的
             if targets:
                 try:
                     loss_dict = model(images, targets)
-                    if isinstance(loss_dict, dict) and all(k.startswith('loss') for k in loss_dict.keys()):
+                    if isinstance(loss_dict, dict) and all(
+                        k.startswith("loss") for k in loss_dict.keys()
+                    ):
                         batch_loss = sum(loss for loss in loss_dict.values())
                         running_loss += batch_loss.item()
                 except Exception as e:
                     logger.warning(f"损失计算异常: {e}")
-            
+
             # 处理检测结果
-            for j, (detection, target) in enumerate(zip(detections, targets if targets else [None] * len(detections))):
+            for j, (detection, target) in enumerate(
+                zip(detections, targets if targets else [None] * len(detections))
+            ):
                 # 应用置信度阈值
-                keep = detection['scores'] > confidence_threshold
-                pred_boxes = detection['boxes'][keep]
-                pred_labels = detection['labels'][keep]
-                pred_scores = detection['scores'][keep]
-                
+                keep = detection["scores"] > confidence_threshold
+                pred_boxes = detection["boxes"][keep]
+                pred_labels = detection["labels"][keep]
+                pred_scores = detection["scores"][keep]
+
                 # 存储预测结果
                 img_pred = {
-                    'boxes': pred_boxes.cpu(),
-                    'labels': pred_labels.cpu(),
-                    'scores': pred_scores.cpu(),
-                    'image_id': i * len(images) + j
+                    "boxes": pred_boxes.cpu(),
+                    "labels": pred_labels.cpu(),
+                    "scores": pred_scores.cpu(),
+                    "image_id": i * len(images) + j,
                 }
                 all_predictions.append(img_pred)
-                
+
                 # 存储真值
                 if target is not None:
                     img_gt = {
-                        'boxes': target['boxes'].cpu(),
-                        'labels': target['labels'].cpu(),
-                        'image_id': i * len(images) + j
+                        "boxes": target["boxes"].cpu(),
+                        "labels": target["labels"].cpu(),
+                        "image_id": i * len(images) + j,
                     }
                     all_ground_truths.append(img_gt)
-                    
+
                     # 按类别存储预测和真值
                     for class_id in range(1, num_classes + 1):
                         # 提取当前类别的预测
                         class_pred_mask = pred_labels.cpu() == class_id
-                        class_predictions[class_id].append({
-                            'boxes': pred_boxes.cpu()[class_pred_mask] if class_pred_mask.sum() > 0 else torch.zeros((0, 4)),
-                            'scores': pred_scores.cpu()[class_pred_mask] if class_pred_mask.sum() > 0 else torch.zeros(0),
-                            'image_id': i * len(images) + j
-                        })
-                        
+                        class_predictions[class_id].append(
+                            {
+                                "boxes": (
+                                    pred_boxes.cpu()[class_pred_mask]
+                                    if class_pred_mask.sum() > 0
+                                    else torch.zeros((0, 4))
+                                ),
+                                "scores": (
+                                    pred_scores.cpu()[class_pred_mask]
+                                    if class_pred_mask.sum() > 0
+                                    else torch.zeros(0)
+                                ),
+                                "image_id": i * len(images) + j,
+                            }
+                        )
+
                         # 提取当前类别的真值
-                        class_gt_mask = target['labels'].cpu() == class_id
-                        class_ground_truths[class_id].append({
-                            'boxes': target['boxes'].cpu()[class_gt_mask] if class_gt_mask.sum() > 0 else torch.zeros((0, 4)),
-                            'image_id': i * len(images) + j
-                        })
-            
+                        class_gt_mask = target["labels"].cpu() == class_id
+                        class_ground_truths[class_id].append(
+                            {
+                                "boxes": (
+                                    target["boxes"].cpu()[class_gt_mask]
+                                    if class_gt_mask.sum() > 0
+                                    else torch.zeros((0, 4))
+                                ),
+                                "image_id": i * len(images) + j,
+                            }
+                        )
+
             # 更新进度条
             prog_bar.set_description(
-                f"Loss: {running_loss/(i+1):.4f}" if running_loss > 0 else "Evaluating..."
+                f"Loss: {running_loss/(i+1):.4f}"
+                if running_loss > 0
+                else "Evaluating..."
             )
-    
+
     # 计算指标
     logger.info("计算目标检测评估指标...")
-    
+
     # 计算整体mAP
-    overall_metrics = calculate_detection_metrics(all_predictions, all_ground_truths, iou_threshold)
-    
+    overall_metrics = calculate_detection_metrics(
+        all_predictions, all_ground_truths, iou_threshold
+    )
+
     # 计算每个类别的指标
     class_metrics = {}
     for class_id in range(1, num_classes + 1):
         class_metrics[class_id] = calculate_class_metrics(
-            class_predictions[class_id], 
-            class_ground_truths[class_id], 
-            iou_threshold
+            class_predictions[class_id], class_ground_truths[class_id], iou_threshold
         )
-    
+
     # 计算平均指标
-    valid_classes = [c for c in class_metrics.keys() if class_metrics[c]['num_samples'] > 0]
+    valid_classes = [
+        c for c in class_metrics.keys() if class_metrics[c]["num_samples"] > 0
+    ]
     if valid_classes:
-        average_precision = np.mean([class_metrics[c]['AP'] for c in valid_classes])
-        average_recall = np.mean([class_metrics[c]['recall'] for c in valid_classes])
-        average_f1 = np.mean([class_metrics[c]['f1_score'] for c in valid_classes])
+        average_precision = np.mean([class_metrics[c]["AP"] for c in valid_classes])
+        average_recall = np.mean([class_metrics[c]["recall"] for c in valid_classes])
+        average_f1 = np.mean([class_metrics[c]["f1_score"] for c in valid_classes])
     else:
         average_precision = 0.0
         average_recall = 0.0
         average_f1 = 0.0
-    
+
     # 创建结果目录
     results_dir = os.path.join(args.checkpoint_path_to, "detection_results")
     os.makedirs(results_dir, exist_ok=True)
-    
+
     # 整理结果数据
     metrics_data = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1062,54 +1141,76 @@ def test_detection(
         "mF1": average_f1,
         "loss": running_loss / len(data_loader) if running_loss > 0 else 0.0,
     }
-    
+
     # 添加每个类别的指标
     for class_id, metrics in class_metrics.items():
-        metrics_data[f"class_{class_id}_AP"] = metrics['AP']
-        metrics_data[f"class_{class_id}_Precision"] = metrics['precision']
-        metrics_data[f"class_{class_id}_Recall"] = metrics['recall']
-        metrics_data[f"class_{class_id}_F1"] = metrics['f1_score']
-    
+        metrics_data[f"class_{class_id}_AP"] = metrics["AP"]
+        metrics_data[f"class_{class_id}_Precision"] = metrics["precision"]
+        metrics_data[f"class_{class_id}_Recall"] = metrics["recall"]
+        metrics_data[f"class_{class_id}_F1"] = metrics["f1_score"]
+
     # 保存评估指标
     metrics_df = pd.DataFrame([metrics_data])
     epoch_str = str(epoch) if epoch is not None else "TEST"
-    metrics_filename = f"{overall_metrics['mAP']}{mode}_detection_metrics_epoch_{epoch_str}.csv"
+    metrics_filename = (
+        f"{overall_metrics['mAP']}{mode}_detection_metrics_epoch_{epoch_str}.csv"
+    )
     metrics_df.to_csv(os.path.join(results_dir, metrics_filename), index=False)
     logger.info(f"目标检测评估指标已保存到CSV文件: {metrics_filename}")
-    
+
     # 打印主要指标
     logger.info(f"mAP@{iou_threshold}: {average_precision:.4f}")
     logger.info(f"Mean Recall: {average_recall:.4f}")
     logger.info(f"Mean F1 Score: {average_f1:.4f}")
-    
+
     # 按AP值排序类别
-    sorted_classes = sorted([(c, class_metrics[c]['AP']) for c in valid_classes], key=lambda x: x[1], reverse=True)
-    
+    sorted_classes = sorted(
+        [(c, class_metrics[c]["AP"]) for c in valid_classes],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
     # 打印表现最好的5个类别
     logger.info("\n表现最好的5个解剖区域:")
     for class_id, ap in sorted_classes[:5]:
         metrics = class_metrics[class_id]
-        logger.info(f"区域 {class_id}: AP={ap:.4f}, Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}")
-    
+        logger.info(
+            f"区域 {class_id}: AP={ap:.4f}, Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}"
+        )
+
     # 打印表现最差的5个类别
     logger.info("\n表现最差的5个解剖区域:")
     for class_id, ap in sorted_classes[-5:]:
         metrics = class_metrics[class_id]
-        logger.info(f"区域 {class_id}: AP={ap:.4f}, Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}")
-    
+        logger.info(
+            f"区域 {class_id}: AP={ap:.4f}, Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}"
+        )
+
     # 记录评估指标到 TensorBoard
     if writer is not None and epoch is not None:
-        writer.add_scalar(f'{mode}/Detection/mAP', metrics_data['mAP'], epoch)
-        writer.add_scalar(f'{mode}/Detection/Mean_Recall', metrics_data['mRecall'], epoch)
-        writer.add_scalar(f'{mode}/Detection/Mean_F1', metrics_data['mF1'], epoch)
-        writer.add_scalar(f'{mode}/Detection/Loss', metrics_data['loss'], epoch)
-        
+        writer.add_scalar(f"{mode}/Detection/mAP", metrics_data["mAP"], epoch)
+        writer.add_scalar(
+            f"{mode}/Detection/Mean_Recall", metrics_data["mRecall"], epoch
+        )
+        writer.add_scalar(f"{mode}/Detection/Mean_F1", metrics_data["mF1"], epoch)
+        writer.add_scalar(f"{mode}/Detection/Loss", metrics_data["loss"], epoch)
+
         # 记录每个类别的指标
         for class_id, metrics in class_metrics.items():
-            writer.add_scalar(f'{mode}/Detection/Class_{class_id}/AP', metrics['AP'], epoch)
-            writer.add_scalar(f'{mode}/Detection/Class_{class_id}/Precision', metrics['precision'], epoch)
-            writer.add_scalar(f'{mode}/Detection/Class_{class_id}/Recall', metrics['recall'], epoch)
-            writer.add_scalar(f'{mode}/Detection/Class_{class_id}/F1', metrics['f1_score'], epoch)
+            writer.add_scalar(
+                f"{mode}/Detection/Class_{class_id}/AP", metrics["AP"], epoch
+            )
+            writer.add_scalar(
+                f"{mode}/Detection/Class_{class_id}/Precision",
+                metrics["precision"],
+                epoch,
+            )
+            writer.add_scalar(
+                f"{mode}/Detection/Class_{class_id}/Recall", metrics["recall"], epoch
+            )
+            writer.add_scalar(
+                f"{mode}/Detection/Class_{class_id}/F1", metrics["f1_score"], epoch
+            )
 
     # 返回结果
     result = {
@@ -1119,9 +1220,9 @@ def test_detection(
         "mRecall": average_recall,
         "mF1": average_f1,
         "loss": running_loss / len(data_loader) if running_loss > 0 else 0.0,
-        "metrics_df": metrics_df
+        "metrics_df": metrics_df,
     }
-    
+
     return running_loss / len(data_loader) if running_loss > 0 else 0.0, result
 
 
@@ -1137,7 +1238,7 @@ def test_vit(
 ):
     """
     评估PRETRAIN_VIT阶段的模型性能，包括每一层的区域分类准确率和全图分类准确率
-    
+
     参数:
         args: 配置参数
         data_loader: 测试数据加载器
@@ -1146,30 +1247,30 @@ def test_vit(
         mode: 评估模式 ("val" 或 "test")
         device: 计算设备
         epoch: 当前训练轮次
-    
+
     返回:
         float: 平均损失
         dict: 包含评估结果的字典
     """
     model.eval()
     running_loss = 0
-    
+
     # 获取ViT模型的总层数和实际有分类器的层数
     total_layers = model.image_encoder.num_layers
     classifier_layers = total_layers // 2  # 只有偶数层有分类器
-    
+
     # 初始化存储结构
     image_paths_list = []
     labels_list = []
-    
+
     # 为每个有分类器的层初始化评估指标存储
     all_layer_region_preds = [[] for _ in range(classifier_layers)]
     all_layer_image_preds = [[] for _ in range(classifier_layers)]
     all_labels = []
-    
+
     # 创建进度条
     prog_bar = tqdm(data_loader, desc=f"{mode} ViT Evaluation")
-    
+
     with torch.no_grad():
         for i, batch in enumerate(prog_bar):
             # 收集图像路径和标签
@@ -1178,7 +1279,16 @@ def test_vit(
             labels_list.extend(labels.cpu().numpy().tolist())
             all_labels.append(labels)
 
-            source, target, _ = prepare_batch_data(args, batch, data_loader, device, findings=False, history=False, label=True, bbox=True)
+            source, target, _ = prepare_batch_data(
+                args,
+                batch,
+                data_loader,
+                device,
+                findings=False,
+                history=False,
+                label=True,
+                bbox=True,
+            )
             # 转换为kwargs格式
             source = args_to_kwargs(source)
             target = args_to_kwargs(target)
@@ -1188,186 +1298,235 @@ def test_vit(
 
             outputs = data_distributor(model, source)
             outputs = args_to_kwargs(outputs)
-            
+
             # 收集每个有分类器的层的预测结果
             for layer_idx in range(classifier_layers):
-                region_preds = outputs['region_preds'][layer_idx]  # [B, num_regions, num_diseases]
-                image_preds = outputs['image_preds'][layer_idx]    # [B, num_diseases]
-                
+                region_preds = outputs["region_preds"][
+                    layer_idx
+                ]  # [B, num_regions, num_diseases]
+                image_preds = outputs["image_preds"][layer_idx]  # [B, num_diseases]
+
                 all_layer_region_preds[layer_idx].append(region_preds.detach().cpu())
                 all_layer_image_preds[layer_idx].append(image_preds.detach().cpu())
-    
+
     # 合并所有批次的预测和标签，并确保它们都在同一个设备上
     all_labels = torch.cat(all_labels, dim=0)  # 已经在device上了
     for layer_idx in range(classifier_layers):
-        all_layer_region_preds[layer_idx] = torch.cat(all_layer_region_preds[layer_idx], dim=0).to(device)
-        all_layer_image_preds[layer_idx] = torch.cat(all_layer_image_preds[layer_idx], dim=0).to(device)
-    
+        all_layer_region_preds[layer_idx] = torch.cat(
+            all_layer_region_preds[layer_idx], dim=0
+        ).to(device)
+        all_layer_image_preds[layer_idx] = torch.cat(
+            all_layer_image_preds[layer_idx], dim=0
+        ).to(device)
+
     # 计算每一层的评估指标
     logger.info("计算ViT模型评估指标...")
-    
+
     # 创建结果目录
     results_dir = os.path.join(args.checkpoint_path_to, "vit_results")
     os.makedirs(results_dir, exist_ok=True)
-    
+
     # 初始化结果数据
     metrics_data = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "mode": mode,
         "epoch": str(epoch) if epoch is not None else "TEST",
     }
-    
+
     # 计算每个有分类器的层的指标
     for layer_idx in range(classifier_layers):
         actual_layer = layer_idx * 2  # 转换为实际的层索引（偶数层）
-        
+
         # 获取当前层的预测
-        region_preds = all_layer_region_preds[layer_idx]  # [N, num_regions, num_diseases]
-        image_preds = all_layer_image_preds[layer_idx]    # [N, num_diseases]
-        
+        region_preds = all_layer_region_preds[
+            layer_idx
+        ]  # [N, num_regions, num_diseases]
+        image_preds = all_layer_image_preds[layer_idx]  # [N, num_diseases]
+
         # 应用sigmoid获取概率
         region_probs = torch.sigmoid(region_preds)
         image_probs = torch.sigmoid(image_preds)
-        
+
         # 使用0.5作为阈值获取二值预测
         region_binary = (region_probs > 0.5).float()
         image_binary = (image_probs > 0.5).float()
-        
+
         # 计算区域级指标
         num_regions = region_preds.size(1)
         num_diseases = region_preds.size(2)
-        
+
         # 计算每个区域的样本级指标 (Example-based metrics)
         for region_idx in range(num_regions):
             region_pred = region_binary[:, region_idx, :]  # [N, num_diseases]
             region_label = all_labels  # 使用图像级标签作为区域级标签
-            
+
             # 计算每个样本的TP, FP, FN
-            tp = (region_pred == 1) & (region_label == 1)  # 真阳性：预测有疾病且真实有疾病
-            fp = (region_pred == 1) & (region_label == 0)  # 假阳性：预测有疾病但真实无疾病
-            fn = (region_pred == 0) & (region_label == 1)  # 假阴性：预测无疾病但真实有疾病
-            
+            tp = (region_pred == 1) & (
+                region_label == 1
+            )  # 真阳性：预测有疾病且真实有疾病
+            fp = (region_pred == 1) & (
+                region_label == 0
+            )  # 假阳性：预测有疾病但真实无疾病
+            fn = (region_pred == 0) & (
+                region_label == 1
+            )  # 假阴性：预测无疾病但真实有疾病
+
             # 对每个样本的每个疾病求和，得到每个样本的TP, FP, FN总数
             tp_sum = tp.sum(dim=1).float()  # [N]
             fp_sum = fp.sum(dim=1).float()  # [N]
             fn_sum = fn.sum(dim=1).float()  # [N]
-            
+
             # 计算每个样本的精确率、召回率、F1分数
             # 注意处理分母为0的情况
             precision = torch.zeros_like(tp_sum)
             recall = torch.zeros_like(tp_sum)
             f1 = torch.zeros_like(tp_sum)
-            
+
             valid_precision = (tp_sum + fp_sum) > 0
             valid_recall = (tp_sum + fn_sum) > 0
-            
-            precision[valid_precision] = tp_sum[valid_precision] / (tp_sum[valid_precision] + fp_sum[valid_precision])
-            recall[valid_recall] = tp_sum[valid_recall] / (tp_sum[valid_recall] + fn_sum[valid_recall])
-            
+
+            precision[valid_precision] = tp_sum[valid_precision] / (
+                tp_sum[valid_precision] + fp_sum[valid_precision]
+            )
+            recall[valid_recall] = tp_sum[valid_recall] / (
+                tp_sum[valid_recall] + fn_sum[valid_recall]
+            )
+
             valid_f1 = (tp_sum > 0) | (fp_sum > 0) | (fn_sum > 0)
-            f1[valid_f1] = tp_sum[valid_f1] / (tp_sum[valid_f1] + 0.5 * (fp_sum[valid_f1] + fn_sum[valid_f1]))
-            
+            f1[valid_f1] = tp_sum[valid_f1] / (
+                tp_sum[valid_f1] + 0.5 * (fp_sum[valid_f1] + fn_sum[valid_f1])
+            )
+
             # 计算样本级别的平均指标
             ce_precision = precision.mean().item()
             ce_recall = recall.mean().item()
             ce_f1 = f1.mean().item()
-            
+
             # 保存区域级指标
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_ce_precision"] = ce_precision
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_ce_recall"] = ce_recall
+            metrics_data[f"layer_{actual_layer}_region_{region_idx}_ce_precision"] = (
+                ce_precision
+            )
+            metrics_data[f"layer_{actual_layer}_region_{region_idx}_ce_recall"] = (
+                ce_recall
+            )
             metrics_data[f"layer_{actual_layer}_region_{region_idx}_ce_f1"] = ce_f1
-            
+
             # 计算传统的基于类别的评估指标 (Class-based metrics)
             # 这部分保留了您原来的计算逻辑，但这里使用每个区域的预测
-            
+
             # 计算每个疾病的指标
             tp_cls = tp.sum(dim=0).float()  # [num_diseases]
             fp_cls = fp.sum(dim=0).float()  # [num_diseases]
             fn_cls = fn.sum(dim=0).float()  # [num_diseases]
-            
+
             # 计算每个疾病的precision, recall, f1
             cls_precision = torch.zeros_like(tp_cls)
             cls_recall = torch.zeros_like(tp_cls)
             cls_f1 = torch.zeros_like(tp_cls)
-            
+
             valid_cls_precision = (tp_cls + fp_cls) > 0
             valid_cls_recall = (tp_cls + fn_cls) > 0
-            
-            cls_precision[valid_cls_precision] = tp_cls[valid_cls_precision] / (tp_cls[valid_cls_precision] + fp_cls[valid_cls_precision])
-            cls_recall[valid_cls_recall] = tp_cls[valid_cls_recall] / (tp_cls[valid_cls_recall] + fn_cls[valid_cls_recall])
-            
+
+            cls_precision[valid_cls_precision] = tp_cls[valid_cls_precision] / (
+                tp_cls[valid_cls_precision] + fp_cls[valid_cls_precision]
+            )
+            cls_recall[valid_cls_recall] = tp_cls[valid_cls_recall] / (
+                tp_cls[valid_cls_recall] + fn_cls[valid_cls_recall]
+            )
+
             valid_cls_f1 = (tp_cls > 0) | (fp_cls > 0) | (fn_cls > 0)
-            cls_f1[valid_cls_f1] = tp_cls[valid_cls_f1] / (tp_cls[valid_cls_f1] + 0.5 * (fp_cls[valid_cls_f1] + fn_cls[valid_cls_f1]))
-            
+            cls_f1[valid_cls_f1] = tp_cls[valid_cls_f1] / (
+                tp_cls[valid_cls_f1]
+                + 0.5 * (fp_cls[valid_cls_f1] + fn_cls[valid_cls_f1])
+            )
+
             # 计算类别平均指标
             cls_precision_mean = cls_precision.mean().item()
             cls_recall_mean = cls_recall.mean().item()
             cls_f1_mean = cls_f1.mean().item()
-            
+
             # 保存基于类别的指标
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_cls_precision"] = cls_precision_mean
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_cls_recall"] = cls_recall_mean
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_cls_f1"] = cls_f1_mean
-        
+            metrics_data[f"layer_{actual_layer}_region_{region_idx}_cls_precision"] = (
+                cls_precision_mean
+            )
+            metrics_data[f"layer_{actual_layer}_region_{region_idx}_cls_recall"] = (
+                cls_recall_mean
+            )
+            metrics_data[f"layer_{actual_layer}_region_{region_idx}_cls_f1"] = (
+                cls_f1_mean
+            )
+
         # 计算图像级指标 (样本级和类别级)
         # 样本级指标 (Example-based)
         image_pred = image_binary  # [N, num_diseases]
         image_label = all_labels
-        
+
         # 计算每个样本的TP, FP, FN
         tp = (image_pred == 1) & (image_label == 1)
         fp = (image_pred == 1) & (image_label == 0)
         fn = (image_pred == 0) & (image_label == 1)
-        
+
         tp_sum = tp.sum(dim=1).float()
         fp_sum = fp.sum(dim=1).float()
         fn_sum = fn.sum(dim=1).float()
-        
+
         # 计算每个样本的精确率、召回率、F1分数
         precision = torch.zeros_like(tp_sum)
         recall = torch.zeros_like(tp_sum)
         f1 = torch.zeros_like(tp_sum)
-        
+
         valid_precision = (tp_sum + fp_sum) > 0
         valid_recall = (tp_sum + fn_sum) > 0
-        
-        precision[valid_precision] = tp_sum[valid_precision] / (tp_sum[valid_precision] + fp_sum[valid_precision])
-        recall[valid_recall] = tp_sum[valid_recall] / (tp_sum[valid_recall] + fn_sum[valid_recall])
-        
+
+        precision[valid_precision] = tp_sum[valid_precision] / (
+            tp_sum[valid_precision] + fp_sum[valid_precision]
+        )
+        recall[valid_recall] = tp_sum[valid_recall] / (
+            tp_sum[valid_recall] + fn_sum[valid_recall]
+        )
+
         valid_f1 = (tp_sum > 0) | (fp_sum > 0) | (fn_sum > 0)
-        f1[valid_f1] = tp_sum[valid_f1] / (tp_sum[valid_f1] + 0.5 * (fp_sum[valid_f1] + fn_sum[valid_f1]))
-        
+        f1[valid_f1] = tp_sum[valid_f1] / (
+            tp_sum[valid_f1] + 0.5 * (fp_sum[valid_f1] + fn_sum[valid_f1])
+        )
+
         # 计算样本级别的平均指标
         ce_precision = precision.mean().item()
         ce_recall = recall.mean().item()
         ce_f1 = f1.mean().item()
-        
+
         # 计算类别级指标 (Class-based)
         tp_cls = tp.sum(dim=0).float()
         fp_cls = fp.sum(dim=0).float()
         fn_cls = fn.sum(dim=0).float()
-        
+
         cls_precision = torch.zeros_like(tp_cls)
         cls_recall = torch.zeros_like(tp_cls)
         cls_f1 = torch.zeros_like(tp_cls)
-        
+
         valid_cls_precision = (tp_cls + fp_cls) > 0
         valid_cls_recall = (tp_cls + fn_cls) > 0
-        
-        cls_precision[valid_cls_precision] = tp_cls[valid_cls_precision] / (tp_cls[valid_cls_precision] + fp_cls[valid_cls_precision])
-        cls_recall[valid_cls_recall] = tp_cls[valid_cls_recall] / (tp_cls[valid_cls_recall] + fn_cls[valid_cls_recall])
-        
+
+        cls_precision[valid_cls_precision] = tp_cls[valid_cls_precision] / (
+            tp_cls[valid_cls_precision] + fp_cls[valid_cls_precision]
+        )
+        cls_recall[valid_cls_recall] = tp_cls[valid_cls_recall] / (
+            tp_cls[valid_cls_recall] + fn_cls[valid_cls_recall]
+        )
+
         valid_cls_f1 = (tp_cls > 0) | (fp_cls > 0) | (fn_cls > 0)
-        cls_f1[valid_cls_f1] = tp_cls[valid_cls_f1] / (tp_cls[valid_cls_f1] + 0.5 * (fp_cls[valid_cls_f1] + fn_cls[valid_cls_f1]))
-        
+        cls_f1[valid_cls_f1] = tp_cls[valid_cls_f1] / (
+            tp_cls[valid_cls_f1] + 0.5 * (fp_cls[valid_cls_f1] + fn_cls[valid_cls_f1])
+        )
+
         # 计算类别平均指标
         cls_precision_mean = cls_precision.mean().item()
         cls_recall_mean = cls_recall.mean().item()
         cls_f1_mean = cls_f1.mean().item()
-        
+
         # 计算准确率 (整体分类准确率)
         accuracy = (image_pred == image_label).float().mean().item()
-        
+
         # 计算AUC
         auc_scores = []
         for disease_idx in range(num_diseases):
@@ -1379,9 +1538,9 @@ def test_vit(
                     auc_scores.append(auc)
                 except:
                     pass
-        
+
         auc_mean = np.mean(auc_scores) if auc_scores else 0.0
-        
+
         # 保存图像级指标
         metrics_data[f"layer_{actual_layer}_image_accuracy"] = accuracy
         metrics_data[f"layer_{actual_layer}_image_auc"] = auc_mean
@@ -1391,10 +1550,10 @@ def test_vit(
         metrics_data[f"layer_{actual_layer}_image_cls_precision"] = cls_precision_mean
         metrics_data[f"layer_{actual_layer}_image_cls_recall"] = cls_recall_mean
         metrics_data[f"layer_{actual_layer}_image_cls_f1"] = cls_f1_mean
-    
+
     # 计算最后一个有分类器的层的指标作为整体指标
     final_layer_idx = (classifier_layers - 1) * 2  # 最后一个有分类器的层的实际索引
-    
+
     # 整体指标 (例如图像级指标)
     overall_metrics = {
         "accuracy": metrics_data[f"layer_{final_layer_idx}_image_accuracy"],
@@ -1404,21 +1563,31 @@ def test_vit(
         "ce_f1": metrics_data[f"layer_{final_layer_idx}_image_ce_f1"],
         "cls_precision": metrics_data[f"layer_{final_layer_idx}_image_cls_precision"],
         "cls_recall": metrics_data[f"layer_{final_layer_idx}_image_cls_recall"],
-        "cls_f1": metrics_data[f"layer_{final_layer_idx}_image_cls_f1"]
+        "cls_f1": metrics_data[f"layer_{final_layer_idx}_image_cls_f1"],
     }
-    
+
     # 加入每个区域的指标
     for region_idx in range(num_regions):
         region_metrics = {
-            "ce_precision": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_ce_precision"],
-            "ce_recall": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_ce_recall"],
+            "ce_precision": metrics_data[
+                f"layer_{final_layer_idx}_region_{region_idx}_ce_precision"
+            ],
+            "ce_recall": metrics_data[
+                f"layer_{final_layer_idx}_region_{region_idx}_ce_recall"
+            ],
             "ce_f1": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_ce_f1"],
-            "cls_precision": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_cls_precision"],
-            "cls_recall": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_cls_recall"],
-            "cls_f1": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_cls_f1"]
+            "cls_precision": metrics_data[
+                f"layer_{final_layer_idx}_region_{region_idx}_cls_precision"
+            ],
+            "cls_recall": metrics_data[
+                f"layer_{final_layer_idx}_region_{region_idx}_cls_recall"
+            ],
+            "cls_f1": metrics_data[
+                f"layer_{final_layer_idx}_region_{region_idx}_cls_f1"
+            ],
         }
         overall_metrics[f"region_{region_idx}_metrics"] = region_metrics
-    
+
     # 添加整体指标到结果数据
     for metric_name, value in overall_metrics.items():
         if isinstance(value, dict):
@@ -1426,29 +1595,29 @@ def test_vit(
                 metrics_data[f"overall_{metric_name}_{sub_metric_name}"] = sub_value
         else:
             metrics_data[f"overall_{metric_name}"] = value
-    
+
     # 保存评估指标
     metrics_df = pd.DataFrame([metrics_data])
     epoch_str = str(epoch) if epoch is not None else "TEST"
     metrics_filename = f"{mode}_vit_metrics_epoch_{epoch_str}.csv"
     metrics_df.to_csv(os.path.join(results_dir, metrics_filename), index=False)
     logger.info(f"ViT评估指标已保存到CSV文件: {metrics_filename}")
-    
+
     # 打印主要指标
     logger.info(f"\n图像分类指标 (样本级):")
     logger.info(f"样本级精确率: {overall_metrics['ce_precision']:.4f}")
     logger.info(f"样本级召回率: {overall_metrics['ce_recall']:.4f}")
     logger.info(f"样本级F1分数: {overall_metrics['ce_f1']:.4f}")
-    
+
     logger.info(f"\n图像分类指标 (类别级):")
     logger.info(f"类别级精确率: {overall_metrics['cls_precision']:.4f}")
     logger.info(f"类别级召回率: {overall_metrics['cls_recall']:.4f}")
     logger.info(f"类别级F1分数: {overall_metrics['cls_f1']:.4f}")
-    
+
     logger.info(f"\n其他指标:")
     logger.info(f"准确率: {overall_metrics['accuracy']:.4f}")
     logger.info(f"AUC: {overall_metrics['auc']:.4f}")
-    
+
     # 打印每个区域的指标
     logger.info(f"\n各解剖区域分类指标:")
     for region_idx in range(num_regions):
@@ -1460,141 +1629,173 @@ def test_vit(
         logger.info(f"类别级精确率: {region_metrics['cls_precision']:.4f}")
         logger.info(f"类别级召回率: {region_metrics['cls_recall']:.4f}")
         logger.info(f"类别级F1分数: {region_metrics['cls_f1']:.4f}")
-    
+
     # 记录评估指标到 TensorBoard
     if writer is not None and epoch is not None:
         # 记录整体指标
-        writer.add_scalar(f'{mode}/ViT/Accuracy', overall_metrics['accuracy'], epoch)
-        writer.add_scalar(f'{mode}/ViT/AUC', overall_metrics['auc'], epoch)
-        writer.add_scalar(f'{mode}/ViT/CE_Precision', overall_metrics['ce_precision'], epoch)
-        writer.add_scalar(f'{mode}/ViT/CE_Recall', overall_metrics['ce_recall'], epoch)
-        writer.add_scalar(f'{mode}/ViT/CE_F1', overall_metrics['ce_f1'], epoch)
-        writer.add_scalar(f'{mode}/ViT/CLS_Precision', overall_metrics['cls_precision'], epoch)
-        writer.add_scalar(f'{mode}/ViT/CLS_Recall', overall_metrics['cls_recall'], epoch)
-        writer.add_scalar(f'{mode}/ViT/CLS_F1', overall_metrics['cls_f1'], epoch)
-        
+        writer.add_scalar(f"{mode}/ViT/Accuracy", overall_metrics["accuracy"], epoch)
+        writer.add_scalar(f"{mode}/ViT/AUC", overall_metrics["auc"], epoch)
+        writer.add_scalar(
+            f"{mode}/ViT/CE_Precision", overall_metrics["ce_precision"], epoch
+        )
+        writer.add_scalar(f"{mode}/ViT/CE_Recall", overall_metrics["ce_recall"], epoch)
+        writer.add_scalar(f"{mode}/ViT/CE_F1", overall_metrics["ce_f1"], epoch)
+        writer.add_scalar(
+            f"{mode}/ViT/CLS_Precision", overall_metrics["cls_precision"], epoch
+        )
+        writer.add_scalar(
+            f"{mode}/ViT/CLS_Recall", overall_metrics["cls_recall"], epoch
+        )
+        writer.add_scalar(f"{mode}/ViT/CLS_F1", overall_metrics["cls_f1"], epoch)
+
         # 记录每个区域的指标
         for region_idx in range(num_regions):
             region_metrics = overall_metrics[f"region_{region_idx}_metrics"]
-            writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/CE_Precision', region_metrics['ce_precision'], epoch)
-            writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/CE_Recall', region_metrics['ce_recall'], epoch)
-            writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/CE_F1', region_metrics['ce_f1'], epoch)
-            writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/CLS_Precision', region_metrics['cls_precision'], epoch)
-            writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/CLS_Recall', region_metrics['cls_recall'], epoch)
-            writer.add_scalar(f'{mode}/ViT/Region_{region_idx}/CLS_F1', region_metrics['cls_f1'], epoch)
+            writer.add_scalar(
+                f"{mode}/ViT/Region_{region_idx}/CE_Precision",
+                region_metrics["ce_precision"],
+                epoch,
+            )
+            writer.add_scalar(
+                f"{mode}/ViT/Region_{region_idx}/CE_Recall",
+                region_metrics["ce_recall"],
+                epoch,
+            )
+            writer.add_scalar(
+                f"{mode}/ViT/Region_{region_idx}/CE_F1", region_metrics["ce_f1"], epoch
+            )
+            writer.add_scalar(
+                f"{mode}/ViT/Region_{region_idx}/CLS_Precision",
+                region_metrics["cls_precision"],
+                epoch,
+            )
+            writer.add_scalar(
+                f"{mode}/ViT/Region_{region_idx}/CLS_Recall",
+                region_metrics["cls_recall"],
+                epoch,
+            )
+            writer.add_scalar(
+                f"{mode}/ViT/Region_{region_idx}/CLS_F1",
+                region_metrics["cls_f1"],
+                epoch,
+            )
 
     # 返回结果
-    result = {
-        "overall_metrics": overall_metrics,
-        "metrics_df": metrics_df
-    }
-    
+    result = {"overall_metrics": overall_metrics, "metrics_df": metrics_df}
+
     return 0.0, result
 
 
 def calculate_detection_metrics(predictions, ground_truths, iou_threshold=0.5):
     """
     计算目标检测的整体指标
-    
+
     参数:
         predictions: 预测结果列表
         ground_truths: 真值列表
         iou_threshold: IoU阈值
-        
+
     返回:
         dict: 包含mAP等指标的字典
     """
     if not predictions or not ground_truths:
-        return {'mAP': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0}
-    
+        return {"mAP": 0.0, "precision": 0.0, "recall": 0.0, "f1_score": 0.0}
+
     # 按图像ID和类别整理预测和真值
     pred_by_img_cls = {}
     gt_by_img_cls = {}
-    
+
     for pred in predictions:
-        img_id = pred['image_id']
-        for i, (box, label, score) in enumerate(zip(pred['boxes'], pred['labels'], pred['scores'])):
+        img_id = pred["image_id"]
+        for i, (box, label, score) in enumerate(
+            zip(pred["boxes"], pred["labels"], pred["scores"])
+        ):
             key = (img_id, label.item())
             if key not in pred_by_img_cls:
                 pred_by_img_cls[key] = []
             pred_by_img_cls[key].append((box, score))
-    
+
     for gt in ground_truths:
-        img_id = gt['image_id']
-        for i, (box, label) in enumerate(zip(gt['boxes'], gt['labels'])):
+        img_id = gt["image_id"]
+        for i, (box, label) in enumerate(zip(gt["boxes"], gt["labels"])):
             key = (img_id, label.item())
             if key not in gt_by_img_cls:
                 gt_by_img_cls[key] = []
             gt_by_img_cls[key].append(box)
-    
+
     # 计算所有类别的AP
-    all_classes = set([k[1] for k in pred_by_img_cls.keys()] + [k[1] for k in gt_by_img_cls.keys()])
+    all_classes = set(
+        [k[1] for k in pred_by_img_cls.keys()] + [k[1] for k in gt_by_img_cls.keys()]
+    )
     aps = []
-    
+
     for cls in all_classes:
         # 收集此类别的所有预测和真值
         all_preds = []
         all_gt_count = 0
-        
-        for img_id in set([k[0] for k in pred_by_img_cls.keys()] + [k[0] for k in gt_by_img_cls.keys()]):
+
+        for img_id in set(
+            [k[0] for k in pred_by_img_cls.keys()]
+            + [k[0] for k in gt_by_img_cls.keys()]
+        ):
             key = (img_id, cls)
-            
+
             # 获取此图像中此类别的预测
             img_preds = pred_by_img_cls.get(key, [])
             img_preds.sort(key=lambda x: x[1], reverse=True)  # 按置信度排序
-            
+
             # 获取此图像中此类别的真值
             img_gts = gt_by_img_cls.get(key, [])
             all_gt_count += len(img_gts)
-            
+
             # 判断每个预测是否为TP
             gt_matched = [False] * len(img_gts)
-            
+
             for pred_box, score in img_preds:
                 # 计算与所有真值的IoU
                 max_iou = 0
                 max_idx = -1
-                
+
                 for j, gt_box in enumerate(img_gts):
                     if gt_matched[j]:
                         continue
-                    
+
                     # 计算IoU
                     iou = box_iou(pred_box.unsqueeze(0), gt_box.unsqueeze(0)).item()
                     if iou > max_iou:
                         max_iou = iou
                         max_idx = j
-                
+
                 # 添加预测结果 (score, tp)
                 if max_idx >= 0 and max_iou >= iou_threshold:
                     all_preds.append((score.item(), 1))
                     gt_matched[max_idx] = True
                 else:
                     all_preds.append((score.item(), 0))
-        
+
         # 计算此类别的AP
         if all_preds:
             # 按置信度排序
             all_preds.sort(reverse=True)
-            
+
             # 计算累积TP和FP
             tp_cumsum = 0
             fp_cumsum = 0
             precisions = []
             recalls = []
-            
+
             for score, tp in all_preds:
                 if tp == 1:
                     tp_cumsum += 1
                 else:
                     fp_cumsum += 1
-                
+
                 precision = tp_cumsum / (tp_cumsum + fp_cumsum)
                 recall = tp_cumsum / max(all_gt_count, 1)
-                
+
                 precisions.append(precision)
                 recalls.append(recall)
-            
+
             # 计算AP (11点插值法)
             ap = 0
             for t in np.arange(0, 1.1, 0.1):
@@ -1602,87 +1803,90 @@ def calculate_detection_metrics(predictions, ground_truths, iou_threshold=0.5):
                     p = 0
                 else:
                     # 找到所有大于等于t的recall点
-                    p_vals = [precisions[i] for i in range(len(recalls)) if recalls[i] >= t]
+                    p_vals = [
+                        precisions[i] for i in range(len(recalls)) if recalls[i] >= t
+                    ]
                     p = max(p_vals) if p_vals else 0
                 ap += p / 11
-            
+
             aps.append(ap)
-    
+
     # 计算平均AP
     mAP = np.mean(aps) if aps else 0.0
-    
+
     # 计算整体精确度、召回率和F1
-    total_tp = sum(pred[1] for preds in pred_by_img_cls.values() for pred in preds if pred[1] == 1)
-    total_fp = sum(1 for preds in pred_by_img_cls.values() for pred in preds if pred[1] == 0)
+    total_tp = sum(
+        pred[1] for preds in pred_by_img_cls.values() for pred in preds if pred[1] == 1
+    )
+    total_fp = sum(
+        1 for preds in pred_by_img_cls.values() for pred in preds if pred[1] == 0
+    )
     total_gt = sum(len(gts) for gts in gt_by_img_cls.values())
-    
+
     precision = total_tp / (total_tp + total_fp) if total_tp + total_fp > 0 else 0.0
     recall = total_tp / total_gt if total_gt > 0 else 0.0
-    f1_score = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
-    
-    return {
-        'mAP': mAP,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1_score
-    }
+    f1_score = (
+        2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
+    )
+
+    return {"mAP": mAP, "precision": precision, "recall": recall, "f1_score": f1_score}
 
 
 def calculate_class_metrics(class_predictions, class_ground_truths, iou_threshold=0.5):
     """
     计算单个类别的检测指标
-    
+
     参数:
         class_predictions: 此类别的预测列表
         class_ground_truths: 此类别的真值列表
         iou_threshold: IoU阈值
-        
+
     返回:
         dict: 包含AP等指标的字典
     """
     # 计算预测总数和真值总数
-    total_preds = sum(len(pred['boxes']) for pred in class_predictions)
-    total_gts = sum(len(gt['boxes']) for gt in class_ground_truths)
-    
+    total_preds = sum(len(pred["boxes"]) for pred in class_predictions)
+    total_gts = sum(len(gt["boxes"]) for gt in class_ground_truths)
+
     # 如果没有预测或真值，返回零指标
     if total_preds == 0 or total_gts == 0:
         return {
-            'AP': 0.0,
-            'precision': 0.0,
-            'recall': 0.0,
-            'f1_score': 0.0,
-            'TP': 0,
-            'FP': total_preds,
-            'FN': total_gts,
-            'num_samples': total_gts
+            "AP": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1_score": 0.0,
+            "TP": 0,
+            "FP": total_preds,
+            "FN": total_gts,
+            "num_samples": total_gts,
         }
-    
+
     # 初始化TP、FP计数和得分列表
     all_scores = []
     all_tp = []
-    
+
     # 对每张图像进行评估
     for i, (pred, gt) in enumerate(zip(class_predictions, class_ground_truths)):
-        pred_boxes = pred['boxes']
-        pred_scores = pred['scores']
-        gt_boxes = gt['boxes']
-        
+        pred_boxes = pred["boxes"]
+        pred_scores = pred["scores"]
+        gt_boxes = gt["boxes"]
+
         # 跳过没有预测或真值的图像
         if len(pred_boxes) == 0 or len(gt_boxes) == 0:
             continue
-        
+
         # 计算所有预测框和真值框之间的IoU
         ious = box_iou(pred_boxes, gt_boxes)
-        
+
         # 对每个预测框，找到最大IoU的真值框
         max_ious, max_idx = ious.max(dim=1)
-        
+
         # 初始化匹配标记
         gt_matched = torch.zeros(len(gt_boxes), dtype=torch.bool)
-        
+
         # 按置信度排序预测框
         _, sorted_idx = torch.sort(pred_scores, descending=True)
-        
+
         # 判断每个预测是TP还是FP
         for idx in sorted_idx:
             if max_ious[idx] >= iou_threshold:
@@ -1697,34 +1901,34 @@ def calculate_class_metrics(class_predictions, class_ground_truths, iou_threshol
             else:
                 # 假阳性(IoU过低)
                 all_tp.append(0)
-            
+
             all_scores.append(pred_scores[idx].item())
-    
+
     # 如果没有有效预测，返回零指标
     if not all_scores:
         return {
-            'AP': 0.0,
-            'precision': 0.0,
-            'recall': 0.0,
-            'f1_score': 0.0,
-            'TP': 0,
-            'FP': total_preds,
-            'FN': total_gts,
-            'num_samples': total_gts
+            "AP": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1_score": 0.0,
+            "TP": 0,
+            "FP": total_preds,
+            "FN": total_gts,
+            "num_samples": total_gts,
         }
-    
+
     # 按置信度排序
     sorted_indices = np.argsort(all_scores)[::-1]
     all_tp = [all_tp[i] for i in sorted_indices]
-    
+
     # 计算累积TP和FP
     tp_cumsum = np.cumsum(all_tp)
     fp_cumsum = np.cumsum([1 - tp for tp in all_tp])
-    
+
     # 计算精确度和召回率
     precisions = tp_cumsum / (tp_cumsum + fp_cumsum)
     recalls = tp_cumsum / total_gts
-    
+
     # 计算AP (11点插值法)
     ap = 0
     for t in np.arange(0, 1.1, 0.1):
@@ -1734,69 +1938,79 @@ def calculate_class_metrics(class_predictions, class_ground_truths, iou_threshol
             p_vals = [precisions[i] for i in range(len(recalls)) if recalls[i] >= t]
             p = max(p_vals) if p_vals else 0
         ap += p / 11
-    
+
     # 计算最终TP、FP、FN和整体指标
     TP = sum(all_tp)
     FP = len(all_tp) - TP
     FN = total_gts - TP
-    
+
     precision = TP / (TP + FP) if TP + FP > 0 else 0.0
     recall = TP / total_gts if total_gts > 0 else 0.0
-    f1_score = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
-    
+    f1_score = (
+        2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
+    )
+
     return {
-        'AP': ap,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1_score,
-        'TP': int(TP),
-        'FP': int(FP),
-        'FN': int(FN),
-        'num_samples': total_gts
+        "AP": ap,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1_score,
+        "TP": int(TP),
+        "FP": int(FP),
+        "FN": int(FN),
+        "num_samples": total_gts,
     }
+
 
 def analyze_gpu_memory():
     """分析当前GPU内存使用情况，并打印内存占用最大的前20个张量"""
     print("\n--------------------GPU内存分析--------------------")
-    
+
     # 收集所有张量信息
     tensor_info = []
     for obj in gc.get_objects():
         try:
-            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+            if torch.is_tensor(obj) or (
+                hasattr(obj, "data") and torch.is_tensor(obj.data)
+            ):
                 # 计算内存占用（MB）
                 memory = obj.element_size() * obj.nelement() / 1024 / 1024
-                
+
                 # 收集张量信息
                 info = {
-                    'type': type(obj),
-                    'size': tuple(obj.size()),
-                    'dtype': obj.dtype,
-                    'device': obj.device,
-                    'memory': memory,
-                    'tensor': obj  # 保存张量对象以便后续查找变量名
+                    "type": type(obj),
+                    "size": tuple(obj.size()),
+                    "dtype": obj.dtype,
+                    "device": obj.device,
+                    "memory": memory,
+                    "tensor": obj,  # 保存张量对象以便后续查找变量名
                 }
                 tensor_info.append(info)
         except:
             pass
-    
+
     # 按内存占用降序排序
-    tensor_info.sort(key=lambda x: x['memory'], reverse=True)
-    
+    tensor_info.sort(key=lambda x: x["memory"], reverse=True)
+
     # 显示前20个最大的张量
     total_memory = 0
-    print(f"{'内存(MB)':>10} | {'类型':<15} | {'大小':<20} | {'数据类型':<10} | {'设备':<10}")
+    print(
+        f"{'内存(MB)':>10} | {'类型':<15} | {'大小':<20} | {'数据类型':<10} | {'设备':<10}"
+    )
     print("-" * 80)
-    
+
     for i, info in enumerate(tensor_info[:20]):
-        total_memory += info['memory']
-        print(f"{info['memory']:>10.2f} | {str(info['type'].__name__):<15} | {str(info['size']):<20} | {str(info['dtype']).split('.')[-1]:<10} | {str(info['device']):<10}")
-    
+        total_memory += info["memory"]
+        print(
+            f"{info['memory']:>10.2f} | {str(info['type'].__name__):<15} | {str(info['size']):<20} | {str(info['dtype']).split('.')[-1]:<10} | {str(info['device']):<10}"
+        )
+
     print("-" * 80)
     print(f"前20个张量总内存: {total_memory:.2f} MB")
     print(f"GPU已分配内存: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
     print(f"GPU缓存内存: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
     print("------------------------------------------------\n")
+
 
 def get_memory_profiler(enable_profile=False, log_path=None):
     """创建内存分析器的上下文管理器"""
@@ -1808,6 +2022,8 @@ def get_memory_profiler(enable_profile=False, log_path=None):
             with_stack=True,
             with_modules=True,
             with_flops=True,
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(log_path) if log_path else None
+            on_trace_ready=(
+                torch.profiler.tensorboard_trace_handler(log_path) if log_path else None
+            ),
         )
     return nullcontext()
