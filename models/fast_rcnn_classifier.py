@@ -119,7 +119,7 @@ class EnhancedFastRCNN(nn.Module):
         self.num_regions = num_regions
 
     def extract_features(self, images, boxes_list, labels_list, scores_list=None):
-        """优化版特征提取方法，处理不同格式的输入"""
+        """特征提取方法"""
 
         batch_size = images.size(0)
         device = images.device
@@ -309,11 +309,10 @@ class EnhancedFastRCNN(nn.Module):
         detections = None
 
         if use_gt:
-            # 使用ground truth边界框
-            for i in range(batch_size):
-                boxes_list.append(targets[i]["boxes"])
-                labels_list.append(targets[i]["labels"])
-                scores_list.append(None)  # GT框没有置信度
+            # 使用ground truth边界框 - 使用列表推导式
+            boxes_list = [target["boxes"] for target in targets]
+            labels_list = [target["labels"] for target in targets]
+            scores_list = [None] * batch_size  # GT框没有置信度
 
         else:
             # 使用检测器预测的边界框
@@ -321,17 +320,17 @@ class EnhancedFastRCNN(nn.Module):
             with torch.no_grad():
                 detections = self.detector(images)
 
-            for i in range(batch_size):
-                boxes = detections[i]["boxes"]
-                labels = detections[i]["labels"]
-                scores = detections[i]["scores"]
+            # 设置阈值
+            threshold = 0.5
 
-                # 仅保留高置信度的检测结果
-                threshold = 0.5
-                keep = scores > threshold
-                boxes_list.append(boxes[keep])
-                labels_list.append(labels[keep])
-                scores_list.append(scores[keep])
+            # 使用列表推导式和向量化操作
+            boxes_list = [det["boxes"][det["scores"] > threshold] for det in detections]
+            labels_list = [
+                det["labels"][det["scores"] > threshold] for det in detections
+            ]
+            scores_list = [
+                det["scores"][det["scores"] > threshold] for det in detections
+            ]
 
         # 提取区域特征，每个解剖区域只保留最佳边界框
         region_features, region_detected = self.extract_features(
@@ -339,7 +338,7 @@ class EnhancedFastRCNN(nn.Module):
         )
 
         return {
-            "detections": detections,  # 如果使用GT框则为None
+            "detections": detections if not use_gt else None,
             "region_features": region_features,
             "region_detected": region_detected,
             "losses": None,  # 第二阶段不计算检测损失
