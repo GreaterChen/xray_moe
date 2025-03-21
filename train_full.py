@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sklearn.metrics as metrics
 from datetime import datetime
+import gc
 
 # --- PyTorch packages ---
 import torch
@@ -141,7 +142,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--train_batch_size", type=int, default=128, help="Batch size for training."
+        "--train_batch_size", type=int, default=64, help="Batch size for training."
     )
     parser.add_argument(
         "--val_batch_size", type=int, default=32, help="Batch size for validation."
@@ -245,7 +246,7 @@ if __name__ == "__main__":
             random_transform=True,
             tokenizer=tokenizer,
             mode="train",
-            subset_size=50 if args.debug else None,
+            subset_size=1000 if args.debug else None,
         )
 
         val_data = MIMIC(
@@ -410,7 +411,7 @@ if __name__ == "__main__":
             _, _ = load(args.checkpoint_path_from, model, optimizer, scheduler)
 
         criterion = None
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.amp.GradScaler('cuda')
     
         for epoch in range(last_epoch + 1, args.epochs):
             print(f"Epoch: {epoch}")
@@ -420,9 +421,9 @@ if __name__ == "__main__":
                 model,
                 optimizer,
                 criterion,
+                args.epochs,
+                epoch,
                 scheduler=scheduler,
-                num_epochs=args.epochs,
-                current_epoch=epoch,
                 device="cuda",
                 kw_src=args.kw_src,
                 kw_tgt=args.kw_tgt,

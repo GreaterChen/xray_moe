@@ -15,6 +15,7 @@ import metrics
 from sklearn.metrics import roc_auc_score
 from torch.profiler import profile, record_function, ProfilerActivity
 from contextlib import nullcontext
+import gc
 
 # ------ Helper Functions ------
 def data_to_device(data, device="cpu"):
@@ -186,6 +187,8 @@ def train(
     writer=None,
     enable_profile=False,
 ):
+    torch.cuda.empty_cache()
+    gc.collect()
     model.train()
     running_loss = 0
     
@@ -195,7 +198,7 @@ def train(
         writer.add_scalar('Learning Rate', current_lr, current_epoch)
 
     # 设置TensorBoard记录频率，如每10个批次记录一次
-    log_freq = 100
+    log_freq = 500
     
     # 根据enable_profile参数决定是否使用性能分析器
     if enable_profile:
@@ -211,6 +214,15 @@ def train(
         
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
+
+        # 每100个批次分析一次内存
+        if i % 100 == 0 and enable_profile:
+            print(f"\nBatch {i} - 当前GPU内存使用情况:")
+            print(f"已分配: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            print(f"已缓存: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+            analyze_gpu_memory()  # 详细分析内存使用
+
+
         if enable_profile and i == 4:  # 只在进行性能分析时提前结束
             break
         # 准备批次数据
@@ -1742,3 +1754,60 @@ def calculate_class_metrics(class_predictions, class_ground_truths, iou_threshol
         'FN': int(FN),
         'num_samples': total_gts
     }
+
+def analyze_gpu_memory():
+    """分析当前GPU内存使用情况，并打印内存占用最大的前20个张量"""
+    print("\n--------------------GPU内存分析--------------------")
+    
+    # 收集所有张量信息
+    tensor_info = []
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                # 计算内存占用（MB）
+                memory = obj.element_size() * obj.nelement() / 1024 / 1024
+                
+                # 收集张量信息
+                info = {
+                    'type': type(obj),
+                    'size': tuple(obj.size()),
+                    'dtype': obj.dtype,
+                    'device': obj.device,
+                    'memory': memory,
+                    'tensor': obj  # 保存张量对象以便后续查找变量名
+                }
+                tensor_info.append(info)
+        except:
+            pass
+    
+    # 按内存占用降序排序
+    tensor_info.sort(key=lambda x: x['memory'], reverse=True)
+    
+    # 显示前20个最大的张量
+    total_memory = 0
+    print(f"{'内存(MB)':>10} | {'类型':<15} | {'大小':<20} | {'数据类型':<10} | {'设备':<10}")
+    print("-" * 80)
+    
+    for i, info in enumerate(tensor_info[:20]):
+        total_memory += info['memory']
+        print(f"{info['memory']:>10.2f} | {str(info['type'].__name__):<15} | {str(info['size']):<20} | {str(info['dtype']).split('.')[-1]:<10} | {str(info['device']):<10}")
+    
+    print("-" * 80)
+    print(f"前20个张量总内存: {total_memory:.2f} MB")
+    print(f"GPU已分配内存: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+    print(f"GPU缓存内存: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+    print("------------------------------------------------\n")
+
+def get_memory_profiler(enable_profile=False, log_path=None):
+    """创建内存分析器的上下文管理器"""
+    if enable_profile:
+        return profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            profile_memory=True,
+            record_shapes=True,
+            with_stack=True,
+            with_modules=True,
+            with_flops=True,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(log_path) if log_path else None
+        )
+    return nullcontext()

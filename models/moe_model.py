@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import gc
+from utils import analyze_gpu_memory
 
 from models.negativa_sample_pool import NegativeSamplePool
 
@@ -56,6 +58,11 @@ class MOE(nn.Module):
                 detection_outputs = self.object_detector(image, bbox_targets, current_epoch=current_epoch, total_epochs=total_epochs)
                 region_features = detection_outputs['region_features']
                 region_detected = detection_outputs['region_detected']
+                
+                # # 分析目标检测后的内存使用
+                # if mode == "train":
+                #     print("\n目标检测后的内存使用情况:")
+                #     analyze_gpu_memory()
             
             # 第二步：通过ViT处理区域特征
             image_encoder_outputs = self.image_encoder(
@@ -63,6 +70,11 @@ class MOE(nn.Module):
                 region_detected=region_detected,
                 image_labels=label
             )
+            
+            # # 分析ViT处理后的内存使用
+            # if mode == "train":
+            #     print("\nViT处理后的内存使用情况:")
+            #     analyze_gpu_memory()
             
             # 获取ViT的输出
             cls_token = image_encoder_outputs['cls_output']  # [B, hidden_size]
