@@ -147,7 +147,7 @@ def parse_args():
         "--val_batch_size", type=int, default=32, help="Batch size for validation."
     )
     parser.add_argument(
-        "--num_workers", type=int, default=4, help="Number of workers for training."
+        "--num_workers", type=int, default=6, help="Number of workers for training."
     )
     parser.add_argument(
         "--epochs", type=int, default=20, help="Number of epochs for training."

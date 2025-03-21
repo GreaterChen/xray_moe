@@ -87,19 +87,12 @@ class MOE(nn.Module):
                     batch_size = mapped_visual_cls.size(0)
                     neg_samples_per_instance = batch_size - 1
                     
-                    # 为每个样本获取对应的负样本
+                    # 为每个样本获取对应的负样本并映射到共享空间
                     negative_samples = self.negative_pool.get_negative_samples_batch(
                         disease_labels,
                         k=neg_samples_per_instance
                     )
-                    
-                    # 将负样本也映射到共享空间
-                    mapped_negative_samples = []
-                    for sample_batch in negative_samples:
-                        if sample_batch is not None:
-                            mapped_negative_samples.append(self.text_projection(sample_batch))
-                        else:
-                            mapped_negative_samples.append(None)
+                    mapped_negative_samples = self.text_projection(negative_samples)  # [B, K, hidden_size]
                     
                     # 使用困难负样本计算对比损失
                     ltc_loss = self.compute_global_ltc_loss(
@@ -111,8 +104,6 @@ class MOE(nn.Module):
                     # 如果没有负样本池，使用批内对比
                     ltc_loss = self.compute_batch_ltc_loss(mapped_visual_cls, mapped_text_cls)
 
-                ltc_loss = torch.tensor(0.)
-                
                 # 返回包含LTC损失的结果
                 results = {
                     'cls_token': cls_token,
@@ -155,7 +146,7 @@ class MOE(nn.Module):
         参数:
             visual_cls: 映射后的视觉特征 [B, hidden_size]
             text_cls: 映射后的文本特征 [B, hidden_size]
-            negative_samples: 负样本列表，假设每个元素都是相同大小的tensor [K, hidden_size]
+            negative_samples: 负样本tensor [B, K, hidden_size]
                 
         返回:
             全局对比损失值
@@ -164,43 +155,29 @@ class MOE(nn.Module):
         temperature = 0.07  # 温度参数
         device = visual_cls.device
         
-        # 归一化特征 (使用torch.nn.functional.normalize更快)
+        # 归一化特征
         visual_cls = F.normalize(visual_cls, p=2, dim=1)  # [B, hidden_size]
         text_cls = F.normalize(text_cls, p=2, dim=1)     # [B, hidden_size]
+        negative_samples = F.normalize(negative_samples, p=2, dim=2)  # [B, K, hidden_size]
         
-        # 检查并构建负样本张量
-        if all(ns is not None and ns.size(0) > 0 for ns in negative_samples):
-            # 获取负样本数量K
-            K = negative_samples[0].size(0)
-            
-            # 一次性归一化所有负样本 [B, K, hidden_size]
-            all_neg_samples = torch.stack([
-                F.normalize(ns, p=2, dim=1) for ns in negative_samples
-            ], dim=0)
-            
-            # 计算正样本相似度 [B]
-            pos_similarities = torch.sum(visual_cls * text_cls, dim=1)
-            
-            # 批量计算负样本相似度 [B, K]
-            neg_similarities = torch.bmm(
-                visual_cls.unsqueeze(1),
-                all_neg_samples.transpose(1, 2)
-            ).squeeze(1)
-            
-            # 合并相似度并应用温度缩放 [B, K+1]
-            all_similarities = torch.cat([
-                pos_similarities.unsqueeze(1), 
-                neg_similarities
-            ], dim=1) / temperature
-            
-            # 使用交叉熵计算损失
-            labels = torch.zeros(batch_size, dtype=torch.long, device=device)
-            loss = F.cross_entropy(all_similarities, labels)
-            
-            return loss
-            
-        # 如果有无效的负样本，返回零损失
-        return torch.tensor(0.0, device=device, requires_grad=True)
+        # 计算正样本相似度 [B]
+        pos_similarities = torch.sum(visual_cls * text_cls, dim=1)
+        
+        # 批量计算负样本相似度 [B, K]
+        neg_similarities = torch.bmm(
+            visual_cls.unsqueeze(1),  # [B, 1, hidden_size]
+            negative_samples.transpose(1, 2)  # [B, hidden_size, K]
+        ).squeeze(1)  # [B, K]
+        
+        # 合并相似度并应用温度缩放 [B, K+1]
+        all_similarities = torch.cat([
+            pos_similarities.unsqueeze(1), 
+            neg_similarities
+        ], dim=1) / temperature
+        
+        # 使用交叉熵计算损失
+        labels = torch.zeros(batch_size, dtype=torch.long, device=device)
+        return F.cross_entropy(all_similarities, labels)
 
     def compute_batch_ltc_loss(self, visual_cls, text_cls):
         """

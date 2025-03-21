@@ -191,21 +191,17 @@ class NegativeSamplePool:
         for label_key, label_array in loaded_data['label_vectors'].items():
             self.label_vectors[label_key] = torch.tensor(label_array, dtype=torch.float32, device=self.device)
         
+        # 初始化keys列表
+        self.keys = list(self.label_vectors.keys())
+        
+        # 预计算所有标签向量的堆叠tensor
+        self.vectors_tensor = torch.stack([self.label_vectors[key] for key in self.keys], dim=0)
+        
         print(f"总计: {total_samples} 个样本")
         print(f"总键数: {len(self.pool)}")
         
         # 按样本数量排序
         key_sizes.sort(key=lambda x: x[1], reverse=True)
-        
-        # 输出前五个最大的键
-        print("\n样本数量最多的前五个标签组合:")
-        for i, (key, size) in enumerate(key_sizes[:5], 1):
-            print(f"{i}. 标签组合 {key}: {size} 个样本")
-        
-        # 输出后五个最小的键
-        print("\n样本数量最少的前五个标签组合:")
-        for i, (key, size) in enumerate(key_sizes[-5:], 1):
-            print(f"{i}. 标签组合 {key}: {size} 个样本")
     
     def _find_k_smallest_similarities(self, target_label, k=10):
         """
@@ -225,26 +221,8 @@ class NegativeSamplePool:
         if target_key in self.similarity_cache:
             return self.similarity_cache[target_key][:k]  # 只返回前k个
         
-        target_tensor = target_label.to(self.device)
-        keys = list(self.label_vectors.keys())
-        
-        # 过滤掉没有样本的标签
-        valid_keys = []
-        valid_vectors = []
-        
-        for key in keys:
-            if key in self.pool and self.pool[key].size(0) > 0:
-                valid_keys.append(key)
-                valid_vectors.append(self.label_vectors[key])
-        
-        if not valid_keys:
-            return []
-            
-        # 将所有有效标签向量堆叠为一个tensor
-        vectors_tensor = torch.stack(valid_vectors, dim=0)
-        
         # 计算余弦相似度
-        similarities = F.cosine_similarity(vectors_tensor, target_tensor.unsqueeze(0), dim=1)
+        similarities = F.cosine_similarity(self.vectors_tensor, target_label.unsqueeze(0), dim=1)
         
         # 使用topk获取最小的k个相似度（注意是负相似度的最大值）
         k_actual = min(k, similarities.size(0))
@@ -252,7 +230,7 @@ class NegativeSamplePool:
         _, indices = torch.topk(neg_similarities, k=k_actual)
         
         # 转换结果
-        result = [(valid_keys[idx], similarities[idx].item()) for idx in indices]
+        result = [(self.keys[idx], similarities[idx].item()) for idx in indices]
         result.sort(key=lambda x: x[1])  # 按相似度升序排序
         
         # 更新缓存
@@ -273,19 +251,21 @@ class NegativeSamplePool:
             k: 每个目标标签需要的负样本数量
                 
         Returns:
-            negative_samples_batch: 包含每个目标的负样本的列表
+            negative_samples: 负样本tensor [batch_size, k, hidden_size]
         """
         batch_size = target_labels.shape[0]
-        negative_samples_batch = []
         
         # 计算每个标签的可用样本数，避免重复计算
         available_samples = {label_key: samples.size(0) for label_key, samples in self.pool.items()}
+        
+        # 预分配存储空间
+        all_negative_samples = []
         
         for i in range(batch_size):
             target_label = target_labels[i]
             
             # 找到相似度最小的k个标签
-            smallest_similarities = self._find_k_smallest_similarities(target_label, k=min(k*2, len(self.label_vectors)))
+            smallest_similarities = self._find_k_smallest_similarities(target_label, k=min(k, len(self.label_vectors)))
             
             # 收集负样本
             collected_samples = []
@@ -293,15 +273,12 @@ class NegativeSamplePool:
             
             # 优先使用相似度最小的标签组合
             for label_key, _ in smallest_similarities:
-                current_size = available_samples.get(label_key, 0)
-                if current_size == 0:
-                    continue
-                
                 samples_needed = k - total_samples
                 if samples_needed <= 0:
                     break
                 
                 current_samples = self.pool[label_key]
+                current_size = current_samples.size(0)
                 
                 # 选择适当数量的样本
                 if current_size <= samples_needed:
@@ -313,18 +290,10 @@ class NegativeSamplePool:
                     selected_samples = current_samples[selected_indices]
                     collected_samples.append(selected_samples)
                     total_samples += samples_needed
-                
-                # 如果已经收集到足够的样本，提前退出
-                if total_samples >= k:
-                    break
             
-            # 合并所有收集到的样本
-            if collected_samples:
-                all_negative = torch.cat(collected_samples, dim=0)
-                negative_samples = all_negative[:k] if all_negative.size(0) > k else all_negative
-            else:
-                negative_samples = None
-                
-            negative_samples_batch.append(negative_samples)
+            # 合并当前样本的所有负样本
+            all_samples = torch.cat(collected_samples, dim=0)
+            all_negative_samples.append(all_samples[:k])
         
-        return negative_samples_batch
+        # 返回完整的tensor
+        return torch.stack(all_negative_samples, dim=0)  # [batch_size, k, hidden_size]

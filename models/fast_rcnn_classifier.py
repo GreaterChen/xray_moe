@@ -122,7 +122,7 @@ class EnhancedFastRCNN(nn.Module):
         region_detected = torch.zeros((batch_size, self.num_regions), dtype=torch.bool, device=device)
         
         # 批量提取特征图
-        with torch.no_grad(), torch.cuda.amp.autocast():
+        with torch.no_grad(), torch.amp.autocast('cuda'):
             feature_dict = self.detector.backbone(stacked_images)
             feature_maps = list(feature_dict.values())[2]  # P4特征图
         
@@ -211,7 +211,7 @@ class EnhancedFastRCNN(nn.Module):
             roi_batch_indices = torch.cat(roi_batch_indices)
             
             # 批量提取ROI特征
-            with torch.no_grad(), torch.cuda.amp.autocast():
+            with torch.no_grad(), torch.amp.autocast('cuda'):
                 roi_features = torchvision.ops.roi_align(
                     feature_maps, 
                     torch.cat([roi_batch_indices.unsqueeze(1), all_rois], dim=1),
