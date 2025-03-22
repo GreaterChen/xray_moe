@@ -2,7 +2,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import ViTModel, ViTConfig
+from configs.region2dis import region_disease_table
 
+# 创建解剖区域疾病关系掩码
+def create_anatomy_disease_mask():
+    """
+    将region2dis中的掩码转换为二元掩码
+    1和0 -> 1 (相关)
+    -1 -> 0 (不相关)
+    """
+    mask = torch.tensor(region_disease_table, dtype=torch.float)
+    # 将1和0转为1，将-1转为0
+    mask = (mask >= 0).float()
+    return mask
+
+# 全局变量，避免重复计算
+ANATOMY_DISEASE_MASK = create_anatomy_disease_mask()
 
 class RegionClassifier(nn.Module):
     """
@@ -93,8 +108,8 @@ class RegionClassifier(nn.Module):
                 region_preds, region_labels
             )
 
-        # 总损失 - 可以调整权重
-        total_loss = global_loss + 0.3 * region_loss
+        # 总损失
+        total_loss = global_loss + region_loss
 
         return total_loss, global_loss, region_loss
 
@@ -145,6 +160,32 @@ class MedicalVisionTransformer(nn.Module):
 
         # 保存区域数量
         self.num_regions = num_regions
+        
+        # 获取区域疾病掩码
+        self.register_buffer('anatomy_disease_mask', ANATOMY_DISEASE_MASK)
+
+    def generate_region_labels(self, image_labels):
+        """
+        根据全局图像标签和解剖区域掩码生成区域标签
+        
+        Args:
+            image_labels: [batch_size, num_diseases] - 全局图像标签
+            
+        Returns:
+            region_labels: [batch_size, num_regions, num_diseases] - 区域标签
+        """
+        batch_size = image_labels.shape[0]
+        
+        # 扩展解剖区域掩码到batch维度 [batch_size, num_regions, num_diseases]
+        mask = self.anatomy_disease_mask.unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # 扩展图像标签到区域维度 [batch_size, num_regions, num_diseases]
+        expanded_image_labels = image_labels.unsqueeze(1).expand(-1, self.num_regions, -1)
+        
+        # 图像标签和掩码做逻辑与操作，生成区域标签
+        region_labels = expanded_image_labels * mask
+        
+        return region_labels
 
     def forward(
         self,
@@ -155,6 +196,10 @@ class MedicalVisionTransformer(nn.Module):
     ):
         batch_size = region_features.shape[0]
         device = region_features.device
+
+        # 如果提供了图像标签但没有区域标签，则自动生成区域标签
+        if image_labels is not None and region_labels is None:
+            region_labels = self.generate_region_labels(image_labels)
 
         # 扩展并添加CLS token到区域特征前面
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
@@ -188,6 +233,8 @@ class MedicalVisionTransformer(nn.Module):
 
         # 计算损失（如果提供了标签）
         loss = None
+        global_loss = None
+        region_loss = None
         if image_labels is not None:
             loss = 0
             num_classifier_layers = len(all_region_preds)  # 实际使用分类器的层数
@@ -230,19 +277,38 @@ def example_usage():
 
     # 模拟疾病标签
     image_labels = torch.randint(0, 2, (batch_size, num_diseases)).float()
-    region_labels = torch.randint(0, 2, (batch_size, num_regions, num_diseases)).float()
-
+    
     # 初始化模型
     model = MedicalVisionTransformer(num_diseases=num_diseases)
+    
+    # 展示掩码矩阵转换结果
+    print(f"原始区域疾病掩码的一部分:\n{region_disease_table[:3][:5]}")
+    print(f"转换后的掩码矩阵的一部分:\n{model.anatomy_disease_mask[:3, :5]}")
+    
+    # 自动生成区域标签
+    auto_region_labels = model.generate_region_labels(image_labels)
+    print(f"自动生成的区域标签形状: {auto_region_labels.shape}")
+    
+    # 展示某个样本的标签转换
+    sample_idx = 0
+    print(f"图像标签 (样本 {sample_idx}):\n{image_labels[sample_idx]}")
+    print(f"生成的区域标签 (样本 {sample_idx}, 前3个区域):\n{auto_region_labels[sample_idx][:3]}")
 
-    # 前向传播
-    outputs = model(region_features, region_labels, image_labels)
+    # 前向传播 - 使用自动生成的区域标签
+    outputs = model(region_features, region_labels=None, image_labels=image_labels)
 
     # 输出结果
     print(f"Loss: {outputs['loss']}")
     print(f"CLS output shape: {outputs['cls_output'].shape}")
     print(f"Final region predictions shape: {outputs['region_preds'][-1].shape}")
     print(f"Final image predictions shape: {outputs['image_preds'][-1].shape}")
+    
+    # 比较使用手动区域标签和自动区域标签的区别
+    manual_region_labels = torch.randint(0, 2, (batch_size, num_regions, num_diseases)).float()
+    outputs_manual = model(region_features, region_labels=manual_region_labels, image_labels=image_labels)
+    
+    print(f"使用自动区域标签的损失: {outputs['loss']}")
+    print(f"使用手动区域标签的损失: {outputs_manual['loss']}")
 
 
 # 如果直接运行这个文件，可以测试示例用法

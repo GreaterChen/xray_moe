@@ -31,7 +31,6 @@ class MOE(nn.Module):
             num_diseases=args.num_diseases if hasattr(args, "num_diseases") else 14
         )
         self.negative_pool.load(args.negative_pool_dir)
-        # self.negative_pool.build_label_matrix()
 
         self.visual_projection = nn.Linear(768, 768)
         self.text_projection = nn.Linear(768, 768)
