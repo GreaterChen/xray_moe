@@ -4,3 +4,9 @@ logs/
 pycocoevalcap/
 runs/
 trace*
+torch2trt/
+test_trt/
+tensorrt_models
+.vscode/
+__pycache__/
+test.py

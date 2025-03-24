@@ -147,7 +147,7 @@ def parse_args():
         "--num_workers", type=int, default=6, help="Number of workers for training."
     )
     parser.add_argument(
-        "--epochs", type=int, default=20, help="Number of epochs for training."
+        "--epochs", type=int, default=30, help="Number of epochs for training."
     )
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     parser.add_argument(
@@ -186,7 +186,7 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_path_to",
         type=str,
-        default="/home/chenlb/MOE/results/ltc/all/",
+        default="/home/chenlb/MOE/results/ltc/region_disease_support/",
         help="Path to save the checkpoint to.",
     )
 
