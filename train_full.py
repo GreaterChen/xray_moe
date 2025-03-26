@@ -1,6 +1,8 @@
 import json
 import os
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # 设置后端为Agg（非交互式）
 import matplotlib.pyplot as plt
 import sklearn.metrics as metrics
 from datetime import datetime
@@ -21,7 +23,6 @@ from torchvision.models import resnet50, ResNet50_Weights
 
 # --- Helper Packages ---
 from tqdm import tqdm
-import argparse
 
 # --- Project Packages ---
 from utils import *
@@ -33,200 +34,18 @@ from models.fast_rcnn_classifier import *
 from models.vit import *
 from metrics import compute_scores
 from tools.optims import *
+from configs import config
 
 logger = setup_logger(log_dir="logs")
 
-
-# --- Argument Parser ---
-def parse_args():
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("--debug", default=True, help="Debug mode.")
-
-    # Data input settings
-    parser.add_argument(
-        "--root_dir",
-        type=str,
-        default="/home/chenlb/MOE/",
-        help="Root directory.",
-    )
-
-    parser.add_argument(
-        "--data_dir",
-        type=str,
-        default="/mnt/chenlb/datasets/mimic_cxr/",
-        help="Path to the directory.",
-    )
-    parser.add_argument(
-        "--ann_dir",
-        type=str,
-        default="/mnt/chenlb/datasets/mimic_cxr/mimic_annotation_moe_bbox_filtered_split_numeric.json",
-        help="Path to the annotation file.",
-    )
-
-    parser.add_argument(
-        "--negative_pool_dir",
-        type=str,
-        default="/home/chenlb/MOE/results/ltc/negative_pool/pool.npy",
-        help="Path to load the negative pool.",
-    )
-
-    parser.add_argument(
-        "--model_name", type=str, default="MOE", choices=["MOE"], help="模型名称"
-    )
-
-    parser.add_argument("--image_size", type=int, default=224, help="Input image size.")
-    parser.add_argument(
-        "--dataset_name",
-        type=str,
-        default="MIMIC",
-        choices=["MIMIC"],
-        help="Dataset name to use.",
-    )
-    parser.add_argument(
-        "--max_len_findings",
-        type=int,
-        default=100,
-        help="Maximum length of the input text.",
-    )
-
-    parser.add_argument(
-        "--max_len_history",
-        type=int,
-        default=50,
-        help="Maximum length of the input text.",
-    )
-
-    parser.add_argument(
-        "--tokenizer_max_len",
-        type=int,
-        default=30523,
-        help="Maximum length of the tokenizer.",
-    )
-
-    parser.add_argument(
-        "--kw_src",
-        type=str,
-        nargs="+",
-        default=["image", "findings", "history", "bbox_targets"],
-        help="Keyword arguments for the source inputs of the model (e.g., image, findings, impression).",
-    )
-    parser.add_argument(
-        "--kw_tgt",
-        type=str,
-        nargs="+",
-        default=["findings", "label"],
-        help="Keyword arguments for the target outputs of the model (e.g., findings, impression).",
-    )
-
-    # Training settings
-    parser.add_argument(
-        "--phase",
-        type=str,
-        default="PRETRAIN_VIT",
-        choices=["TRAIN_DETECTION", "INFER_BERT", "PRE_TRAIN_VIT", "TEST", "INFER"],
-        help="Phase of the program",
-    )
-
-    # TRAIN OR TEST
-    parser.add_argument(
-        "--mode",
-        type=str,
-        default="TRAIN",
-        choices=["TRAIN", "TEST"],
-        help="Train or Test",
-    )
-
-    parser.add_argument(
-        "--train_batch_size", type=int, default=64, help="Batch size for training."
-    )
-    parser.add_argument(
-        "--val_batch_size", type=int, default=32, help="Batch size for validation."
-    )
-    parser.add_argument(
-        "--num_workers", type=int, default=6, help="Number of workers for training."
-    )
-    parser.add_argument(
-        "--epochs", type=int, default=30, help="Number of epochs for training."
-    )
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
-    parser.add_argument(
-        "--min_lr", type=float, default=1e-6, help="Minimum learning rate."
-    )
-    parser.add_argument(
-        "--warmup_lr", type=float, default=5e-6, help="Warmup learning rate."
-    )
-    parser.add_argument("--warmup_steps", type=int, default=2000, help="Warmup steps.")
-    parser.add_argument(
-        "--wd", type=float, default=0.01, help="Weight decay (L2 regularization)."
-    )
-    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate.")
-
-    # Device settings
-    parser.add_argument(
-        "--cuda_visible_devices", type=str, default="0", help="CUDA visible devices."
-    )
-    parser.add_argument(
-        "--seed", type=int, default=123, help="Random seed for reproducibility."
-    )
-
-    parser.add_argument(
-        "--detection_checkpoint_path_from",
-        type=str,
-        default="/home/chenlb/MOE/results/detection/epoch_9_BLEU_1_0.8791605068503925.pth",
-        help="Path to load the detection checkpoint from.",
-    )
-
-    parser.add_argument(
-        "--checkpoint_path_from",
-        type=str,
-        default=None,
-        help="Path to load the checkpoint from.",
-    )
-    parser.add_argument(
-        "--checkpoint_path_to",
-        type=str,
-        default="/home/chenlb/MOE/results/ltc/14_classifier/",
-        help="Path to save the checkpoint to.",
-    )
-
-    # TensorBoard settings
-    parser.add_argument(
-        "--tensorboard_dir",
-        type=str,
-        default="runs",
-        help="TensorBoard 日志目录",
-    )
-
-    args = parser.parse_args()
-
-    # Convert args to dictionary
-    args_dict = vars(args)
-
-    # Create save path
-    from pathlib import Path
-
-    save_dir = Path(args.checkpoint_path_to)
-    save_dir.mkdir(parents=True, exist_ok=True)
-    save_path = save_dir / "args_config.json"
-
-    # Save to JSON file
-    with open(save_path, "w") as f:
-        json.dump(args_dict, f, indent=4)
-
-    return args
-
-
 # --- Main Program ---
 if __name__ == "__main__":
-    args = parse_args()
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
-    torch.manual_seed(args.seed)
+    os.environ["CUDA_VISIBLE_DEVICES"] = config.CUDA_VISIBLE_DEVICES
+    torch.manual_seed(config.SEED)
 
     # Dataset-specific settings
-    if args.dataset_name == "MIMIC":
-        input_size = (args.image_size, args.image_size)
+    if config.DATASET_NAME == "MIMIC":
+        input_size = (config.IMAGE_SIZE, config.IMAGE_SIZE)
         tokenizer = BertTokenizer.from_pretrained(
             "bert-base-uncased", local_files_only=True
         )
@@ -234,64 +53,63 @@ if __name__ == "__main__":
         vocab_size = len(tokenizer)
         pad_id = tokenizer.pad_token_id
 
-        MIMIC.load_shared_data(args.data_dir, args.ann_dir, args.mode)
+        MIMIC.load_shared_data(config.DATA_DIR, config.ANN_DIR, config.MODE)
         # 创建训练、验证和测试数据集
         train_data = MIMIC(
-            args.data_dir,
+            config.DATA_DIR,
             input_size,
             random_transform=True,
             tokenizer=tokenizer,
             mode="train",
-            subset_size=1000 if args.debug else None,
+            subset_size=1000 if config.DEBUG else None,
         )
 
         val_data = MIMIC(
-            args.data_dir,
+            config.DATA_DIR,
             input_size,
             random_transform=False,
             tokenizer=tokenizer,
             mode="val",
-            subset_size=10 if args.phase.startswith("TRAIN") else 100,
+            subset_size=10 if config.PHASE.startswith("TRAIN") else 100,
         )
 
         test_data = MIMIC(
-            args.data_dir,
+            config.DATA_DIR,
             input_size,
             random_transform=False,
             tokenizer=tokenizer,
             mode="test",
-            subset_size=100 if args.debug else None,
+            subset_size=100 if config.DEBUG else None,
         )
 
-        comment = f"Stage{args.phase}"
+        comment = f"Stage{config.PHASE}"
     else:
         raise ValueError("Invalid dataset_name")
 
     # Model-specific settings
-    if args.model_name == "MOE":
-
+    if config.MODEL_NAME == "MOE":
         # 初始化 TensorBoard writer
         current_time = datetime.now().strftime("%Y%m%d-%H%M%S")
         tensorboard_log_dir = os.path.join(
-            args.tensorboard_dir,
-            f"{args.model_name}_{args.phase}_{args.checkpoint_path_to.split('results/')[-1][:-1].replace('/', '_')}-{current_time}",
+            config.TENSORBOARD_DIR,
+            f"{config.MODEL_NAME}_{config.PHASE}_{config.CHECKPOINT_PATH_TO.split('results/')[-1][:-1].replace('/', '_')}-{current_time}",
         )
         writer = SummaryWriter(tensorboard_log_dir)
         logger.info(f"TensorBoard 日志目录: {tensorboard_log_dir}")
 
-        if args.phase == "TRAIN_DETECTION":
+        if config.PHASE == "TRAIN_DETECTION":
             fast_rcnn = DetectionOnlyFastRCNN()
             model = MOE(
-                args=args,
+                config=config,
                 object_detector=fast_rcnn,
             )
             module_parameters = {
                 "FastRCNN": count_parameters(fast_rcnn),
             }
-        elif args.phase == "PRETRAIN_VIT":
+        elif config.PHASE == "PRETRAIN_VIT":
             # 初始化检测器
             detection_model = DetectionOnlyFastRCNN()
-            _, _ = load(args.detection_checkpoint_path_from, detection_model)
+            _, _ = load(config.DETECTION_CHECKPOINT_PATH_FROM, detection_model)
 
             # 创建增强型FastRCNN
             enhanced_rcnn = EnhancedFastRCNN(
@@ -305,7 +123,7 @@ if __name__ == "__main__":
 
             # 创建MOE模型
             model = MOE(
-                args=args,
+                config=config,
                 object_detector=enhanced_rcnn,
                 image_encoder=vit_model,
                 cxr_bert=cxr_bert,
@@ -317,9 +135,9 @@ if __name__ == "__main__":
                 "ViT": count_parameters(vit_model),
                 "CXR BERT": count_parameters(cxr_bert),
             }
-        elif args.phase == "INFER_BERT":
+        elif config.PHASE == "INFER_BERT":
             cxr_bert = CXR_BERT_FeatureExtractor()
-            model = MOE(args=args, cxr_bert=cxr_bert)
+            model = MOE(config=config, cxr_bert=cxr_bert)
 
             # 计算每个模块的参数量
             module_parameters = {
@@ -336,9 +154,9 @@ if __name__ == "__main__":
     # Data loaders
     train_loader = data.DataLoader(
         train_data,
-        batch_size=args.train_batch_size,
+        batch_size=config.TRAIN_BATCH_SIZE,
         shuffle=True,
-        num_workers=args.num_workers,
+        num_workers=config.NUM_WORKERS,
         prefetch_factor=2,
         pin_memory=True,
         drop_last=True,
@@ -346,16 +164,16 @@ if __name__ == "__main__":
     )
     val_loader = data.DataLoader(
         val_data,
-        batch_size=args.val_batch_size,
+        batch_size=config.VAL_BATCH_SIZE,
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=config.NUM_WORKERS,
         collate_fn=mimic_collate_fn,
     )
     test_loader = data.DataLoader(
         test_data,
-        batch_size=args.val_batch_size,
+        batch_size=config.VAL_BATCH_SIZE,
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=config.NUM_WORKERS,
         collate_fn=mimic_collate_fn,
     )
 
@@ -367,17 +185,17 @@ if __name__ == "__main__":
     model = model.cuda()
     optimizer = optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.lr,
-        weight_decay=args.wd,
+        lr=config.LEARNING_RATE,
+        weight_decay=config.WEIGHT_DECAY,
     )
     scheduler = LinearWarmupCosineLRScheduler(
         optimizer,
-        args.epochs,
-        args.min_lr,
-        args.lr,
+        config.EPOCHS,
+        config.MIN_LR,
+        config.LEARNING_RATE,
         decay_rate=None,
-        warmup_start_lr=args.warmup_lr,
-        warmup_steps=args.warmup_steps,
+        warmup_start_lr=config.WARMUP_LR,
+        warmup_steps=config.WARMUP_STEPS,
     )
 
     logger.info(f"Total Parameters: {sum(p.numel() for p in model.parameters())}")
@@ -389,44 +207,44 @@ if __name__ == "__main__":
     date_time = now.strftime("%Y-%m-%d_%H:%M:%S")
 
     # Load checkpoint if needed
-    if args.checkpoint_path_from:
+    if config.CHECKPOINT_PATH_FROM:
         last_epoch, (best_metric, test_metric) = load(
-            args.checkpoint_path_from, model, optimizer, scheduler
+            config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler
         )
         logger.info(
-            f"Reloaded from {args.checkpoint_path_from}: Last Epoch {last_epoch}, Best Metric {best_metric}, Test Metric {test_metric}"
+            f"Reloaded from {config.CHECKPOINT_PATH_FROM}: Last Epoch {last_epoch}, Best Metric {best_metric}, Test Metric {test_metric}"
         )
 
     metrics = compute_scores
 
     # Training phase
-    if args.phase == "TRAIN_DETECTION" or args.phase == "PRETRAIN_VIT":
-        if args.checkpoint_path_from:
-            _, _ = load(args.checkpoint_path_from, model, optimizer, scheduler)
+    if config.PHASE == "TRAIN_DETECTION" or config.PHASE == "PRETRAIN_VIT":
+        if config.CHECKPOINT_PATH_FROM:
+            _, _ = load(config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler)
 
         criterion = None
         scaler = torch.amp.GradScaler("cuda")
 
-        for epoch in range(last_epoch + 1, args.epochs):
+        for epoch in range(last_epoch + 1, config.EPOCHS):
             print(f"Epoch: {epoch}")
             train_loss = train(
-                args,
+                config,
                 train_loader,
                 model,
                 optimizer,
                 criterion,
-                args.epochs,
+                config.EPOCHS,
                 epoch,
                 scheduler=scheduler,
                 device="cuda",
-                kw_src=args.kw_src,
-                kw_tgt=args.kw_tgt,
+                kw_src=config.KW_SRC,
+                kw_tgt=config.KW_TGT,
                 scaler=scaler,
                 writer=writer,
             )
-            if args.phase == "TRAIN_DETECTION":
+            if config.PHASE == "TRAIN_DETECTION":
                 test_loss, result = test_detection(
-                    args=args,
+                    config=config,
                     model=model.object_detector,
                     data_loader=test_loader,
                     logger=logger,
@@ -434,13 +252,13 @@ if __name__ == "__main__":
                     writer=writer,
                 )
                 save_path = os.path.join(
-                    args.checkpoint_path_to,
+                    config.CHECKPOINT_PATH_TO,
                     f'epoch_{epoch}_{result["overall_metrics"]["mAP"]}.pth',
                 )
 
-            elif args.phase == "PRETRAIN_VIT":
+            elif config.PHASE == "PRETRAIN_VIT":
                 test_loss, result = test_vit(
-                    args=args,
+                    config=config,
                     model=model,
                     data_loader=test_loader,
                     logger=logger,
@@ -449,7 +267,7 @@ if __name__ == "__main__":
                     writer=writer,
                 )
                 save_path = os.path.join(
-                    args.checkpoint_path_to,
+                    config.CHECKPOINT_PATH_TO,
                     f'epoch_{epoch}_image_acc_{result["overall_metrics"]["ce_f1"]:.4f}.pth',
                 )
             else:
@@ -466,40 +284,40 @@ if __name__ == "__main__":
 
         # 关闭 TensorBoard writer
         writer.close()
-    elif args.phase == "INFER_BERT":
-        for epoch in range(last_epoch + 1, args.epochs):
+    elif config.PHASE == "INFER_BERT":
+        for epoch in range(last_epoch + 1, config.EPOCHS):
             print(f"Epoch: {epoch}")
             train_loss = infer_bert(
-                args,
+                config,
                 train_loader,
                 model,
-                num_epochs=args.epochs,
+                num_epochs=config.EPOCHS,
                 current_epoch=epoch,
                 device="cuda",
-                kw_src=args.kw_src,
-                kw_tgt=args.kw_tgt,
+                kw_src=config.KW_SRC,
+                kw_tgt=config.KW_TGT,
             )
 
-    elif args.mode == "TEST":
+    elif config.MODE == "TEST":
         # 确保提供了checkpoint路径
-        if not args.checkpoint_path_from:
+        if not config.CHECKPOINT_PATH_FROM:
             raise ValueError("必须提供checkpoint路径用于测试!")
 
         # 加载模型权重
-        _, _ = load(args.checkpoint_path_from, model, optimizer, scheduler)
-        logger.info(f"从 {args.checkpoint_path_from} 加载模型权重")
+        _, _ = load(config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler)
+        logger.info(f"从 {config.CHECKPOINT_PATH_FROM} 加载模型权重")
 
         # 保存生成结果
         save_generations(
-            args,
+            config,
             test_loader,
             model,
             logger,
-            save_dir=os.path.join(args.checkpoint_path_to, "generations"),
+            save_dir=os.path.join(config.CHECKPOINT_PATH_TO, "generations"),
             mode="test",
             device="cuda",
-            kw_src=args.kw_src,
-            kw_tgt=args.kw_tgt,
+            kw_src=config.KW_SRC,
+            kw_tgt=config.KW_TGT,
         )
 
     else:

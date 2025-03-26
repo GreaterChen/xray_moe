@@ -10,3 +10,5 @@ tensorrt_models
 .vscode/
 __pycache__/
 test.py
+configs/local_config.py
+*.pyc

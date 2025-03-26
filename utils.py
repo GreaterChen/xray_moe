@@ -101,11 +101,12 @@ def args_to_kwargs(
 
 
 def prepare_batch_data(
-    args, batch, data_loader, device, findings=True, history=True, label=True, bbox=True
+    config, batch, data_loader, device, findings=True, history=True, label=True, bbox=True
 ):
     """准备批次数据，对整个batch进行tokenization
 
     Args:
+        config: 配置参数
         batch: 输入的批次数据
         data_loader: 数据加载器
         device: 计算设备
@@ -124,9 +125,9 @@ def prepare_batch_data(
     # 确定需要处理的文本字段
     text_fields_to_process = []
     if findings and "findings" in batch:
-        text_fields_to_process.append(("findings", args.max_len_findings))
+        text_fields_to_process.append(("findings", config.MAX_LEN_FINDINGS))
     if history and "history" in batch:
-        text_fields_to_process.append(("history", args.max_len_history))
+        text_fields_to_process.append(("history", config.MAX_LEN_HISTORY))
 
     # 优化: 预先创建tokenizer以避免多次创建
     tokenizer = data_loader.dataset.tokenizer
@@ -142,7 +143,7 @@ def prepare_batch_data(
             padding="longest",  # 只padding到批次中最长序列长度
             truncation=True,
             return_tensors="pt",
-        ).to(device, non_blocking=True)
+        ).to(device)
 
         batch[field] = encoded
         source[field] = encoded  # 直接使用同一个对象引用
@@ -177,7 +178,7 @@ def prepare_batch_data(
 
 # ------ Core Functions ------
 def train(
-    args,
+    config,
     data_loader,
     model,
     optimizer,
@@ -232,9 +233,9 @@ def train(
             break
         # 准备批次数据
         with record_function("data_preparation") if enable_profile else nullcontext():
-            if args.phase == "TRAIN_DETECTION":
+            if config.PHASE == "TRAIN_DETECTION":
                 source, target, _ = prepare_batch_data(
-                    args,
+                    config,
                     batch,
                     data_loader,
                     device,
@@ -243,9 +244,9 @@ def train(
                     label=False,
                     bbox=True,
                 )
-            elif args.phase == "PRETRAIN_VIT":
+            elif config.PHASE == "PRETRAIN_VIT":
                 source, target, _ = prepare_batch_data(
-                    args,
+                    config,
                     batch,
                     data_loader,
                     device,
@@ -260,7 +261,7 @@ def train(
         source = args_to_kwargs(source)
         target = args_to_kwargs(target)
 
-        source["phase"] = args.phase
+        source["phase"] = config.PHASE
         source["mode"] = "train"
         source["current_epoch"] = current_epoch
         source["total_epochs"] = num_epochs
@@ -271,11 +272,11 @@ def train(
             with record_function("model_forward") if enable_profile else nullcontext():
                 output = data_distributor(model, source)
             output = args_to_kwargs(output)
-            if args.phase == "TRAIN_DETECTION":
+            if config.PHASE == "TRAIN_DETECTION":
                 # 汇总所有损失项
                 loss = sum(loss for loss in output.values())
 
-            elif args.phase == "PRETRAIN_VIT":
+            elif config.PHASE == "PRETRAIN_VIT":
                 loss = output["ltc_loss"] + output["cls_loss"]
             else:
                 pass
@@ -297,14 +298,14 @@ def train(
             writer.add_scalar("Train/Total_Loss", loss.item(), global_step)
 
             # 根据阶段记录特定损失
-            if args.phase == "TRAIN_DETECTION":
+            if config.PHASE == "TRAIN_DETECTION":
                 # 批量记录多个损失项
                 for loss_name, loss_value in output.items():
                     writer.add_scalar(
                         f"Train/Detection/{loss_name}", loss_value.item(), global_step
                     )
 
-            elif args.phase == "PRETRAIN_VIT":
+            elif config.PHASE == "PRETRAIN_VIT":
                 # 批量记录ViT相关损失
                 vit_losses = {
                     "Train/ViT/LTC_Loss": output["ltc_loss"].item(),
@@ -332,7 +333,7 @@ def train(
 
 
 def test(
-    args,
+    config,
     data_loader,
     model,
     logger,
@@ -370,9 +371,9 @@ def test(
             impression_gts_list.extend([gt for gt in batch["gts"][1]])
 
             # 准备批次数据
-            if args.phase == "TRAIN_DETECTION":
+            if config.PHASE == "TRAIN_DETECTION":
                 source, target, _ = prepare_batch_data(
-                    args,
+                    config,
                     batch,
                     data_loader,
                     device,
@@ -381,9 +382,9 @@ def test(
                     label=False,
                     bbox=True,
                 )
-            elif args.phase == "PRETRAIN_VIT":
+            elif config.PHASE == "PRETRAIN_VIT":
                 source, target, _ = prepare_batch_data(
-                    args,
+                    config,
                     batch,
                     data_loader,
                     device,
@@ -399,7 +400,7 @@ def test(
             source = args_to_kwargs(source, kw_src)
             target = args_to_kwargs(target, kw_tgt)
 
-            source["phase"] = args.phase
+            source["phase"] = config.PHASE
             source["mode"] = mode
 
             # 模型推理
@@ -433,7 +434,7 @@ def test(
         )
 
         # 创建结果目录
-        results_dir = os.path.join(args.checkpoint_path_to, "test_results")
+        results_dir = os.path.join(config.CHECKPOINT_PATH_TO, "test_results")
         os.makedirs(results_dir, exist_ok=True)
 
         # 将结果转换为DataFrame并保存
@@ -475,7 +476,7 @@ def test(
 
 
 def infer_bert(
-    args,
+    config,
     data_loader,
     model,
     num_epochs,
@@ -492,7 +493,7 @@ def infer_bert(
     prog_bar = tqdm(data_loader)
     for i, batch in enumerate(prog_bar):
         source, target, _ = prepare_batch_data(
-            args,
+            config,
             batch,
             data_loader,
             device,
@@ -505,7 +506,7 @@ def infer_bert(
         source = args_to_kwargs(source)
         target = args_to_kwargs(target)
 
-        source["phase"] = args.phase
+        source["phase"] = config.PHASE
         source["mode"] = "train"
         source["current_epoch"] = current_epoch
         source["total_epochs"] = num_epochs
@@ -513,7 +514,7 @@ def infer_bert(
         output = data_distributor(model, source)
         output = args_to_kwargs(output)
 
-    save_path = os.path.join(args.checkpoint_path_to, "negative_pool", "pool.npy")
+    save_path = os.path.join(config.CHECKPOINT_PATH_TO, "negative_pool", "pool.npy")
     if not os.path.exists(os.path.dirname(save_path)):
         os.makedirs(os.path.dirname(save_path))
 
@@ -852,7 +853,7 @@ def analyze_results_from_csv(csv_path, metric_ftns=None):
 
 
 def save_generations(
-    args,
+    config,
     data_loader,
     model,
     logger,
@@ -866,7 +867,7 @@ def save_generations(
     """保存模型生成的findings和impression结果
 
     Args:
-        args: 配置参数
+        config: 配置参数
         data_loader: 数据加载器
         model: 模型
         logger: 日志记录器
@@ -901,12 +902,13 @@ def save_generations(
             impression_gts_list.extend([gt for gt in batch["gts"][1]])
 
             # 准备批次数据
-            source, target, _ = prepare_batch_data(args, batch, data_loader, device)
+            source, target, _ = prepare_batch_data(config, batch, data_loader, device)
 
             # 转换为kwargs格式
             source = args_to_kwargs(source, kw_src)
             target = args_to_kwargs(target, kw_tgt)
 
+            source["phase"] = config.PHASE
             source["mode"] = mode
 
             # 模型推理
@@ -944,7 +946,7 @@ def save_generations(
 
 
 def test_detection(
-    args,
+    config,
     data_loader,
     model,
     logger,
@@ -959,7 +961,7 @@ def test_detection(
     评估目标检测模型性能 - 简化版
 
     参数:
-        args: 配置参数
+        config: 配置参数
         data_loader: 测试数据加载器
         model: DetectionOnlyFastRCNN模型实例
         logger: 日志记录器
@@ -1127,7 +1129,7 @@ def test_detection(
         average_f1 = 0.0
 
     # 创建结果目录
-    results_dir = os.path.join(args.checkpoint_path_to, "detection_results")
+    results_dir = os.path.join(config.CHECKPOINT_PATH_TO, "detection_results")
     os.makedirs(results_dir, exist_ok=True)
 
     # 整理结果数据
@@ -1226,7 +1228,7 @@ def test_detection(
 
 
 def test_vit(
-    args,
+    config,
     data_loader,
     model,
     logger,
@@ -1239,7 +1241,7 @@ def test_vit(
     评估PRETRAIN_VIT阶段的模型性能，只保留全局疾病分类性能评估
     
     参数:
-        args: 配置参数
+        config: 配置参数
         data_loader: 测试数据加载器
         model: MOE模型实例
         logger: 日志记录器
@@ -1277,7 +1279,7 @@ def test_vit(
             all_labels.append(labels)
 
             source, target, _ = prepare_batch_data(
-                args,
+                config,
                 batch,
                 data_loader,
                 device,
@@ -1290,7 +1292,7 @@ def test_vit(
             source = args_to_kwargs(source)
             target = args_to_kwargs(target)
 
-            source["phase"] = args.phase
+            source["phase"] = config.PHASE
             source["mode"] = "test"
 
             outputs = data_distributor(model, source)
@@ -1313,7 +1315,7 @@ def test_vit(
     logger.info("计算ViT模型疾病分类评估指标...")
 
     # 创建结果目录
-    results_dir = os.path.join(args.checkpoint_path_to, "vit_results")
+    results_dir = os.path.join(config.CHECKPOINT_PATH_TO, "vit_results")
     os.makedirs(results_dir, exist_ok=True)
 
     # 初始化结果数据

@@ -10,7 +10,7 @@ from models.negativa_sample_pool import NegativeSamplePool
 class MOE(nn.Module):
     def __init__(
         self,
-        args,
+        config,
         object_detector=None,
         image_encoder=None,
         history_encoder=None,
@@ -28,15 +28,15 @@ class MOE(nn.Module):
         self.findings_decoder = findings_decoder
         self.cxr_bert = cxr_bert
         self.negative_pool = NegativeSamplePool(
-            num_diseases=args.num_diseases if hasattr(args, "num_diseases") else 14
+            num_diseases=config.NUM_DISEASES if hasattr(config, "NUM_DISEASES") else 14
         )
-        self.negative_pool.load(args.negative_pool_dir)
+        self.negative_pool.load(config.NEGATIVE_POOL_DIR)
 
         self.visual_projection = nn.Linear(768, 768)
         self.text_projection = nn.Linear(768, 768)
 
         # 保存参数配置
-        self.args = args
+        self.config = config
 
     def forward(
         self,
@@ -66,20 +66,10 @@ class MOE(nn.Module):
                 region_features = detection_outputs["region_features"]
                 region_detected = detection_outputs["region_detected"]
 
-                # # 分析目标检测后的内存使用
-                # if mode == "train":
-                #     print("\n目标检测后的内存使用情况:")
-                #     analyze_gpu_memory()
-
             # 第二步：通过ViT处理区域特征
             image_encoder_outputs = self.image_encoder(
                 region_features, region_detected=region_detected, image_labels=label
             )
-
-            # # 分析ViT处理后的内存使用
-            # if mode == "train":
-            #     print("\nViT处理后的内存使用情况:")
-            #     analyze_gpu_memory()
 
             # 获取ViT的输出
             cls_token = image_encoder_outputs["cls_output"]  # [B, hidden_size]
@@ -97,7 +87,6 @@ class MOE(nn.Module):
                 mapped_text_cls = self.text_projection(text_cls_token)
 
                 # 获取当前批次的疾病标签/预测
-                # disease_labels = image_encoder_outputs['image_preds'] if 'image_preds' in image_encoder_outputs else None
                 disease_labels = label
 
                 # 计算全局对比损失(LTC)
@@ -212,7 +201,7 @@ class MOE(nn.Module):
             批内对比损失值
         """
         batch_size = visual_cls.size(0)
-        temperature = self.args.temperature
+        temperature = self.config.TEMPERATURE if hasattr(self.config, "TEMPERATURE") else 0.07  # 添加默认值
 
         # 归一化特征
         visual_cls = F.normalize(visual_cls, p=2, dim=1)
