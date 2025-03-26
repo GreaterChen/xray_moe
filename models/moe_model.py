@@ -115,8 +115,6 @@ class MOE(nn.Module):
 
                 # 返回包含LTC损失的结果
                 results = {
-                    "cls_token": cls_token,
-                    "visual_tokens": visual_tokens,
                     "disease_preds": image_encoder_outputs["disease_preds"],
                     "final_disease_preds": image_encoder_outputs["final_disease_preds"],
                     "ltc_loss": ltc_loss,
@@ -126,11 +124,30 @@ class MOE(nn.Module):
 
             # 如果是评估/推理模式
             else:
+                # 为测试模式计算ltc_loss和cls_loss
+                with torch.no_grad():  # 确保不计算梯度
+                    # 使用CXR-BERT编码findings，获取text_cls_token
+                    text_cls_token = self.cxr_bert(findings) if findings is not None else None
+                    
+                    # 只有当findings可用时才计算ltc_loss
+                    ltc_loss = None
+                    if text_cls_token is not None:
+                        # 将文本和视觉特征映射到共享空间
+                        mapped_visual_cls = self.visual_projection(cls_token)
+                        mapped_text_cls = self.text_projection(text_cls_token)
+                        
+                        # 计算批内对比损失
+                        ltc_loss = self.compute_batch_ltc_loss(mapped_visual_cls, mapped_text_cls)
+                    
+                    # 获取分类损失
+                    cls_loss = image_encoder_outputs.get("loss", None)
+                
+                # 返回简化的结果，只包含需要的字段
                 return {
-                    "cls_token": cls_token,
-                    "visual_tokens": visual_tokens,
                     "disease_preds": image_encoder_outputs["disease_preds"],
                     "final_disease_preds": image_encoder_outputs["final_disease_preds"],
+                    "ltc_loss": ltc_loss,
+                    "cls_loss": cls_loss
                 }
 
         elif phase == "INFER_BERT":

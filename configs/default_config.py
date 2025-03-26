@@ -32,7 +32,7 @@ class DefaultConfig:
     MODE = "TRAIN"
     TRAIN_BATCH_SIZE = 64
     VAL_BATCH_SIZE = 32
-    NUM_WORKERS = 6
+    NUM_WORKERS = 16
     EPOCHS = 30
     LEARNING_RATE = 1e-4
     MIN_LR = 1e-6

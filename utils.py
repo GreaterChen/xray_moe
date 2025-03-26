@@ -1213,7 +1213,7 @@ def test_detection(
                 f"{mode}/Detection/Class_{class_id}/F1", metrics["f1_score"], epoch
             )
 
-    # 返回结果
+    # 构建返回结果
     result = {
         "overall_metrics": overall_metrics,
         "class_metrics": class_metrics,
@@ -1283,7 +1283,7 @@ def test_vit(
                 batch,
                 data_loader,
                 device,
-                findings=False,
+                findings=True,
                 history=False,
                 label=True,
                 bbox=True,
@@ -1298,14 +1298,18 @@ def test_vit(
             outputs = data_distributor(model, source)
             outputs = args_to_kwargs(outputs)
 
-            # 获取最后一层的疾病预测结果
+            # 获取最后一层的疾病预测结果和损失
             if outputs["final_disease_preds"] is not None:
                 disease_preds = outputs["final_disease_preds"]  # [B, num_diseases]
                 all_disease_preds.append(disease_preds.detach().cpu())
                 
-                # TODO 提供loss值
-                # if outputs["cls_loss"] is not None:
-                #     running_loss += outputs["cls_loss"].item()
+                # 收集损失信息
+                if "cls_loss" in outputs and outputs["cls_loss"] is not None:
+                    running_loss += outputs["cls_loss"].item()
+                
+                # 如果有ltc_loss，也加到总损失中
+                if "ltc_loss" in outputs and outputs["ltc_loss"] is not None:
+                    running_loss += outputs["ltc_loss"].item()
 
     # 合并所有批次的预测和标签
     all_labels = torch.cat(all_labels, dim=0)
@@ -1438,6 +1442,7 @@ def test_vit(
     # 添加到指标数据
     metrics_data.update({
         "disease_classification": disease_metrics,
+        "loss": running_loss / len(data_loader) if running_loss > 0 else 0.0,
     })
     
     # 记录到wandb或TensorBoard
@@ -1448,6 +1453,8 @@ def test_vit(
         writer.add_scalar(f"{mode}/Disease/F1", f1, epoch)
         writer.add_scalar(f"{mode}/Disease/AUC", macro_auc, epoch)
         writer.add_scalar(f"{mode}/Disease/AP", macro_ap, epoch)
+        # 记录损失
+        writer.add_scalar(f"{mode}/ViT/Loss", metrics_data["loss"], epoch)
     
     # 打印评估结果
     logger.info(f"全局疾病分类性能 (Epoch {epoch}):")
@@ -1457,6 +1464,7 @@ def test_vit(
     logger.info(f"  F1分数: {f1:.4f}")
     logger.info(f"  宏平均AUC: {macro_auc:.4f}")
     logger.info(f"  宏平均AP: {macro_ap:.4f}")
+    logger.info(f"  平均损失: {metrics_data['loss']:.4f}")
     
     # 保存到文件
     result_file = os.path.join(
@@ -1478,6 +1486,7 @@ def test_vit(
             "ce_ap": macro_ap,
         },
         "metrics_data": metrics_data,
+        "loss": metrics_data["loss"],
     }
     
     return running_loss / len(data_loader) if running_loss > 0 else 0.0, result
