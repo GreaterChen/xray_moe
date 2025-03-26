@@ -128,12 +128,10 @@ class MOE(nn.Module):
                 results = {
                     "cls_token": cls_token,
                     "visual_tokens": visual_tokens,
-                    "region_preds": image_encoder_outputs["region_preds"],
-                    "image_preds": image_encoder_outputs["image_preds"],
+                    "disease_preds": image_encoder_outputs["disease_preds"],
+                    "final_disease_preds": image_encoder_outputs["final_disease_preds"],
                     "ltc_loss": ltc_loss,
                     "cls_loss": image_encoder_outputs["loss"],
-                    "cls_global_loss": image_encoder_outputs["global_loss"],
-                    "cls_region_loss": image_encoder_outputs["region_loss"],
                 }
                 return results
 
@@ -142,8 +140,8 @@ class MOE(nn.Module):
                 return {
                     "cls_token": cls_token,
                     "visual_tokens": visual_tokens,
-                    "region_preds": image_encoder_outputs["region_preds"],
-                    "image_preds": image_encoder_outputs["image_preds"],
+                    "disease_preds": image_encoder_outputs["disease_preds"],
+                    "final_disease_preds": image_encoder_outputs["final_disease_preds"],
                 }
 
         elif phase == "INFER_BERT":

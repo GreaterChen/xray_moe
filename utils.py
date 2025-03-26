@@ -12,10 +12,11 @@ from datetime import datetime
 from tqdm import tqdm
 import pandas as pd
 import metrics
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, average_precision_score
 from torch.profiler import profile, record_function, ProfilerActivity
 from contextlib import nullcontext
 import gc
+import json
 
 
 # ------ Helper Functions ------
@@ -308,8 +309,6 @@ def train(
                 vit_losses = {
                     "Train/ViT/LTC_Loss": output["ltc_loss"].item(),
                     "Train/ViT/CLS_Loss": output["cls_loss"].item(),
-                    "Train/ViT/CLS_GLOBAL_Loss": output["cls_global_loss"].item(),
-                    "Train/ViT/CLS_REGION_Loss": output["cls_region_loss"].item(),
                 }
                 for tag, value in vit_losses.items():
                     writer.add_scalar(tag, value, global_step)
@@ -1237,8 +1236,8 @@ def test_vit(
     writer=None,
 ):
     """
-    评估PRETRAIN_VIT阶段的模型性能，包括每一层的区域分类准确率和全图分类准确率
-
+    评估PRETRAIN_VIT阶段的模型性能，只保留全局疾病分类性能评估
+    
     参数:
         args: 配置参数
         data_loader: 测试数据加载器
@@ -1247,6 +1246,7 @@ def test_vit(
         mode: 评估模式 ("val" 或 "test")
         device: 计算设备
         epoch: 当前训练轮次
+        writer: TensorBoard写入器
 
     返回:
         float: 平均损失
@@ -1262,10 +1262,7 @@ def test_vit(
     # 初始化存储结构
     image_paths_list = []
     labels_list = []
-
-    # 为每个有分类器的层初始化评估指标存储
-    all_layer_region_preds = [[] for _ in range(classifier_layers)]
-    all_layer_image_preds = [[] for _ in range(classifier_layers)]
+    all_disease_preds = []
     all_labels = []
 
     # 创建进度条
@@ -1299,28 +1296,21 @@ def test_vit(
             outputs = data_distributor(model, source)
             outputs = args_to_kwargs(outputs)
 
-            # 收集每个有分类器的层的预测结果
-            for layer_idx in range(classifier_layers):
-                region_preds = outputs["region_preds"][
-                    layer_idx
-                ]  # [B, num_regions, num_diseases]
-                image_preds = outputs["image_preds"][layer_idx]  # [B, num_diseases]
+            # 获取最后一层的疾病预测结果
+            if outputs["final_disease_preds"] is not None:
+                disease_preds = outputs["final_disease_preds"]  # [B, num_diseases]
+                all_disease_preds.append(disease_preds.detach().cpu())
+                
+                # TODO 提供loss值
+                # if outputs["cls_loss"] is not None:
+                #     running_loss += outputs["cls_loss"].item()
 
-                all_layer_region_preds[layer_idx].append(region_preds.detach().cpu())
-                all_layer_image_preds[layer_idx].append(image_preds.detach().cpu())
+    # 合并所有批次的预测和标签
+    all_labels = torch.cat(all_labels, dim=0)
+    all_disease_preds = torch.cat(all_disease_preds, dim=0)
 
-    # 合并所有批次的预测和标签，并确保它们都在同一个设备上
-    all_labels = torch.cat(all_labels, dim=0)  # 已经在device上了
-    for layer_idx in range(classifier_layers):
-        all_layer_region_preds[layer_idx] = torch.cat(
-            all_layer_region_preds[layer_idx], dim=0
-        ).to(device)
-        all_layer_image_preds[layer_idx] = torch.cat(
-            all_layer_image_preds[layer_idx], dim=0
-        ).to(device)
-
-    # 计算每一层的评估指标
-    logger.info("计算ViT模型评估指标...")
+    # 计算评估指标
+    logger.info("计算ViT模型疾病分类评估指标...")
 
     # 创建结果目录
     results_dir = os.path.join(args.checkpoint_path_to, "vit_results")
@@ -1333,357 +1323,162 @@ def test_vit(
         "epoch": str(epoch) if epoch is not None else "TEST",
     }
 
-    # 计算每个有分类器的层的指标
-    for layer_idx in range(classifier_layers):
-        actual_layer = layer_idx * 2  # 转换为实际的层索引（偶数层）
-
-        # 获取当前层的预测
-        region_preds = all_layer_region_preds[
-            layer_idx
-        ]  # [N, num_regions, num_diseases]
-        image_preds = all_layer_image_preds[layer_idx]  # [N, num_diseases]
-
-        # 应用sigmoid获取概率
-        region_probs = torch.sigmoid(region_preds)
-        image_probs = torch.sigmoid(image_preds)
-
-        # 使用0.5作为阈值获取二值预测
-        region_binary = (region_probs > 0.5).float()
-        image_binary = (image_probs > 0.5).float()
-
-        # 计算区域级指标
-        num_regions = region_preds.size(1)
-        num_diseases = region_preds.size(2)
-
-        # 计算每个区域的样本级指标 (Example-based metrics)
-        for region_idx in range(num_regions):
-            region_pred = region_binary[:, region_idx, :]  # [N, num_diseases]
-            region_label = all_labels  # 使用图像级标签作为区域级标签
-
-            # 计算每个样本的TP, FP, FN
-            tp = (region_pred == 1) & (
-                region_label == 1
-            )  # 真阳性：预测有疾病且真实有疾病
-            fp = (region_pred == 1) & (
-                region_label == 0
-            )  # 假阳性：预测有疾病但真实无疾病
-            fn = (region_pred == 0) & (
-                region_label == 1
-            )  # 假阴性：预测无疾病但真实有疾病
-
-            # 对每个样本的每个疾病求和，得到每个样本的TP, FP, FN总数
-            tp_sum = tp.sum(dim=1).float()  # [N]
-            fp_sum = fp.sum(dim=1).float()  # [N]
-            fn_sum = fn.sum(dim=1).float()  # [N]
-
-            # 计算每个样本的精确率、召回率、F1分数
-            # 注意处理分母为0的情况
-            precision = torch.zeros_like(tp_sum)
-            recall = torch.zeros_like(tp_sum)
-            f1 = torch.zeros_like(tp_sum)
-
-            valid_precision = (tp_sum + fp_sum) > 0
-            valid_recall = (tp_sum + fn_sum) > 0
-
-            precision[valid_precision] = tp_sum[valid_precision] / (
-                tp_sum[valid_precision] + fp_sum[valid_precision]
-            )
-            recall[valid_recall] = tp_sum[valid_recall] / (
-                tp_sum[valid_recall] + fn_sum[valid_recall]
-            )
-
-            valid_f1 = (tp_sum > 0) | (fp_sum > 0) | (fn_sum > 0)
-            f1[valid_f1] = tp_sum[valid_f1] / (
-                tp_sum[valid_f1] + 0.5 * (fp_sum[valid_f1] + fn_sum[valid_f1])
-            )
-
-            # 计算样本级别的平均指标
-            ce_precision = precision.mean().item()
-            ce_recall = recall.mean().item()
-            ce_f1 = f1.mean().item()
-
-            # 保存区域级指标
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_ce_precision"] = (
-                ce_precision
-            )
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_ce_recall"] = (
-                ce_recall
-            )
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_ce_f1"] = ce_f1
-
-            # 计算传统的基于类别的评估指标 (Class-based metrics)
-            # 这部分保留了您原来的计算逻辑，但这里使用每个区域的预测
-
-            # 计算每个疾病的指标
-            tp_cls = tp.sum(dim=0).float()  # [num_diseases]
-            fp_cls = fp.sum(dim=0).float()  # [num_diseases]
-            fn_cls = fn.sum(dim=0).float()  # [num_diseases]
-
-            # 计算每个疾病的precision, recall, f1
-            cls_precision = torch.zeros_like(tp_cls)
-            cls_recall = torch.zeros_like(tp_cls)
-            cls_f1 = torch.zeros_like(tp_cls)
-
-            valid_cls_precision = (tp_cls + fp_cls) > 0
-            valid_cls_recall = (tp_cls + fn_cls) > 0
-
-            cls_precision[valid_cls_precision] = tp_cls[valid_cls_precision] / (
-                tp_cls[valid_cls_precision] + fp_cls[valid_cls_precision]
-            )
-            cls_recall[valid_cls_recall] = tp_cls[valid_cls_recall] / (
-                tp_cls[valid_cls_recall] + fn_cls[valid_cls_recall]
-            )
-
-            valid_cls_f1 = (tp_cls > 0) | (fp_cls > 0) | (fn_cls > 0)
-            cls_f1[valid_cls_f1] = tp_cls[valid_cls_f1] / (
-                tp_cls[valid_cls_f1]
-                + 0.5 * (fp_cls[valid_cls_f1] + fn_cls[valid_cls_f1])
-            )
-
-            # 计算类别平均指标
-            cls_precision_mean = cls_precision.mean().item()
-            cls_recall_mean = cls_recall.mean().item()
-            cls_f1_mean = cls_f1.mean().item()
-
-            # 保存基于类别的指标
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_cls_precision"] = (
-                cls_precision_mean
-            )
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_cls_recall"] = (
-                cls_recall_mean
-            )
-            metrics_data[f"layer_{actual_layer}_region_{region_idx}_cls_f1"] = (
-                cls_f1_mean
-            )
-
-        # 计算图像级指标 (样本级和类别级)
-        # 样本级指标 (Example-based)
-        image_pred = image_binary  # [N, num_diseases]
-        image_label = all_labels
-
-        # 计算每个样本的TP, FP, FN
-        tp = (image_pred == 1) & (image_label == 1)
-        fp = (image_pred == 1) & (image_label == 0)
-        fn = (image_pred == 0) & (image_label == 1)
-
-        tp_sum = tp.sum(dim=1).float()
-        fp_sum = fp.sum(dim=1).float()
-        fn_sum = fn.sum(dim=1).float()
-
-        # 计算每个样本的精确率、召回率、F1分数
-        precision = torch.zeros_like(tp_sum)
-        recall = torch.zeros_like(tp_sum)
-        f1 = torch.zeros_like(tp_sum)
-
-        valid_precision = (tp_sum + fp_sum) > 0
-        valid_recall = (tp_sum + fn_sum) > 0
-
-        precision[valid_precision] = tp_sum[valid_precision] / (
-            tp_sum[valid_precision] + fp_sum[valid_precision]
-        )
-        recall[valid_recall] = tp_sum[valid_recall] / (
-            tp_sum[valid_recall] + fn_sum[valid_recall]
-        )
-
-        valid_f1 = (tp_sum > 0) | (fp_sum > 0) | (fn_sum > 0)
-        f1[valid_f1] = tp_sum[valid_f1] / (
-            tp_sum[valid_f1] + 0.5 * (fp_sum[valid_f1] + fn_sum[valid_f1])
-        )
-
-        # 计算样本级别的平均指标
-        ce_precision = precision.mean().item()
-        ce_recall = recall.mean().item()
-        ce_f1 = f1.mean().item()
-
-        # 计算类别级指标 (Class-based)
-        tp_cls = tp.sum(dim=0).float()
-        fp_cls = fp.sum(dim=0).float()
-        fn_cls = fn.sum(dim=0).float()
-
-        cls_precision = torch.zeros_like(tp_cls)
-        cls_recall = torch.zeros_like(tp_cls)
-        cls_f1 = torch.zeros_like(tp_cls)
-
-        valid_cls_precision = (tp_cls + fp_cls) > 0
-        valid_cls_recall = (tp_cls + fn_cls) > 0
-
-        cls_precision[valid_cls_precision] = tp_cls[valid_cls_precision] / (
-            tp_cls[valid_cls_precision] + fp_cls[valid_cls_precision]
-        )
-        cls_recall[valid_cls_recall] = tp_cls[valid_cls_recall] / (
-            tp_cls[valid_cls_recall] + fn_cls[valid_cls_recall]
-        )
-
-        valid_cls_f1 = (tp_cls > 0) | (fp_cls > 0) | (fn_cls > 0)
-        cls_f1[valid_cls_f1] = tp_cls[valid_cls_f1] / (
-            tp_cls[valid_cls_f1] + 0.5 * (fp_cls[valid_cls_f1] + fn_cls[valid_cls_f1])
-        )
-
-        # 计算类别平均指标
-        cls_precision_mean = cls_precision.mean().item()
-        cls_recall_mean = cls_recall.mean().item()
-        cls_f1_mean = cls_f1.mean().item()
-
-        # 计算准确率 (整体分类准确率)
-        accuracy = (image_pred == image_label).float().mean().item()
-
-        # 计算AUC
-        auc_scores = []
-        for disease_idx in range(num_diseases):
-            disease_prob = image_probs[:, disease_idx].cpu().numpy()
-            disease_label = image_label[:, disease_idx].cpu().numpy()
-            if len(np.unique(disease_label)) > 1:  # 确保有正负样本
-                try:
-                    auc = roc_auc_score(disease_label, disease_prob)
-                    auc_scores.append(auc)
-                except:
-                    pass
-
-        auc_mean = np.mean(auc_scores) if auc_scores else 0.0
-
-        # 保存图像级指标
-        metrics_data[f"layer_{actual_layer}_image_accuracy"] = accuracy
-        metrics_data[f"layer_{actual_layer}_image_auc"] = auc_mean
-        metrics_data[f"layer_{actual_layer}_image_ce_precision"] = ce_precision
-        metrics_data[f"layer_{actual_layer}_image_ce_recall"] = ce_recall
-        metrics_data[f"layer_{actual_layer}_image_ce_f1"] = ce_f1
-        metrics_data[f"layer_{actual_layer}_image_cls_precision"] = cls_precision_mean
-        metrics_data[f"layer_{actual_layer}_image_cls_recall"] = cls_recall_mean
-        metrics_data[f"layer_{actual_layer}_image_cls_f1"] = cls_f1_mean
-
-    # 计算最后一个有分类器的层的指标作为整体指标
-    final_layer_idx = (classifier_layers - 1) * 2  # 最后一个有分类器的层的实际索引
-
-    # 整体指标 (例如图像级指标)
-    overall_metrics = {
-        "accuracy": metrics_data[f"layer_{final_layer_idx}_image_accuracy"],
-        "auc": metrics_data[f"layer_{final_layer_idx}_image_auc"],
-        "ce_precision": metrics_data[f"layer_{final_layer_idx}_image_ce_precision"],
-        "ce_recall": metrics_data[f"layer_{final_layer_idx}_image_ce_recall"],
-        "ce_f1": metrics_data[f"layer_{final_layer_idx}_image_ce_f1"],
-        "cls_precision": metrics_data[f"layer_{final_layer_idx}_image_cls_precision"],
-        "cls_recall": metrics_data[f"layer_{final_layer_idx}_image_cls_recall"],
-        "cls_f1": metrics_data[f"layer_{final_layer_idx}_image_cls_f1"],
+    # 应用sigmoid获取概率
+    disease_probs = torch.sigmoid(all_disease_preds)
+    
+    # 使用0.5作为阈值获取二值预测
+    disease_binary = (disease_probs > 0.5).float()
+    
+    # 计算全局疾病分类指标 - 手动计算而不是使用sklearn
+    
+    # 将张量转换为CPU上的张量进行计算
+    disease_binary = disease_binary.cpu()
+    disease_probs = disease_probs.cpu()
+    all_labels = all_labels.cpu()
+    
+    # 计算每个样本的TP, FP, FN
+    tp = (disease_binary == 1) & (all_labels == 1)  # 真阳性：预测有疾病且真实有疾病
+    fp = (disease_binary == 1) & (all_labels == 0)  # 假阳性：预测有疾病但真实无疾病
+    fn = (disease_binary == 0) & (all_labels == 1)  # 假阴性：预测无疾病但真实有疾病
+    
+    # 对每个样本的每个疾病求和，得到每个样本的TP, FP, FN总数
+    tp_sum = tp.sum(dim=1).float()  # [N]
+    fp_sum = fp.sum(dim=1).float()  # [N]
+    fn_sum = fn.sum(dim=1).float()  # [N]
+    
+    # 计算每个样本的精确率、召回率、F1分数
+    # 注意处理分母为0的情况
+    precision_per_sample = torch.zeros_like(tp_sum)
+    recall_per_sample = torch.zeros_like(tp_sum)
+    f1_per_sample = torch.zeros_like(tp_sum)
+    
+    # 只在有预测的样本上计算精确率
+    valid_precision = (tp_sum + fp_sum) > 0
+    precision_per_sample[valid_precision] = tp_sum[valid_precision] / (tp_sum[valid_precision] + fp_sum[valid_precision])
+    
+    # 只在有真实正样本的样本上计算召回率
+    valid_recall = (tp_sum + fn_sum) > 0
+    recall_per_sample[valid_recall] = tp_sum[valid_recall] / (tp_sum[valid_recall] + fn_sum[valid_recall])
+    
+    # 计算F1（注意避免除以0）
+    valid_f1 = (precision_per_sample + recall_per_sample) > 0
+    f1_per_sample[valid_f1] = 2 * precision_per_sample[valid_f1] * recall_per_sample[valid_f1] / (precision_per_sample[valid_f1] + recall_per_sample[valid_f1])
+    
+    # 计算平均指标（样本级别）
+    precision = precision_per_sample.mean().item()
+    recall = recall_per_sample.mean().item()
+    f1 = f1_per_sample.mean().item()
+    
+    # 计算每个类别的指标（类别级别）
+    tp_per_class = tp.sum(dim=0).float()  # [num_diseases]
+    fp_per_class = fp.sum(dim=0).float()  # [num_diseases]
+    fn_per_class = fn.sum(dim=0).float()  # [num_diseases]
+    
+    precision_per_class = torch.zeros_like(tp_per_class)
+    recall_per_class = torch.zeros_like(tp_per_class)
+    f1_per_class = torch.zeros_like(tp_per_class)
+    
+    valid_precision_class = (tp_per_class + fp_per_class) > 0
+    precision_per_class[valid_precision_class] = tp_per_class[valid_precision_class] / (tp_per_class[valid_precision_class] + fp_per_class[valid_precision_class])
+    
+    valid_recall_class = (tp_per_class + fn_per_class) > 0
+    recall_per_class[valid_recall_class] = tp_per_class[valid_recall_class] / (tp_per_class[valid_recall_class] + fn_per_class[valid_recall_class])
+    
+    valid_f1_class = (precision_per_class + recall_per_class) > 0
+    f1_per_class[valid_f1_class] = 2 * precision_per_class[valid_f1_class] * recall_per_class[valid_f1_class] / (precision_per_class[valid_f1_class] + recall_per_class[valid_f1_class])
+    
+    # 计算类别平均（宏平均）
+    precision_macro = precision_per_class.mean().item()
+    recall_macro = recall_per_class.mean().item()
+    f1_macro = f1_per_class.mean().item()
+    
+    # 计算准确率 - 整体准确率
+    correct = (disease_binary == all_labels).float()
+    accuracy = correct.mean().item()
+    
+    # 计算每个类别的AUC和AP (如果需要的话)
+    num_diseases = all_disease_preds.size(1)
+    aucs = []
+    aps = []
+    
+    # 将张量转换为NumPy数组以便使用sklearn
+    disease_probs_np = disease_probs.numpy()
+    labels_np = all_labels.numpy()
+    
+    for i in range(num_diseases):
+        # 只有当类别有正样本和负样本时才计算AUC
+        if len(np.unique(labels_np[:, i])) > 1:
+            try:
+                auc = roc_auc_score(labels_np[:, i], disease_probs_np[:, i])
+                ap = average_precision_score(labels_np[:, i], disease_probs_np[:, i])
+                aucs.append(auc)
+                aps.append(ap)
+            except Exception as e:
+                logger.warning(f"计算类别 {i} 的AUC/AP时出错: {e}")
+    
+    # 计算宏平均AUC和AP
+    macro_auc = np.mean(aucs) if aucs else 0
+    macro_ap = np.mean(aps) if aps else 0
+    
+    # 将指标保存到结果中
+    disease_metrics = {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "precision_macro": precision_macro,
+        "recall_macro": recall_macro,
+        "f1_macro": f1_macro,
+        "auc_macro": macro_auc,
+        "ap_macro": macro_ap,
     }
-
-    # 加入每个区域的指标
-    for region_idx in range(num_regions):
-        region_metrics = {
-            "ce_precision": metrics_data[
-                f"layer_{final_layer_idx}_region_{region_idx}_ce_precision"
-            ],
-            "ce_recall": metrics_data[
-                f"layer_{final_layer_idx}_region_{region_idx}_ce_recall"
-            ],
-            "ce_f1": metrics_data[f"layer_{final_layer_idx}_region_{region_idx}_ce_f1"],
-            "cls_precision": metrics_data[
-                f"layer_{final_layer_idx}_region_{region_idx}_cls_precision"
-            ],
-            "cls_recall": metrics_data[
-                f"layer_{final_layer_idx}_region_{region_idx}_cls_recall"
-            ],
-            "cls_f1": metrics_data[
-                f"layer_{final_layer_idx}_region_{region_idx}_cls_f1"
-            ],
-        }
-        overall_metrics[f"region_{region_idx}_metrics"] = region_metrics
-
-    # 添加整体指标到结果数据
-    for metric_name, value in overall_metrics.items():
-        if isinstance(value, dict):
-            for sub_metric_name, sub_value in value.items():
-                metrics_data[f"overall_{metric_name}_{sub_metric_name}"] = sub_value
-        else:
-            metrics_data[f"overall_{metric_name}"] = value
-
-    # 保存评估指标
-    metrics_df = pd.DataFrame([metrics_data])
-    epoch_str = str(epoch) if epoch is not None else "TEST"
-    metrics_filename = f"{mode}_vit_metrics_epoch_{epoch_str}.csv"
-    metrics_df.to_csv(os.path.join(results_dir, metrics_filename), index=False)
-    logger.info(f"ViT评估指标已保存到CSV文件: {metrics_filename}")
-
-    # 打印主要指标
-    logger.info(f"\n图像分类指标 (样本级):")
-    logger.info(f"样本级精确率: {overall_metrics['ce_precision']:.4f}")
-    logger.info(f"样本级召回率: {overall_metrics['ce_recall']:.4f}")
-    logger.info(f"样本级F1分数: {overall_metrics['ce_f1']:.4f}")
-
-    logger.info(f"\n图像分类指标 (类别级):")
-    logger.info(f"类别级精确率: {overall_metrics['cls_precision']:.4f}")
-    logger.info(f"类别级召回率: {overall_metrics['cls_recall']:.4f}")
-    logger.info(f"类别级F1分数: {overall_metrics['cls_f1']:.4f}")
-
-    logger.info(f"\n其他指标:")
-    logger.info(f"准确率: {overall_metrics['accuracy']:.4f}")
-    logger.info(f"AUC: {overall_metrics['auc']:.4f}")
-
-    # 打印每个区域的指标
-    logger.info(f"\n各解剖区域分类指标:")
-    for region_idx in range(num_regions):
-        region_metrics = overall_metrics[f"region_{region_idx}_metrics"]
-        logger.info(f"\n区域 {region_idx}:")
-        logger.info(f"样本级精确率: {region_metrics['ce_precision']:.4f}")
-        logger.info(f"样本级召回率: {region_metrics['ce_recall']:.4f}")
-        logger.info(f"样本级F1分数: {region_metrics['ce_f1']:.4f}")
-        logger.info(f"类别级精确率: {region_metrics['cls_precision']:.4f}")
-        logger.info(f"类别级召回率: {region_metrics['cls_recall']:.4f}")
-        logger.info(f"类别级F1分数: {region_metrics['cls_f1']:.4f}")
-
-    # 记录评估指标到 TensorBoard
+    
+    # 添加到指标数据
+    metrics_data.update({
+        "disease_classification": disease_metrics,
+    })
+    
+    # 记录到wandb或TensorBoard
     if writer is not None and epoch is not None:
-        # 记录整体指标
-        writer.add_scalar(f"{mode}/ViT/Accuracy", overall_metrics["accuracy"], epoch)
-        writer.add_scalar(f"{mode}/ViT/AUC", overall_metrics["auc"], epoch)
-        writer.add_scalar(
-            f"{mode}/ViT/CE_Precision", overall_metrics["ce_precision"], epoch
-        )
-        writer.add_scalar(f"{mode}/ViT/CE_Recall", overall_metrics["ce_recall"], epoch)
-        writer.add_scalar(f"{mode}/ViT/CE_F1", overall_metrics["ce_f1"], epoch)
-        writer.add_scalar(
-            f"{mode}/ViT/CLS_Precision", overall_metrics["cls_precision"], epoch
-        )
-        writer.add_scalar(
-            f"{mode}/ViT/CLS_Recall", overall_metrics["cls_recall"], epoch
-        )
-        writer.add_scalar(f"{mode}/ViT/CLS_F1", overall_metrics["cls_f1"], epoch)
-
-        # 记录每个区域的指标
-        for region_idx in range(num_regions):
-            region_metrics = overall_metrics[f"region_{region_idx}_metrics"]
-            writer.add_scalar(
-                f"{mode}/ViT/Region_{region_idx}/CE_Precision",
-                region_metrics["ce_precision"],
-                epoch,
-            )
-            writer.add_scalar(
-                f"{mode}/ViT/Region_{region_idx}/CE_Recall",
-                region_metrics["ce_recall"],
-                epoch,
-            )
-            writer.add_scalar(
-                f"{mode}/ViT/Region_{region_idx}/CE_F1", region_metrics["ce_f1"], epoch
-            )
-            writer.add_scalar(
-                f"{mode}/ViT/Region_{region_idx}/CLS_Precision",
-                region_metrics["cls_precision"],
-                epoch,
-            )
-            writer.add_scalar(
-                f"{mode}/ViT/Region_{region_idx}/CLS_Recall",
-                region_metrics["cls_recall"],
-                epoch,
-            )
-            writer.add_scalar(
-                f"{mode}/ViT/Region_{region_idx}/CLS_F1",
-                region_metrics["cls_f1"],
-                epoch,
-            )
-
-    # 返回结果
-    result = {"overall_metrics": overall_metrics, "metrics_df": metrics_df}
-
-    return 0.0, result
+        writer.add_scalar(f"{mode}/Disease/Accuracy", accuracy, epoch)
+        writer.add_scalar(f"{mode}/Disease/Precision", precision, epoch)
+        writer.add_scalar(f"{mode}/Disease/Recall", recall, epoch)
+        writer.add_scalar(f"{mode}/Disease/F1", f1, epoch)
+        writer.add_scalar(f"{mode}/Disease/AUC", macro_auc, epoch)
+        writer.add_scalar(f"{mode}/Disease/AP", macro_ap, epoch)
+    
+    # 打印评估结果
+    logger.info(f"全局疾病分类性能 (Epoch {epoch}):")
+    logger.info(f"  准确率: {accuracy:.4f}")
+    logger.info(f"  精确率: {precision:.4f}")
+    logger.info(f"  召回率: {recall:.4f}")
+    logger.info(f"  F1分数: {f1:.4f}")
+    logger.info(f"  宏平均AUC: {macro_auc:.4f}")
+    logger.info(f"  宏平均AP: {macro_ap:.4f}")
+    
+    # 保存到文件
+    result_file = os.path.join(
+        results_dir, f"{mode}_epoch_{epoch}_vit_results.json"
+    )
+    with open(result_file, "w") as f:
+        json.dump(metrics_data, f, indent=2)
+        
+    logger.info(f"评估结果已保存到 {result_file}")
+    
+    # 构建返回结果
+    result = {
+        "overall_metrics": {
+            "ce_accuracy": accuracy,
+            "ce_precision": precision,
+            "ce_recall": recall,
+            "ce_f1": f1,
+            "ce_auc": macro_auc,
+            "ce_ap": macro_ap,
+        },
+        "metrics_data": metrics_data,
+    }
+    
+    return running_loss / len(data_loader) if running_loss > 0 else 0.0, result
 
 
 def calculate_detection_metrics(predictions, ground_truths, iou_threshold=0.5):

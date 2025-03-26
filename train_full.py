@@ -41,7 +41,7 @@ logger = setup_logger(log_dir="logs")
 def parse_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--debug", default=False, help="Debug mode.")
+    parser.add_argument("--debug", default=True, help="Debug mode.")
 
     # Data input settings
     parser.add_argument(
@@ -186,7 +186,7 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_path_to",
         type=str,
-        default="/home/chenlb/MOE/results/ltc/region_disease_support/",
+        default="/home/chenlb/MOE/results/ltc/14_classifier/",
         help="Path to save the checkpoint to.",
     )
 
