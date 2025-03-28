@@ -302,6 +302,8 @@ class EnhancedFastRCNN(nn.Module):
             )
         )
 
+        use_gt = True
+
         # 准备用于特征提取的框和标签
         boxes_list = []
         labels_list = []

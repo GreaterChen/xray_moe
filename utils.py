@@ -1256,6 +1256,8 @@ def test_vit(
     """
     model.eval()
     running_loss = 0
+    running_cls_loss = 0
+    running_ltc_loss = 0
 
     # 获取ViT模型的总层数和实际有分类器的层数
     total_layers = model.image_encoder.num_layers
@@ -1306,10 +1308,12 @@ def test_vit(
                 # 收集损失信息
                 if "cls_loss" in outputs and outputs["cls_loss"] is not None:
                     running_loss += outputs["cls_loss"].item()
+                    running_cls_loss += outputs["cls_loss"].item()
                 
                 # 如果有ltc_loss，也加到总损失中
                 if "ltc_loss" in outputs and outputs["ltc_loss"] is not None:
                     running_loss += outputs["ltc_loss"].item()
+                    running_ltc_loss += outputs["ltc_loss"].item()
 
     # 合并所有批次的预测和标签
     all_labels = torch.cat(all_labels, dim=0)
@@ -1439,10 +1443,17 @@ def test_vit(
         "ap_macro": macro_ap,
     }
     
+    # 计算平均损失
+    avg_loss = running_loss / len(data_loader) if running_loss > 0 else 0.0
+    avg_cls_loss = running_cls_loss / len(data_loader) if running_cls_loss > 0 else 0.0
+    avg_ltc_loss = running_ltc_loss / len(data_loader) if running_ltc_loss > 0 else 0.0
+    
     # 添加到指标数据
     metrics_data.update({
         "disease_classification": disease_metrics,
-        "loss": running_loss / len(data_loader) if running_loss > 0 else 0.0,
+        "loss": avg_loss,
+        "cls_loss": avg_cls_loss,
+        "ltc_loss": avg_ltc_loss
     })
     
     # 记录到wandb或TensorBoard
@@ -1454,7 +1465,10 @@ def test_vit(
         writer.add_scalar(f"{mode}/Disease/AUC", macro_auc, epoch)
         writer.add_scalar(f"{mode}/Disease/AP", macro_ap, epoch)
         # 记录损失
-        writer.add_scalar(f"{mode}/ViT/Loss", metrics_data["loss"], epoch)
+        writer.add_scalar(f"{mode}/ViT/Loss", avg_loss, epoch)
+        # 分别记录cls_loss和ltc_loss
+        writer.add_scalar(f"{mode}/ViT/CLS_Loss", avg_cls_loss, epoch)
+        writer.add_scalar(f"{mode}/ViT/LTC_Loss", avg_ltc_loss, epoch)
     
     # 打印评估结果
     logger.info(f"全局疾病分类性能 (Epoch {epoch}):")
@@ -1464,7 +1478,9 @@ def test_vit(
     logger.info(f"  F1分数: {f1:.4f}")
     logger.info(f"  宏平均AUC: {macro_auc:.4f}")
     logger.info(f"  宏平均AP: {macro_ap:.4f}")
-    logger.info(f"  平均损失: {metrics_data['loss']:.4f}")
+    logger.info(f"  平均总损失: {avg_loss:.4f}")
+    logger.info(f"  平均分类损失: {avg_cls_loss:.4f}")
+    logger.info(f"  平均LTC损失: {avg_ltc_loss:.4f}")
     
     # 保存到文件
     result_file = os.path.join(
