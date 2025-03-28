@@ -679,26 +679,32 @@ class HiMrGn(nn.Module):
             if self.args.CO:
                 F_t_prime, F_v_prime = self.co_attention_module(F_F, F_v)
                 memory = torch.cat([F_v, F_t_prime, F_v_prime], dim=1)
-                memory, impression_logits, impression_text, impression_loss = (
-                    self.impression_decoder(
-                        F_t_prime,
-                        F_v_prime,
-                        F_v,
-                        impression if mode == "train" else None,
-                        memory=memory,
-                    )
+                (
+                    memory,
+                    impression_logits,
+                    impression_text,
+                    impression_loss,
+                ) = self.impression_decoder(
+                    F_t_prime,
+                    F_v_prime,
+                    F_v,
+                    impression if mode == "train" else None,
+                    memory=memory,
                 )
             else:
                 # memory = torch.cat([F_v, F_t], dim=1)
                 memory = F_v
-                memory, impression_logits, impression_text, impression_loss = (
-                    self.impression_decoder(
-                        F_t,
-                        F_t,
-                        F_v,
-                        impression if mode == "train" else None,
-                        memory,
-                    )
+                (
+                    memory,
+                    impression_logits,
+                    impression_text,
+                    impression_loss,
+                ) = self.impression_decoder(
+                    F_t,
+                    F_t,
+                    F_v,
+                    impression if mode == "train" else None,
+                    memory,
                 )
 
             if self.args.CLS:
@@ -745,25 +751,31 @@ class HiMrGn(nn.Module):
             if self.args.CO:
                 F_t_prime, F_v_prime = self.co_attention_module(F_F, F_v)
                 memory = torch.cat([F_v, F_t_prime, F_v_prime], dim=1)
-                memory, impression_logits, impression_text, impression_loss = (
-                    self.impression_decoder(
-                        F_t_prime,
-                        F_v_prime,
-                        F_v,
-                        impression if mode == "train" else None,
-                        memory=memory,
-                    )
+                (
+                    memory,
+                    impression_logits,
+                    impression_text,
+                    impression_loss,
+                ) = self.impression_decoder(
+                    F_t_prime,
+                    F_v_prime,
+                    F_v,
+                    impression if mode == "train" else None,
+                    memory=memory,
                 )
             else:
                 memory = torch.cat([F_v, F_t], dim=1)
-                memory, impression_logits, impression_text, impression_loss = (
-                    self.impression_decoder(
-                        F_t,
-                        F_t,
-                        F_v,
-                        impression if mode == "train" else None,
-                        memory,
-                    )
+                (
+                    memory,
+                    impression_logits,
+                    impression_text,
+                    impression_loss,
+                ) = self.impression_decoder(
+                    F_t,
+                    F_t,
+                    F_v,
+                    impression if mode == "train" else None,
+                    memory,
                 )
 
             if self.args.CLS:

@@ -104,7 +104,14 @@ def args_to_kwargs(
 
 
 def prepare_batch_data(
-    config, batch, data_loader, device, findings=True, history=True, label=True, bbox=True
+    config,
+    batch,
+    data_loader,
+    device,
+    findings=True,
+    history=True,
+    label=True,
+    bbox=True,
 ):
     """准备批次数据，对整个batch进行tokenization
 
@@ -281,7 +288,7 @@ def train(
         source["total_epochs"] = num_epochs
 
         optimizer.zero_grad()
-        
+
         # 根据不同阶段执行不同的训练逻辑
         if config.PHASE == "FINETUNE_MISTRAL":
             with torch.amp.autocast("cuda", enabled=scaler is not None):
@@ -290,10 +297,12 @@ def train(
                 loss = output.loss  # Mistral模型直接返回loss
         else:
             with torch.amp.autocast("cuda"):
-                with record_function("model_forward") if enable_profile else nullcontext():
+                with record_function(
+                    "model_forward"
+                ) if enable_profile else nullcontext():
                     output = data_distributor(model, source)
                 output = args_to_kwargs(output)
-                
+
                 if config.PHASE == "TRAIN_DETECTION":
                     # 汇总所有损失项
                     loss = sum(loss for loss in output.values())
@@ -303,11 +312,11 @@ def train(
                     pass
 
         running_loss += loss.item()
-        
+
         # 学习率更新
         if scheduler is not None:
             scheduler.step(cur_epoch=current_epoch, cur_step=i)
-                
+
         current_lr = optimizer.param_groups[0]["lr"]
         prog_bar.set_description(f"Loss: {running_loss/(i+1)} | LR: {current_lr}")
 
@@ -589,7 +598,8 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
             print("加载目标检测器参数...")
             # 检查是否是MOE模型的检查点
             is_moe_checkpoint = any(
-                key.startswith("object_detector.") for key in checkpoint_state_dict.keys()
+                key.startswith("object_detector.")
+                for key in checkpoint_state_dict.keys()
             )
 
             if is_moe_checkpoint:
@@ -607,12 +617,12 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
             else:
                 # 如果不是MOE检查点，直接使用原state_dict
                 filtered_state_dict = checkpoint_state_dict
-                
+
         elif load_model == "vit":
             print("加载ViT图像编码器参数...")
             # 提取以image_encoder.开头的权重
             filtered_state_dict = {}
-            
+
             # 遍历checkpoint中的所有键
             for key, value in checkpoint_state_dict.items():
                 # 如果键以"image_encoder."开头，则提取
@@ -1288,7 +1298,7 @@ def test_vit(
 ):
     """
     评估PRETRAIN_VIT阶段的模型性能，只保留全局疾病分类性能评估
-    
+
     参数:
         config: 配置参数
         data_loader: 测试数据加载器
@@ -1353,12 +1363,12 @@ def test_vit(
             if outputs["final_disease_preds"] is not None:
                 disease_preds = outputs["final_disease_preds"]  # [B, num_diseases]
                 all_disease_preds.append(disease_preds.detach().cpu())
-                
+
                 # 收集损失信息
                 if "cls_loss" in outputs and outputs["cls_loss"] is not None:
                     running_loss += outputs["cls_loss"].item()
                     running_cls_loss += outputs["cls_loss"].item()
-                
+
                 # 如果有ltc_loss，也加到总损失中
                 if "ltc_loss" in outputs and outputs["ltc_loss"] is not None:
                     running_loss += outputs["ltc_loss"].item()
@@ -1384,86 +1394,104 @@ def test_vit(
 
     # 应用sigmoid获取概率
     disease_probs = torch.sigmoid(all_disease_preds)
-    
+
     # 使用0.5作为阈值获取二值预测
     disease_binary = (disease_probs > 0.5).float()
-    
+
     # 计算全局疾病分类指标 - 手动计算而不是使用sklearn
-    
+
     # 将张量转换为CPU上的张量进行计算
     disease_binary = disease_binary.cpu()
     disease_probs = disease_probs.cpu()
     all_labels = all_labels.cpu()
-    
+
     # 计算每个样本的TP, FP, FN
     tp = (disease_binary == 1) & (all_labels == 1)  # 真阳性：预测有疾病且真实有疾病
     fp = (disease_binary == 1) & (all_labels == 0)  # 假阳性：预测有疾病但真实无疾病
     fn = (disease_binary == 0) & (all_labels == 1)  # 假阴性：预测无疾病但真实有疾病
-    
+
     # 对每个样本的每个疾病求和，得到每个样本的TP, FP, FN总数
     tp_sum = tp.sum(dim=1).float()  # [N]
     fp_sum = fp.sum(dim=1).float()  # [N]
     fn_sum = fn.sum(dim=1).float()  # [N]
-    
+
     # 计算每个样本的精确率、召回率、F1分数
     # 注意处理分母为0的情况
     precision_per_sample = torch.zeros_like(tp_sum)
     recall_per_sample = torch.zeros_like(tp_sum)
     f1_per_sample = torch.zeros_like(tp_sum)
-    
+
     # 只在有预测的样本上计算精确率
     valid_precision = (tp_sum + fp_sum) > 0
-    precision_per_sample[valid_precision] = tp_sum[valid_precision] / (tp_sum[valid_precision] + fp_sum[valid_precision])
-    
+    precision_per_sample[valid_precision] = tp_sum[valid_precision] / (
+        tp_sum[valid_precision] + fp_sum[valid_precision]
+    )
+
     # 只在有真实正样本的样本上计算召回率
     valid_recall = (tp_sum + fn_sum) > 0
-    recall_per_sample[valid_recall] = tp_sum[valid_recall] / (tp_sum[valid_recall] + fn_sum[valid_recall])
-    
+    recall_per_sample[valid_recall] = tp_sum[valid_recall] / (
+        tp_sum[valid_recall] + fn_sum[valid_recall]
+    )
+
     # 计算F1（注意避免除以0）
     valid_f1 = (precision_per_sample + recall_per_sample) > 0
-    f1_per_sample[valid_f1] = 2 * precision_per_sample[valid_f1] * recall_per_sample[valid_f1] / (precision_per_sample[valid_f1] + recall_per_sample[valid_f1])
-    
+    f1_per_sample[valid_f1] = (
+        2
+        * precision_per_sample[valid_f1]
+        * recall_per_sample[valid_f1]
+        / (precision_per_sample[valid_f1] + recall_per_sample[valid_f1])
+    )
+
     # 计算平均指标（样本级别）
     precision = precision_per_sample.mean().item()
     recall = recall_per_sample.mean().item()
     f1 = f1_per_sample.mean().item()
-    
+
     # 计算每个类别的指标（类别级别）
     tp_per_class = tp.sum(dim=0).float()  # [num_diseases]
     fp_per_class = fp.sum(dim=0).float()  # [num_diseases]
     fn_per_class = fn.sum(dim=0).float()  # [num_diseases]
-    
+
     precision_per_class = torch.zeros_like(tp_per_class)
     recall_per_class = torch.zeros_like(tp_per_class)
     f1_per_class = torch.zeros_like(tp_per_class)
-    
+
     valid_precision_class = (tp_per_class + fp_per_class) > 0
-    precision_per_class[valid_precision_class] = tp_per_class[valid_precision_class] / (tp_per_class[valid_precision_class] + fp_per_class[valid_precision_class])
-    
+    precision_per_class[valid_precision_class] = tp_per_class[valid_precision_class] / (
+        tp_per_class[valid_precision_class] + fp_per_class[valid_precision_class]
+    )
+
     valid_recall_class = (tp_per_class + fn_per_class) > 0
-    recall_per_class[valid_recall_class] = tp_per_class[valid_recall_class] / (tp_per_class[valid_recall_class] + fn_per_class[valid_recall_class])
-    
+    recall_per_class[valid_recall_class] = tp_per_class[valid_recall_class] / (
+        tp_per_class[valid_recall_class] + fn_per_class[valid_recall_class]
+    )
+
     valid_f1_class = (precision_per_class + recall_per_class) > 0
-    f1_per_class[valid_f1_class] = 2 * precision_per_class[valid_f1_class] * recall_per_class[valid_f1_class] / (precision_per_class[valid_f1_class] + recall_per_class[valid_f1_class])
-    
+    f1_per_class[valid_f1_class] = (
+        2
+        * precision_per_class[valid_f1_class]
+        * recall_per_class[valid_f1_class]
+        / (precision_per_class[valid_f1_class] + recall_per_class[valid_f1_class])
+    )
+
     # 计算类别平均（宏平均）
     precision_macro = precision_per_class.mean().item()
     recall_macro = recall_per_class.mean().item()
     f1_macro = f1_per_class.mean().item()
-    
+
     # 计算准确率 - 整体准确率
     correct = (disease_binary == all_labels).float()
     accuracy = correct.mean().item()
-    
+
     # 计算每个类别的AUC和AP (如果需要的话)
     num_diseases = all_disease_preds.size(1)
     aucs = []
     aps = []
-    
+
     # 将张量转换为NumPy数组以便使用sklearn
     disease_probs_np = disease_probs.numpy()
     labels_np = all_labels.numpy()
-    
+
     for i in range(num_diseases):
         # 只有当类别有正样本和负样本时才计算AUC
         if len(np.unique(labels_np[:, i])) > 1:
@@ -1474,11 +1502,11 @@ def test_vit(
                 aps.append(ap)
             except Exception as e:
                 logger.warning(f"计算类别 {i} 的AUC/AP时出错: {e}")
-    
+
     # 计算宏平均AUC和AP
     macro_auc = np.mean(aucs) if aucs else 0
     macro_ap = np.mean(aps) if aps else 0
-    
+
     # 将指标保存到结果中
     disease_metrics = {
         "accuracy": accuracy,
@@ -1491,20 +1519,22 @@ def test_vit(
         "auc_macro": macro_auc,
         "ap_macro": macro_ap,
     }
-    
+
     # 计算平均损失
     avg_loss = running_loss / len(data_loader) if running_loss > 0 else 0.0
     avg_cls_loss = running_cls_loss / len(data_loader) if running_cls_loss > 0 else 0.0
     avg_ltc_loss = running_ltc_loss / len(data_loader) if running_ltc_loss > 0 else 0.0
-    
+
     # 添加到指标数据
-    metrics_data.update({
-        "disease_classification": disease_metrics,
-        "loss": avg_loss,
-        "cls_loss": avg_cls_loss,
-        "ltc_loss": avg_ltc_loss
-    })
-    
+    metrics_data.update(
+        {
+            "disease_classification": disease_metrics,
+            "loss": avg_loss,
+            "cls_loss": avg_cls_loss,
+            "ltc_loss": avg_ltc_loss,
+        }
+    )
+
     # 记录到wandb或TensorBoard
     if writer is not None and epoch is not None:
         writer.add_scalar(f"{mode}/Disease/Accuracy", accuracy, epoch)
@@ -1518,7 +1548,7 @@ def test_vit(
         # 分别记录cls_loss和ltc_loss
         writer.add_scalar(f"{mode}/ViT/CLS_Loss", avg_cls_loss, epoch)
         writer.add_scalar(f"{mode}/ViT/LTC_Loss", avg_ltc_loss, epoch)
-    
+
     # 打印评估结果
     logger.info(f"全局疾病分类性能 (Epoch {epoch}):")
     logger.info(f"  准确率: {accuracy:.4f}")
@@ -1530,16 +1560,14 @@ def test_vit(
     logger.info(f"  平均总损失: {avg_loss:.4f}")
     logger.info(f"  平均分类损失: {avg_cls_loss:.4f}")
     logger.info(f"  平均LTC损失: {avg_ltc_loss:.4f}")
-    
+
     # 保存到文件
-    result_file = os.path.join(
-        results_dir, f"{mode}_epoch_{epoch}_vit_results.json"
-    )
+    result_file = os.path.join(results_dir, f"{mode}_epoch_{epoch}_vit_results.json")
     with open(result_file, "w") as f:
         json.dump(metrics_data, f, indent=2)
-        
+
     logger.info(f"评估结果已保存到 {result_file}")
-    
+
     # 构建返回结果
     result = {
         "overall_metrics": {
@@ -1553,7 +1581,7 @@ def test_vit(
         "metrics_data": metrics_data,
         "loss": metrics_data["loss"],
     }
-    
+
     return running_loss / len(data_loader) if running_loss > 0 else 0.0, result
 
 
@@ -1865,9 +1893,7 @@ def analyze_gpu_memory():
 
     # 显示前20个最大的张量
     total_memory = 0
-    print(
-        f"{'内存(MB)':>10} | {'类型':<15} | {'大小':<20} | {'数据类型':<10} | {'设备':<10}"
-    )
+    print(f"{'内存(MB)':>10} | {'类型':<15} | {'大小':<20} | {'数据类型':<10} | {'设备':<10}")
     print("-" * 80)
 
     for i, info in enumerate(tensor_info[:20]):
@@ -1899,6 +1925,7 @@ def get_memory_profiler(enable_profile=False, log_path=None):
         )
     return nullcontext()
 
+
 def test_mistral(
     config,
     data_loader,
@@ -1910,7 +1937,7 @@ def test_mistral(
     writer=None,
 ):
     """测试Mistral模型的生成效果
-    
+
     Args:
         config: 配置对象
         data_loader: 数据加载器
@@ -1920,7 +1947,7 @@ def test_mistral(
         device: 设备
         epoch: 当前训练轮数
         writer: TensorBoard写入器
-    
+
     Returns:
         test_loss: 测试损失
         result: 测试结果（包含各种评估指标）
@@ -1928,56 +1955,60 @@ def test_mistral(
     torch.cuda.empty_cache()
     gc.collect()
     model.eval()
-    
+
     # 记录总测试损失和样本数
     running_loss = 0
     total_samples = 0
-    
+
     # 存储所有的预测结果和真实值
     all_preds = []
     all_targets = []
-    
+
     # 设置进度条
     prog_bar = tqdm(data_loader, desc=f"{mode} Mistral Evaluation")
-    
+
     with torch.no_grad():
         # 遍历批次数据
         for batch_idx, batch in enumerate(prog_bar):
             # 准备批次数据
             source, target, _ = prepare_batch_data(
-                config, 
-                batch, 
-                data_loader, 
-                device, 
-                findings=True, 
-                history=True, 
-                label=True, 
-                bbox=True
+                config,
+                batch,
+                data_loader,
+                device,
+                findings=True,
+                history=True,
+                label=True,
+                bbox=True,
             )
-            
+
             # 转换为kwargs格式
             source = args_to_kwargs(source)
             target = args_to_kwargs(target)
-            
+
             # 设置模型阶段和模式
             source["phase"] = config.PHASE
             source["mode"] = "test"
-            
+
             # 使用数据分发器执行模型推理
             outputs = data_distributor(model, source)
-            
+
             # 获取批次大小
-            batch_size = source["image"].size(0) if "image" in source else len(batch["findings"])
-            
+            batch_size = (
+                source["image"].size(0) if "image" in source else len(batch["findings"])
+            )
+
             # 记录损失
             if hasattr(outputs, "loss"):
                 loss = outputs.loss
                 running_loss += loss.item() * batch_size
                 total_samples += batch_size
-            
+
             # 生成报告文本
-            generated_texts = outputs.generated_text if hasattr(outputs, "generated_text") else []
-            
+            generated_texts = (
+                outputs.generated_text if hasattr(outputs, "generated_text") else []
+            )
+
             # 提取真实报告文本
             target_texts = []
             for idx in range(batch_size):
@@ -1989,40 +2020,44 @@ def test_mistral(
                     # 使用模型内部的tokenizer解码
                     tokenizer = getattr(model.findings_decoder, "tokenizer", None)
                     if tokenizer:
-                        target_texts.append(tokenizer.decode(findings_ids, skip_special_tokens=True))
+                        target_texts.append(
+                            tokenizer.decode(findings_ids, skip_special_tokens=True)
+                        )
                     else:
                         # 如果无法直接访问tokenizer，可以将ID保存为字符串
                         target_texts.append(f"[IDs:{findings_ids.tolist()}]")
-            
+
             # 收集预测结果和真实值
             all_preds.extend(generated_texts)
             all_targets.extend(target_texts)
-    
+
     # 计算平均损失
     avg_loss = running_loss / max(total_samples, 1)
-    
+
     # 文本生成评估指标库
     from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
     from rouge import Rouge
     import nltk
-    
+
     try:
         nltk.data.find("tokenizers/punkt")
     except LookupError:
         nltk.download("punkt")
-    
+
     # 分词处理预测和目标文本
     tokenized_preds = []
     tokenized_targets = []
-    
+
     for pred, target in zip(all_preds, all_targets):
         if pred and target:  # 确保文本非空
             tokenized_preds.append(nltk.word_tokenize(pred.lower()))
-            tokenized_targets.append([nltk.word_tokenize(target.lower())])  # BLEU需要目标作为参考列表
-    
+            tokenized_targets.append(
+                [nltk.word_tokenize(target.lower())]
+            )  # BLEU需要目标作为参考列表
+
     # 初始化结果字典
     result = {}
-    
+
     # 计算BLEU分数
     if tokenized_preds and tokenized_targets:
         smoothing = SmoothingFunction().method1
@@ -2045,18 +2080,22 @@ def test_mistral(
                 weights=(0.25, 0.25, 0.25, 0.25),
                 smoothing_function=smoothing,
             )
-            
-            result.update({
-                "bleu1": bleu1,
-                "bleu2": bleu2,
-                "bleu4": bleu4,
-            })
-            
+
+            result.update(
+                {
+                    "bleu1": bleu1,
+                    "bleu2": bleu2,
+                    "bleu4": bleu4,
+                }
+            )
+
             # 记录到日志
-            logger.info(f"BLEU-1: {bleu1:.4f}, BLEU-2: {bleu2:.4f}, BLEU-4: {bleu4:.4f}")
+            logger.info(
+                f"BLEU-1: {bleu1:.4f}, BLEU-2: {bleu2:.4f}, BLEU-4: {bleu4:.4f}"
+            )
         except Exception as e:
             logger.error(f"计算BLEU分数时出错: {e}")
-    
+
     # 计算ROUGE分数
     if all_preds and all_targets:
         try:
@@ -2064,30 +2103,34 @@ def test_mistral(
             valid_pairs = [(p, t) for p, t in zip(all_preds, all_targets) if p and t]
             if valid_pairs:
                 valid_preds, valid_targets = zip(*valid_pairs)
-                
+
                 rouge = Rouge()
                 rouge_scores = rouge.get_scores(valid_preds, valid_targets, avg=True)
-                
-                result.update({
-                    "rouge1": rouge_scores["rouge-1"]["f"],
-                    "rouge2": rouge_scores["rouge-2"]["f"],
-                    "rougeL": rouge_scores["rouge-l"]["f"],
-                })
-                
+
+                result.update(
+                    {
+                        "rouge1": rouge_scores["rouge-1"]["f"],
+                        "rouge2": rouge_scores["rouge-2"]["f"],
+                        "rougeL": rouge_scores["rouge-l"]["f"],
+                    }
+                )
+
                 # 记录到日志
-                logger.info(f"ROUGE-1: {rouge_scores['rouge-1']['f']:.4f}, ROUGE-2: {rouge_scores['rouge-2']['f']:.4f}, ROUGE-L: {rouge_scores['rouge-l']['f']:.4f}")
+                logger.info(
+                    f"ROUGE-1: {rouge_scores['rouge-1']['f']:.4f}, ROUGE-2: {rouge_scores['rouge-2']['f']:.4f}, ROUGE-L: {rouge_scores['rouge-l']['f']:.4f}"
+                )
         except Exception as e:
             logger.error(f"计算ROUGE分数时出错: {e}")
-    
+
     # 记录测试损失
     logger.info(f"Test ({mode}) Loss: {avg_loss:.4f}")
-    
+
     # 记录到TensorBoard
     if writer is not None and epoch is not None:
         writer.add_scalar(f"{mode}/loss", avg_loss, epoch)
         for metric, value in result.items():
             writer.add_scalar(f"{mode}/{metric}", value, epoch)
-        
+
         # 记录示例预测
         if all_preds and all_targets:
             num_examples = min(5, len(all_preds))
@@ -2098,9 +2141,9 @@ def test_mistral(
                     examples_text += f"Target: {all_targets[i]}\n"
                     examples_text += f"Pred: {all_preds[i]}\n\n"
             writer.add_text(f"{mode}/examples", examples_text, epoch)
-    
+
     # 释放内存
     torch.cuda.empty_cache()
     gc.collect()
-    
+
     return avg_loss, {"text_generation_metrics": result}

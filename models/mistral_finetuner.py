@@ -79,8 +79,8 @@ class MistralFinetuner(nn.Module):
     def forward(
         self,
         visual_features,
-        history_encoding=None,
-        findings=None,
+        history_encoding,
+        findings,
         attention_mask=None,
         labels=None,
     ):
@@ -100,137 +100,128 @@ class MistralFinetuner(nn.Module):
         # 将视觉特征映射到模型维度
         projected_visual = self.visual_projection(visual_features)
         
-        # 构建标准顺序的提示文本：<image> [IMAGE] </image> <history> [HISTORY] </history> <findings>
-        prompts = ["<image> </image> <history> </history> <findings>" for _ in range(batch_size)]
+        # 构建完整的提示文本结构
+        prompts = ["<image></image><history></history><findings>" for _ in range(batch_size)]
         
         prompt_encoding = self.tokenizer(prompts, return_tensors="pt", padding=True).to(device)
         prompt_input_ids = prompt_encoding.input_ids
-        prompt_attention_mask = prompt_encoding.attention_mask
         
-        # 并行处理整个批次的序列构建
-        # 找到所有样本中<image>和</history>标记的位置（由于prompt相同，所有样本的位置都相同）
-        image_start_idx = torch.where(prompt_input_ids[0] == self.tokenizer.convert_tokens_to_ids("<image>"))[0][0].item()
-        image_end_idx = torch.where(prompt_input_ids[0] == self.tokenizer.convert_tokens_to_ids("</image>"))[0][0].item()
+        # 获取所有特殊标记的ID
+        image_start_token_id = self.tokenizer.convert_tokens_to_ids("<image>")
+        image_end_token_id = self.tokenizer.convert_tokens_to_ids("</image>")
+        history_start_token_id = self.tokenizer.convert_tokens_to_ids("<history>")
+        history_end_token_id = self.tokenizer.convert_tokens_to_ids("</history>")
+        findings_token_id = self.tokenizer.convert_tokens_to_ids("<findings>")
         
-        # 提取前缀和后缀token IDs并获取嵌入
-        prefix_ids = prompt_input_ids[0, :image_start_idx+1]  # 包含<image>标记
-        suffix_ids = prompt_input_ids[0, image_end_idx:]      # 包含</image>标记
+        # 确保所有标记都能被正确识别
+        for name, token_id in {
+            "<image>": image_start_token_id,
+            "</image>": image_end_token_id,
+            "<history>": history_start_token_id,
+            "</history>": history_end_token_id,
+            "<findings>": findings_token_id
+        }.items():
+            if token_id == self.tokenizer.unk_token_id:
+                print(f"警告: 特殊标记 {name} 被识别为未知token")
         
+        # 找到所有特殊标记的位置
+        image_start_idx = torch.where(prompt_input_ids[0] == image_start_token_id)[0][0].item()
+        image_end_idx = torch.where(prompt_input_ids[0] == image_end_token_id)[0][0].item()
+        history_start_idx = torch.where(prompt_input_ids[0] == history_start_token_id)[0][0].item()
+        history_end_idx = torch.where(prompt_input_ids[0] == history_end_token_id)[0][0].item()
+        findings_idx = torch.where(prompt_input_ids[0] == findings_token_id)[0][0].item()
+        
+        # 一次性构建完整的嵌入序列
+        # 1. <s>到<image>部分
+        prefix_ids = prompt_input_ids[0, :image_start_idx+1]
         prefix_embeds = self.model.get_input_embeddings()(prefix_ids)
-        suffix_embeds = self.model.get_input_embeddings()(suffix_ids)
+        batch_prefix_embeds = prefix_embeds.unsqueeze(0).expand(batch_size, -1, -1)
         
-        # 并行构建输入嵌入和注意力掩码
-        # 批量扩展前缀和后缀嵌入
-        batch_prefix_embeds = prefix_embeds.unsqueeze(0).expand(batch_size, -1, -1)  # [batch_size, prefix_len, hidden_size]
-        batch_suffix_embeds = suffix_embeds.unsqueeze(0).expand(batch_size, -1, -1)  # [batch_size, suffix_len, hidden_size]
+        # 2. 视觉特征部分 (已经映射到模型维度)
         
-        # 计算前缀、视觉特征和后缀的长度
+        # 3. </image>到<history>部分
+        middle1_ids = prompt_input_ids[0, image_end_idx:history_start_idx+1]
+        middle1_embeds = self.model.get_input_embeddings()(middle1_ids)
+        batch_middle1_embeds = middle1_embeds.unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # 4. 历史文本部分
+        history_ids = history_encoding["input_ids"]
+        history_embeds = self.model.get_input_embeddings()(history_ids)
+        history_len = history_embeds.size(1)
+        
+        # 5. </history>到<findings>部分
+        middle2_ids = prompt_input_ids[0, history_end_idx:findings_idx+1]
+        middle2_embeds = self.model.get_input_embeddings()(middle2_ids)
+        batch_middle2_embeds = middle2_embeds.unsqueeze(0).expand(batch_size, -1, -1)
+        middle2_len = batch_middle2_embeds.size(1)
+        
+        # 计算各部分长度
         prefix_len = batch_prefix_embeds.size(1)
         visual_len = projected_visual.size(1)
-        suffix_len = batch_suffix_embeds.size(1)
-        total_len = prefix_len + visual_len + suffix_len
+        middle1_len = batch_middle1_embeds.size(1)
+        
+        # 计算总长度并创建输出张量（不包含findings部分）
+        prompt_len = prefix_len + visual_len + middle1_len + history_len + middle2_len
+        
+        # 初始化当前位置计数器
+        current_pos = 0
+        
+        # findings部分处理
+        findings_input_ids = findings["input_ids"]
+        findings_attention_mask = findings["attention_mask"]
+        
+        # 获取findings的嵌入部分
+        findings_embeds = self.model.get_input_embeddings()(findings_input_ids[:, 1:])  # 跳过BOS
+        findings_len = findings_embeds.size(1)
+        
+        # 计算完整序列的总长度
+        total_len = prompt_len + findings_len
         
         # 创建输出张量
         inputs_embeds = torch.zeros(batch_size, total_len, projected_visual.size(2), device=device)
-        attention_mask = torch.ones(batch_size, total_len, dtype=torch.long, device=device)
+        attention_mask = torch.zeros(batch_size, total_len, dtype=torch.long, device=device)
+        
+        # 创建标签张量（只对findings部分计算损失）
+        labels = torch.full((batch_size, total_len), -100, device=device)
         
         # 填充各部分
-        inputs_embeds[:, :prefix_len, :] = batch_prefix_embeds
-        inputs_embeds[:, prefix_len:prefix_len+visual_len, :] = projected_visual
-        inputs_embeds[:, prefix_len+visual_len:, :] = batch_suffix_embeds
+        # 1. 前缀部分：<s>到<image>
+        inputs_embeds[:, current_pos:current_pos+prefix_len] = batch_prefix_embeds
+        attention_mask[:, current_pos:current_pos+prefix_len] = 1
+        current_pos += prefix_len
         
-        # 如果有历史文本，处理历史文本部分
-        if history_encoding is not None:
-            # 获取历史标记的位置（由于prompt相同，所有样本的位置都相同）
-            history_start_idx = torch.where(prompt_input_ids[0] == self.tokenizer.convert_tokens_to_ids("<history>"))[0][0].item()
-            history_end_idx = torch.where(prompt_input_ids[0] == self.tokenizer.convert_tokens_to_ids("</history>"))[0][0].item()
-            
-            # 找到嵌入中的位置索引
-            prefix_len = prefix_embeds.size(0)
-            visual_len = projected_visual.size(1)
-            
-            # 计算history在嵌入序列中的起始和结束位置
-            history_start_embed = prefix_len + visual_len + 1  # +1 是为了包含</image>标记后的<history>标记
-            
-            # 提取每个样本的前缀和后缀
-            prefix_slice = slice(0, history_start_embed)
-            suffix_slice = slice(history_start_embed + 1, None)  # +1 是为了跳过<history>标记
-            
-            batch_prefix = inputs_embeds[:, prefix_slice]
-            batch_suffix = inputs_embeds[:, suffix_slice]
-            
-            # 获取历史文本嵌入
-            history_ids = history_encoding["input_ids"]
-            
-            # 获取最大历史长度用于创建输出张量
-            max_history_len = history_ids.size(1)
-            
-            # 为历史文本创建批量嵌入
-            batch_history_embeds = self.model.get_input_embeddings()(history_ids)
-            
-            # 计算新序列的总长度
-            prefix_len = batch_prefix.size(1)
-            suffix_len = batch_suffix.size(1)
-            total_len = prefix_len + max_history_len + suffix_len
-            
-            # 创建新的输出张量
-            new_inputs_embeds = torch.zeros(batch_size, total_len, inputs_embeds.size(2), device=device)
-            new_attention_mask = torch.ones(batch_size, total_len, dtype=torch.long, device=device)
-            
-            # 填充各部分
-            new_inputs_embeds[:, :prefix_len] = batch_prefix
-            new_inputs_embeds[:, prefix_len:prefix_len+max_history_len] = batch_history_embeds
-            new_inputs_embeds[:, prefix_len+max_history_len:] = batch_suffix
-            
-            # 更新
-            inputs_embeds = new_inputs_embeds
-            attention_mask = new_attention_mask
+        # 2. 视觉特征部分
+        inputs_embeds[:, current_pos:current_pos+visual_len] = projected_visual
+        attention_mask[:, current_pos:current_pos+visual_len] = 1
+        current_pos += visual_len
         
-        # 处理findings部分（如果在训练模式下）
-        if findings is not None:
-            # findings已经是编码好的input_ids和attention_mask
-            findings_input_ids = findings["input_ids"]
-            findings_attention_mask = findings["attention_mask"]
-            
-            # 获取findings的嵌入部分
-            findings_embeds = self.model.get_input_embeddings()(findings_input_ids[:, 1:])  # 跳过BOS
-            
-            # 当前序列长度作为findings的起始位置
-            prefix_len = inputs_embeds.size(1)
-            
-            # 获取批量的findings部分长度
-            findings_len = findings_embeds.size(1)
-            
-            # 计算新序列的总长度
-            total_len = prefix_len + findings_len
-            
-            # 创建新的输出张量
-            new_inputs_embeds = torch.zeros(batch_size, total_len, inputs_embeds.size(2), device=device)
-            new_attention_mask = torch.zeros(batch_size, total_len, dtype=torch.long, device=device)
-            
-            # 创建标签张量（只对findings部分计算损失）
-            labels = torch.full((batch_size, total_len), -100, device=device)
-            
-            # 填充各部分
-            new_inputs_embeds[:, :prefix_len] = inputs_embeds
-            new_inputs_embeds[:, prefix_len:] = findings_embeds
-            
-            # 设置注意力掩码
-            new_attention_mask[:, :prefix_len] = attention_mask
-            new_attention_mask[:, prefix_len:] = findings_attention_mask[:, 1:]  # 跳过BOS
-            
-            # 设置标签（只对findings部分计算损失）
-            labels[:, prefix_len:] = findings_input_ids[:, 1:]  # 从第二个token开始（跳过BOS）
-            
-            # 更新
-            inputs_embeds = new_inputs_embeds
-            attention_mask = new_attention_mask
+        # 3. 中间部分1：</image>到<history>
+        inputs_embeds[:, current_pos:current_pos+middle1_len] = batch_middle1_embeds
+        attention_mask[:, current_pos:current_pos+middle1_len] = 1
+        current_pos += middle1_len
+        
+        # 4. 历史文本部分
+        inputs_embeds[:, current_pos:current_pos+history_len] = history_embeds
+        attention_mask[:, current_pos:current_pos+history_len] = 1
+        current_pos += history_len
+        
+        # 5. 中间部分2：</history>到<findings>
+        inputs_embeds[:, current_pos:current_pos+middle2_len] = batch_middle2_embeds
+        attention_mask[:, current_pos:current_pos+middle2_len] = 1
+        current_pos += middle2_len
+        
+        # 6. findings部分
+        inputs_embeds[:, current_pos:current_pos+findings_len] = findings_embeds
+        attention_mask[:, current_pos:current_pos+findings_len] = findings_attention_mask[:, 1:]  # 跳过BOS
+        
+        # 设置标签（只对findings部分计算损失）
+        labels[:, current_pos:current_pos+findings_len] = findings_input_ids[:, 1:]  # 从第二个token开始（跳过BOS）
         
         # 运行模型
         outputs = self.model(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            labels=labels if findings is not None else None,
+            labels=labels,
             return_dict=True,
         )
         
@@ -239,8 +230,8 @@ class MistralFinetuner(nn.Module):
     def generate(
         self,
         visual_features,
-        history_encoding=None,
-        max_length=512,
+        history_encoding,
+        max_new_tokens=100,
         do_sample=True,
         temperature=0.7,
         top_p=0.9,
@@ -251,7 +242,7 @@ class MistralFinetuner(nn.Module):
         Args:
             visual_features: 视觉特征 [batch_size, num_tokens, visual_dim]
             history_encoding: 历史文本的编码 {input_ids, attention_mask}
-            max_length: 生成文本的最大长度
+            max_new_tokens: 生成文本的最大新token数量
             do_sample: 是否采样生成
             temperature: 温度参数
             top_p: 概率截断阈值
@@ -262,95 +253,99 @@ class MistralFinetuner(nn.Module):
         # 将视觉特征映射到模型维度
         projected_visual = self.visual_projection(visual_features)
         
-        # 构建标准顺序的提示文本：<image> [IMAGE] </image> <history> [HISTORY] </history> <findings>
-        prompts = ["<image> </image> <history> </history> <findings>" for _ in range(batch_size)]
+        # 构建完整的提示文本结构
+        prompts = ["<image></image><history></history><findings>" for _ in range(batch_size)]
         
         prompt_encoding = self.tokenizer(prompts, return_tensors="pt", padding=True).to(device)
         prompt_input_ids = prompt_encoding.input_ids
-        prompt_attention_mask = prompt_encoding.attention_mask
         
-        # 并行处理整个批次的序列构建
-        # 找到所有样本中<image>和</history>标记的位置（由于prompt相同，所有样本的位置都相同）
-        image_start_idx = torch.where(prompt_input_ids[0] == self.tokenizer.convert_tokens_to_ids("<image>"))[0][0].item()
-        image_end_idx = torch.where(prompt_input_ids[0] == self.tokenizer.convert_tokens_to_ids("</image>"))[0][0].item()
+        # 获取所有特殊标记的ID
+        image_start_token_id = self.tokenizer.convert_tokens_to_ids("<image>")
+        image_end_token_id = self.tokenizer.convert_tokens_to_ids("</image>")
+        history_start_token_id = self.tokenizer.convert_tokens_to_ids("<history>")
+        history_end_token_id = self.tokenizer.convert_tokens_to_ids("</history>")
+        findings_token_id = self.tokenizer.convert_tokens_to_ids("<findings>")
         
-        # 提取前缀和后缀token IDs并获取嵌入
-        prefix_ids = prompt_input_ids[0, :image_start_idx+1]  # 包含<image>标记
-        suffix_ids = prompt_input_ids[0, image_end_idx:]      # 包含</image>标记
+        # 确保所有标记都能被正确识别
+        for name, token_id in {
+            "<image>": image_start_token_id,
+            "</image>": image_end_token_id,
+            "<history>": history_start_token_id,
+            "</history>": history_end_token_id,
+            "<findings>": findings_token_id
+        }.items():
+            if token_id == self.tokenizer.unk_token_id:
+                print(f"警告: 特殊标记 {name} 被识别为未知token")
         
+        # 找到所有特殊标记的位置
+        image_start_idx = torch.where(prompt_input_ids[0] == image_start_token_id)[0][0].item()
+        image_end_idx = torch.where(prompt_input_ids[0] == image_end_token_id)[0][0].item()
+        history_start_idx = torch.where(prompt_input_ids[0] == history_start_token_id)[0][0].item()
+        history_end_idx = torch.where(prompt_input_ids[0] == history_end_token_id)[0][0].item()
+        findings_idx = torch.where(prompt_input_ids[0] == findings_token_id)[0][0].item()
+        
+        # 一次性构建完整的嵌入序列
+        # 1. <s>到<image>部分
+        prefix_ids = prompt_input_ids[0, :image_start_idx+1]
         prefix_embeds = self.model.get_input_embeddings()(prefix_ids)
-        suffix_embeds = self.model.get_input_embeddings()(suffix_ids)
+        batch_prefix_embeds = prefix_embeds.unsqueeze(0).expand(batch_size, -1, -1)
         
-        # 并行构建输入嵌入和注意力掩码
-        # 批量扩展前缀和后缀嵌入
-        batch_prefix_embeds = prefix_embeds.unsqueeze(0).expand(batch_size, -1, -1)  # [batch_size, prefix_len, hidden_size]
-        batch_suffix_embeds = suffix_embeds.unsqueeze(0).expand(batch_size, -1, -1)  # [batch_size, suffix_len, hidden_size]
+        # 2. 视觉特征部分
         
-        # 计算前缀、视觉特征和后缀的长度
+        # 3. </image>到<history>部分
+        middle1_ids = prompt_input_ids[0, image_end_idx:history_start_idx+1]
+        middle1_embeds = self.model.get_input_embeddings()(middle1_ids)
+        batch_middle1_embeds = middle1_embeds.unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # 4. 历史文本部分
+        history_ids = history_encoding["input_ids"]
+        history_embeds = self.model.get_input_embeddings()(history_ids)
+        
+        # 5. </history>到<findings>部分
+        middle2_ids = prompt_input_ids[0, history_end_idx:findings_idx+1]
+        middle2_embeds = self.model.get_input_embeddings()(middle2_ids)
+        batch_middle2_embeds = middle2_embeds.unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # 计算各部分长度
         prefix_len = batch_prefix_embeds.size(1)
         visual_len = projected_visual.size(1)
-        suffix_len = batch_suffix_embeds.size(1)
-        total_len = prefix_len + visual_len + suffix_len
+        middle1_len = batch_middle1_embeds.size(1)
+        history_len = history_embeds.size(1)
+        middle2_len = batch_middle2_embeds.size(1)
         
-        # 创建输出张量
+        # 计算总长度并创建输出张量
+        total_len = prefix_len + visual_len + middle1_len + history_len + middle2_len
         inputs_embeds = torch.zeros(batch_size, total_len, projected_visual.size(2), device=device)
         attention_mask = torch.ones(batch_size, total_len, dtype=torch.long, device=device)
         
-        # 填充各部分
-        inputs_embeds[:, :prefix_len, :] = batch_prefix_embeds
-        inputs_embeds[:, prefix_len:prefix_len+visual_len, :] = projected_visual
-        inputs_embeds[:, prefix_len+visual_len:, :] = batch_suffix_embeds
+        # 一次性填充所有部分
+        current_pos = 0
         
-        # 如果有历史文本，处理历史文本部分
-        if history_encoding is not None:
-            # 获取历史标记的位置（由于prompt相同，所有样本的位置都相同）
-            history_start_idx = torch.where(prompt_input_ids[0] == self.tokenizer.convert_tokens_to_ids("<history>"))[0][0].item()
-            history_end_idx = torch.where(prompt_input_ids[0] == self.tokenizer.convert_tokens_to_ids("</history>"))[0][0].item()
-            
-            # 找到嵌入中的位置索引
-            prefix_len = prefix_embeds.size(0)
-            visual_len = projected_visual.size(1)
-            
-            # 计算history在嵌入序列中的起始和结束位置
-            history_start_embed = prefix_len + visual_len + 1  # +1 是为了包含</image>标记后的<history>标记
-            
-            # 提取每个样本的前缀和后缀
-            prefix_slice = slice(0, history_start_embed)
-            suffix_slice = slice(history_start_embed + 1, None)  # +1 是为了跳过<history>标记
-            
-            batch_prefix = inputs_embeds[:, prefix_slice]
-            batch_suffix = inputs_embeds[:, suffix_slice]
-            
-            # 获取历史文本嵌入
-            history_ids = history_encoding["input_ids"]
-            
-            # 获取最大历史长度用于创建输出张量
-            max_history_len = history_ids.size(1)
-            
-            # 为历史文本创建批量嵌入
-            batch_history_embeds = self.model.get_input_embeddings()(history_ids)
-            
-            # 计算新序列的总长度
-            prefix_len = batch_prefix.size(1)
-            suffix_len = batch_suffix.size(1)
-            total_len = prefix_len + max_history_len + suffix_len
-            
-            # 创建新的输出张量
-            new_inputs_embeds = torch.zeros(batch_size, total_len, inputs_embeds.size(2), device=device)
-            new_attention_mask = torch.ones(batch_size, total_len, dtype=torch.long, device=device)
-            
-            # 填充各部分
-            new_inputs_embeds[:, :prefix_len] = batch_prefix
-            new_inputs_embeds[:, prefix_len:prefix_len+max_history_len] = batch_history_embeds
-            new_inputs_embeds[:, prefix_len+max_history_len:] = batch_suffix
-            
-            # 更新
-            inputs_embeds = new_inputs_embeds
-            attention_mask = new_attention_mask
+        # 1. 前缀部分：<s>到<image>
+        inputs_embeds[:, current_pos:current_pos+prefix_len] = batch_prefix_embeds
+        current_pos += prefix_len
+        
+        # 2. 视觉特征部分
+        inputs_embeds[:, current_pos:current_pos+visual_len] = projected_visual
+        current_pos += visual_len
+        
+        # 3. 中间部分1：</image>到<history>
+        inputs_embeds[:, current_pos:current_pos+middle1_len] = batch_middle1_embeds
+        current_pos += middle1_len
+        
+        # 4. 历史文本部分
+        inputs_embeds[:, current_pos:current_pos+history_len] = history_embeds
+        current_pos += history_len
+        
+        # 5. 中间部分2：</history>到<findings>
+        inputs_embeds[:, current_pos:current_pos+middle2_len] = batch_middle2_embeds
+        
+        # 记录输入长度，用于后续提取生成部分
+        input_length = total_len
         
         # 使用Hugging Face的生成功能
         generation_config = transformers.GenerationConfig(
-            max_length=max_length,
+            max_new_tokens=max_new_tokens,
             do_sample=do_sample,
             temperature=temperature,
             top_p=top_p,
@@ -358,7 +353,7 @@ class MistralFinetuner(nn.Module):
             eos_token_id=self.tokenizer.eos_token_id,
         )
         
-        # 使用model_kwargs传递inputs_embeds和attention_mask
+        # 生成文本
         with torch.no_grad():
             generation_output = self.model.generate(
                 inputs_embeds=inputs_embeds,
@@ -371,22 +366,12 @@ class MistralFinetuner(nn.Module):
         # 获取生成的token序列
         generated_ids = generation_output.sequences
         
-        # 解码生成的文本
-        decoded_outputs = []
-        findings_token_id = self.tokenizer.convert_tokens_to_ids("<findings>")
-        
-        for i, output in enumerate(generated_ids):
-            # 找到<findings>标记的位置
-            findings_start_pos = (output == findings_token_id).nonzero()
-            if findings_start_pos.numel() > 0:
-                findings_start = findings_start_pos[-1].item() + 1
-                # 只保留<findings>之后的部分
-                findings_text = self.tokenizer.decode(output[findings_start:], skip_special_tokens=True)
-                decoded_outputs.append(findings_text)
-            else:
-                # 如果没有<findings>标记，返回原始的生成结果（跳过prompt的部分）
-                original_prompt_len = prompt_input_ids[i].size(0)
-                decoded_text = self.tokenizer.decode(output[original_prompt_len:], skip_special_tokens=True)
-                decoded_outputs.append(decoded_text)
+        # 直接使用batch_decode解码生成部分，跳过输入部分
+        # 注意：input_length是输入序列的长度，对应模型内部转换的token IDs长度
+        # 我们只解码input_length之后的部分，这就是新生成的内容
+        decoded_outputs = self.tokenizer.batch_decode(
+            generated_ids[:, input_length:], 
+            skip_special_tokens=False  # 保留特殊标记以保持一致性
+        )
         
         return decoded_outputs

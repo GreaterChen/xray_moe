@@ -16,8 +16,10 @@ def create_anatomy_disease_mask():
     mask = (mask >= 0).float()
     return mask
 
+
 # 全局变量，避免重复计算
 ANATOMY_DISEASE_MASK = create_anatomy_disease_mask()
+
 
 class DiseaseClassifier(nn.Module):
     """
@@ -27,77 +29,84 @@ class DiseaseClassifier(nn.Module):
 
     def __init__(self, hidden_size, num_diseases=14, dropout_rate=0.3):
         super(DiseaseClassifier, self).__init__()
-        
+
         # 为每种疾病创建一个独立的分类器
-        self.disease_classifiers = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(hidden_size, hidden_size // 2),
-                nn.LayerNorm(hidden_size // 2),
-                nn.GELU(),
-                nn.Dropout(dropout_rate),
-                nn.Linear(hidden_size // 2, 1),
-            ) for _ in range(num_diseases)
-        ])
-        
+        self.disease_classifiers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(hidden_size, hidden_size // 2),
+                    nn.LayerNorm(hidden_size // 2),
+                    nn.GELU(),
+                    nn.Dropout(dropout_rate),
+                    nn.Linear(hidden_size // 2, 1),
+                )
+                for _ in range(num_diseases)
+            ]
+        )
+
         # 记录维度
         self.num_diseases = num_diseases
-        
+
         # 获取解剖区域掩码
-        self.register_buffer('disease_region_mask', ANATOMY_DISEASE_MASK)
-        
+        self.register_buffer("disease_region_mask", ANATOMY_DISEASE_MASK)
+
     def forward(self, region_features):
         """
         基于区域特征的疾病分类
-        
+
         Args:
             region_features: [batch_size, num_regions, hidden_size] - 区域特征
-            
+
         Returns:
             disease_preds: [batch_size, num_diseases] - 疾病预测结果
         """
         batch_size, num_regions, hidden_size = region_features.shape
         device = region_features.device
-        
+
         # 存储所有疾病的预测结果
         disease_preds = []
-        
+
         # 对每种疾病进行独立分类
         for disease_idx in range(self.num_diseases):
             # 获取当前疾病的区域掩码 [num_regions]
             mask = self.disease_region_mask[:, disease_idx]
-            
+
             # 如果没有相关区域，则预测为0
             if mask.sum() == 0:
                 disease_preds.append(torch.zeros(batch_size, 1, device=device))
                 continue
-                
+
             # 选择与当前疾病相关的区域特征
             relevant_indices = torch.where(mask > 0)[0]
-            relevant_features = region_features[:, relevant_indices, :]  # [batch_size, n_relevant, hidden_size]
-            
+            relevant_features = region_features[
+                :, relevant_indices, :
+            ]  # [batch_size, n_relevant, hidden_size]
+
             # 对相关区域特征进行平均池化
             pooled_features = relevant_features.mean(dim=1)  # [batch_size, hidden_size]
-            
+
             # 使用当前疾病的分类器进行预测
-            pred = self.disease_classifiers[disease_idx](pooled_features)  # [batch_size, 1]
+            pred = self.disease_classifiers[disease_idx](
+                pooled_features
+            )  # [batch_size, 1]
             disease_preds.append(pred)
-        
+
         # 拼接所有疾病的预测结果
         disease_preds = torch.cat(disease_preds, dim=1)  # [batch_size, num_diseases]
-        
+
         return disease_preds
-        
+
     def compute_loss(self, disease_preds, image_labels):
         """
         计算损失
-        
+
         Args:
             disease_preds: [batch_size, num_diseases] - 疾病预测结果
             image_labels: [batch_size, num_diseases] - 图像标签
         """
         # 计算二分类交叉熵损失
         loss = F.binary_cross_entropy_with_logits(disease_preds, image_labels)
-        
+
         return loss
 
 
@@ -133,7 +142,9 @@ class MedicalVisionTransformer(nn.Module):
         self.num_layers = self.config.num_hidden_layers
         self.classifiers = nn.ModuleList(
             [
-                DiseaseClassifier(self.hidden_size, num_diseases) if i % 2 == 0 else None
+                DiseaseClassifier(self.hidden_size, num_diseases)
+                if i % 2 == 0
+                else None
                 for i in range(self.num_layers)
             ]
         )
@@ -144,9 +155,9 @@ class MedicalVisionTransformer(nn.Module):
         # 保存区域数量和疾病数量
         self.num_regions = num_regions
         self.num_diseases = num_diseases
-        
+
         # 获取区域疾病掩码
-        self.register_buffer('anatomy_disease_mask', ANATOMY_DISEASE_MASK)
+        self.register_buffer("anatomy_disease_mask", ANATOMY_DISEASE_MASK)
 
     def forward(
         self,
@@ -156,7 +167,7 @@ class MedicalVisionTransformer(nn.Module):
     ):
         """
         前向传播
-        
+
         Args:
             region_features: [batch_size, num_regions, hidden_size] - 区域特征
             region_detected: [batch_size, num_regions] - 已检测区域的掩码 (未使用，保留兼容性)
@@ -231,15 +242,15 @@ def example_usage():
 
     # 模拟疾病标签
     image_labels = torch.randint(0, 2, (batch_size, num_diseases)).float()
-    
+
     # 初始化模型
     model = MedicalVisionTransformer(num_diseases=num_diseases)
-    
+
     # 展示掩码矩阵
     print(f"解剖区域疾病掩码形状: {model.anatomy_disease_mask.shape}")
     print(f"原始区域疾病掩码的一部分:\n{region_disease_table[:3][:5]}")
     print(f"转换后的掩码矩阵的一部分:\n{model.anatomy_disease_mask[:3, :5]}")
-    
+
     # 前向传播
     outputs = model(region_features, image_labels=image_labels)
 
@@ -247,7 +258,7 @@ def example_usage():
     print(f"Loss: {outputs['loss']}")
     print(f"最终疾病预测形状: {outputs['final_disease_preds'].shape}")
     print(f"最终区域特征形状: {outputs['final_region_features'].shape}")
-    
+
     # 验证独立分类器的效果
     disease_classifier = DiseaseClassifier(hidden_size)
     disease_preds = disease_classifier(region_features)

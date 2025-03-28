@@ -3,13 +3,14 @@
 不要直接修改此文件，而是创建一个local_config.py来覆盖需要修改的配置项
 """
 
+
 class DefaultConfig:
     # Debug模式
     DEBUG = True
 
     # 数据目录设置
     ROOT_DIR = "/path/to/xray_moe/"  # 需要在local_config中覆盖
-    DATA_DIR = "/path/to/MIMIC/"     # 需要在local_config中覆盖
+    DATA_DIR = "/path/to/MIMIC/"  # 需要在local_config中覆盖
     ANN_DIR = "/path/to/mimic_annotation_moe_bbox_filtered_split_numeric.json"  # 需要在local_config中覆盖
     NEGATIVE_POOL_DIR = "/path/to/pool.npy"  # 需要在local_config中覆盖
 
@@ -47,9 +48,11 @@ class DefaultConfig:
     SEED = 123
 
     # 检查点路径
-    DETECTION_CHECKPOINT_PATH_FROM = "/path/to/detection_checkpoint.pth"  # 需要在local_config中覆盖
+    DETECTION_CHECKPOINT_PATH_FROM = (
+        "/path/to/detection_checkpoint.pth"  # 需要在local_config中覆盖
+    )
     CHECKPOINT_PATH_FROM = None
     CHECKPOINT_PATH_TO = "/path/to/save/checkpoint/"  # 需要在local_config中覆盖
 
     # TensorBoard设置
-    TENSORBOARD_DIR = "runs" 
+    TENSORBOARD_DIR = "runs"

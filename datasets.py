@@ -146,9 +146,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         # 处理bbox数据
         boxes = torch.tensor(bbox_data["boxes"], dtype=torch.float32)
-        labels = torch.tensor(
-            bbox_data["labels"], dtype=torch.int64
-        )  # 标签已经是从1开始的
+        labels = torch.tensor(bbox_data["labels"], dtype=torch.int64)  # 标签已经是从1开始的
 
         # 验证并过滤边界框
         valid_boxes = []

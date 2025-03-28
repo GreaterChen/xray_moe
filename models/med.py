@@ -854,9 +854,11 @@ class BertModel(BertPreTrainedModel):
                     0
                 ].size()
             else:
-                encoder_batch_size, encoder_sequence_length, _ = (
-                    encoder_hidden_states.size()
-                )
+                (
+                    encoder_batch_size,
+                    encoder_sequence_length,
+                    _,
+                ) = encoder_hidden_states.size()
             encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
 
             if type(encoder_attention_mask) == list:

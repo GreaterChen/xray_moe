@@ -125,27 +125,31 @@ class MOE(nn.Module):
                 # 为测试模式计算ltc_loss和cls_loss
                 with torch.no_grad():  # 确保不计算梯度
                     # 使用CXR-BERT编码findings，获取text_cls_token
-                    text_cls_token = self.cxr_bert(findings) if findings is not None else None
-                    
+                    text_cls_token = (
+                        self.cxr_bert(findings) if findings is not None else None
+                    )
+
                     # 只有当findings可用时才计算ltc_loss
                     ltc_loss = None
                     if text_cls_token is not None:
                         # 将文本和视觉特征映射到共享空间
                         mapped_visual_cls = self.visual_projection(cls_token)
                         mapped_text_cls = self.text_projection(text_cls_token)
-                        
+
                         # 计算批内对比损失
-                        ltc_loss = self.compute_batch_ltc_loss(mapped_visual_cls, mapped_text_cls)
-                    
+                        ltc_loss = self.compute_batch_ltc_loss(
+                            mapped_visual_cls, mapped_text_cls
+                        )
+
                     # 获取分类损失
                     cls_loss = image_encoder_outputs.get("loss", None)
-                
+
                 # 返回简化的结果，只包含需要的字段
                 return {
                     "disease_preds": image_encoder_outputs["disease_preds"],
                     "final_disease_preds": image_encoder_outputs["final_disease_preds"],
                     "ltc_loss": ltc_loss,
-                    "cls_loss": cls_loss
+                    "cls_loss": cls_loss,
                 }
 
         elif phase == "INFER_BERT":
@@ -159,7 +163,7 @@ class MOE(nn.Module):
 
                 # 返回文本特征
                 return {"text_cls_token": text_cls_token}
-                
+
         elif phase == "FINETUNE_MISTRAL":
             # 第一步：使用目标检测器提取区域特征（冻结）
             with torch.no_grad():
@@ -171,16 +175,18 @@ class MOE(nn.Module):
                 )
                 region_features = detection_outputs["region_features"]
                 region_detected = detection_outputs["region_detected"]
-            
+
             # 第二步：通过ViT处理区域特征（冻结）
             with torch.no_grad():
                 image_encoder_outputs = self.image_encoder(
                     region_features, region_detected=region_detected
                 )
-            
+
             # 获取ViT的最后一层隐藏层输出
-            visual_features = image_encoder_outputs["final_region_features"]  # [B, num_tokens, hidden_size]
-            
+            visual_features = image_encoder_outputs[
+                "final_region_features"
+            ]  # [B, num_tokens, hidden_size]
+
             # 第三步：通过Mistral生成模型进行文本生成（可训练）
             if mode == "train":
                 # 训练模式：使用findings计算损失
@@ -266,7 +272,9 @@ class MOE(nn.Module):
             批内对比损失值
         """
         batch_size = visual_cls.size(0)
-        temperature = self.config.TEMPERATURE if hasattr(self.config, "TEMPERATURE") else 0.07  # 添加默认值
+        temperature = (
+            self.config.TEMPERATURE if hasattr(self.config, "TEMPERATURE") else 0.07
+        )  # 添加默认值
 
         # 归一化特征
         visual_cls = F.normalize(visual_cls, p=2, dim=1)

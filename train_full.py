@@ -2,7 +2,8 @@ import json
 import os
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # 设置后端为Agg（非交互式）
+
+matplotlib.use("Agg")  # 设置后端为Agg（非交互式）
 import matplotlib.pyplot as plt
 import sklearn.metrics as metrics
 from datetime import datetime
@@ -49,8 +50,7 @@ if __name__ == "__main__":
         input_size = (config.IMAGE_SIZE, config.IMAGE_SIZE)
         if config.PHASE == "FINETUNE_MISTRAL":
             tokenizer = AutoTokenizer.from_pretrained(
-                "mistralai/Mistral-7B-v0.1", 
-                local_files_only=True  # 如果模型已下载到本地
+                "mistralai/Mistral-7B-v0.1", local_files_only=True  # 如果模型已下载到本地
             )
             tokenizer.pad_token = tokenizer.eos_token
         else:
@@ -154,7 +154,11 @@ if __name__ == "__main__":
         elif config.PHASE == "FINETUNE_MISTRAL":
             # 初始化检测器
             detection_model = DetectionOnlyFastRCNN()
-            _, _ = load(config.DETECTION_CHECKPOINT_PATH_FROM, detection_model, load_model="object_detector")
+            _, _ = load(
+                config.DETECTION_CHECKPOINT_PATH_FROM,
+                detection_model,
+                load_model="object_detector",
+            )
 
             # 创建增强型FastRCNN
             enhanced_rcnn = EnhancedFastRCNN(
@@ -163,18 +167,24 @@ if __name__ == "__main__":
 
             # 初始化ViT模型
             vit_model = MedicalVisionTransformer()
-            
+
             # 加载预训练的ViT模型
             _, _ = load(config.VIT_CHECKPOINT_PATH_FROM, vit_model, load_model="vit")
-            
+
             # Mistral生成模型
             mistral_model = MistralFinetuner(
                 config=config,
-                base_model=config.MISTRAL_BASE_MODEL if hasattr(config, "MISTRAL_BASE_MODEL") else "mistralai/Mistral-7B-v0.1",
+                base_model=config.MISTRAL_BASE_MODEL
+                if hasattr(config, "MISTRAL_BASE_MODEL")
+                else "mistralai/Mistral-7B-v0.1",
                 lora_r=config.LORA_R if hasattr(config, "LORA_R") else 16,
                 lora_alpha=config.LORA_ALPHA if hasattr(config, "LORA_ALPHA") else 32,
-                lora_dropout=config.LORA_DROPOUT if hasattr(config, "LORA_DROPOUT") else 0.05,
-                load_in_4bit=config.LOAD_IN_4BIT if hasattr(config, "LOAD_IN_4BIT") else True,
+                lora_dropout=config.LORA_DROPOUT
+                if hasattr(config, "LORA_DROPOUT")
+                else 0.05,
+                load_in_4bit=config.LOAD_IN_4BIT
+                if hasattr(config, "LOAD_IN_4BIT")
+                else True,
             )
 
             # 创建MOE模型
@@ -184,13 +194,13 @@ if __name__ == "__main__":
                 image_encoder=vit_model,
                 findings_decoder=mistral_model,
             )
-            
+
             # 冻结前两个阶段的模型参数
             for param in model.object_detector.parameters():
                 param.requires_grad = False
             for param in model.image_encoder.parameters():
                 param.requires_grad = False
-                
+
             # 计算每个模块的参数量
             module_parameters = {
                 "Enhanced FastRCNN (frozen)": count_parameters(enhanced_rcnn),
@@ -363,19 +373,19 @@ if __name__ == "__main__":
                 kw_src=config.KW_SRC,
                 kw_tgt=config.KW_TGT,
             )
-    
+
     elif config.PHASE == "FINETUNE_MISTRAL":
         # Mistral微调阶段
         if config.CHECKPOINT_PATH_FROM:
             _, _ = load(config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler)
             logger.info(f"从 {config.CHECKPOINT_PATH_FROM} 加载模型权重")
-        
+
         criterion = None
         scaler = torch.amp.GradScaler() if config.USE_MIXED_PRECISION else None
-        
+
         for epoch in range(last_epoch + 1, config.EPOCHS):
             logger.info(f"Epoch: {epoch}")
-            
+
             # 训练
             train_loss = train(
                 config,
@@ -392,7 +402,7 @@ if __name__ == "__main__":
                 scaler=scaler,
                 writer=writer,
             )
-            
+
             # 测试
             test_loss, result = test_mistral(
                 config=config,
@@ -404,13 +414,13 @@ if __name__ == "__main__":
                 epoch=epoch,
                 writer=writer,
             )
-            
+
             # 保存检查点
             save_path = os.path.join(
                 config.CHECKPOINT_PATH_TO,
                 f'epoch_{epoch}_bleu_{result["report_generation_metrics"]["bleu4"]:.4f}.pth',
             )
-            
+
             save(
                 save_path,
                 model,
@@ -419,11 +429,11 @@ if __name__ == "__main__":
                 epoch,
                 (test_loss, result),
             )
-            
+
             # 每个epoch后清理内存
             torch.cuda.empty_cache()
             gc.collect()
-        
+
         # 关闭TensorBoard writer
         writer.close()
 
@@ -435,9 +445,9 @@ if __name__ == "__main__":
             model=model,
             logger=logger,
             mode="val",
-            device="cuda"
+            device="cuda",
         )
-        
+
         # 在测试集上进行最终评估
         logger.info("在测试集上进行最终评估...")
         final_test_loss, final_test_result = test_mistral(
@@ -446,12 +456,16 @@ if __name__ == "__main__":
             model=model,
             logger=logger,
             mode="test",
-            device="cuda"
+            device="cuda",
         )
-        
+
         # 打印最终结果
-        logger.info(f"验证集 - BLEU-4: {final_val_result['report_generation_metrics']['bleu4']:.4f}, ROUGE-L: {final_val_result['report_generation_metrics']['rougeL']:.4f}")
-        logger.info(f"测试集 - BLEU-4: {final_test_result['report_generation_metrics']['bleu4']:.4f}, ROUGE-L: {final_test_result['report_generation_metrics']['rougeL']:.4f}")
+        logger.info(
+            f"验证集 - BLEU-4: {final_val_result['report_generation_metrics']['bleu4']:.4f}, ROUGE-L: {final_val_result['report_generation_metrics']['rougeL']:.4f}"
+        )
+        logger.info(
+            f"测试集 - BLEU-4: {final_test_result['report_generation_metrics']['bleu4']:.4f}, ROUGE-L: {final_test_result['report_generation_metrics']['rougeL']:.4f}"
+        )
 
     elif config.MODE == "TEST":
         # 确保提供了checkpoint路径
