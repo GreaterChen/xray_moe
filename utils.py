@@ -18,6 +18,9 @@ from contextlib import nullcontext
 import gc
 import json
 
+# Set the environment variable to disable tokenizers parallelism
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 # ------ Helper Functions ------
 def data_to_device(data, device="cpu"):
@@ -255,6 +258,17 @@ def train(
                     label=True,
                     bbox=True,
                 )
+            elif config.PHASE == "FINETUNE_MISTRAL":
+                source, target, _ = prepare_batch_data(
+                    config,
+                    batch,
+                    data_loader,
+                    device,
+                    findings=True,
+                    history=True,
+                    label=True,
+                    bbox=True,
+                )
             else:
                 pass
         # 转换为kwargs格式
@@ -266,29 +280,45 @@ def train(
         source["current_epoch"] = current_epoch
         source["total_epochs"] = num_epochs
 
-        scheduler.step(cur_epoch=current_epoch, cur_step=i)
-        current_lr = optimizer.param_groups[0]["lr"]
-        with torch.amp.autocast("cuda"):
-            with record_function("model_forward") if enable_profile else nullcontext():
+        optimizer.zero_grad()
+        
+        # 根据不同阶段执行不同的训练逻辑
+        if config.PHASE == "FINETUNE_MISTRAL":
+            with torch.amp.autocast("cuda", enabled=scaler is not None):
+                # 直接将所有数据分发给模型，由模型内部处理各组件间的逻辑
                 output = data_distributor(model, source)
-            output = args_to_kwargs(output)
-            if config.PHASE == "TRAIN_DETECTION":
-                # 汇总所有损失项
-                loss = sum(loss for loss in output.values())
-
-            elif config.PHASE == "PRETRAIN_VIT":
-                loss = output["ltc_loss"] + output["cls_loss"]
-            else:
-                pass
+                loss = output.loss  # Mistral模型直接返回loss
+        else:
+            with torch.amp.autocast("cuda"):
+                with record_function("model_forward") if enable_profile else nullcontext():
+                    output = data_distributor(model, source)
+                output = args_to_kwargs(output)
+                
+                if config.PHASE == "TRAIN_DETECTION":
+                    # 汇总所有损失项
+                    loss = sum(loss for loss in output.values())
+                elif config.PHASE == "PRETRAIN_VIT":
+                    loss = output["ltc_loss"] + output["cls_loss"]
+                else:
+                    pass
 
         running_loss += loss.item()
+        
+        # 学习率更新
+        if scheduler is not None:
+            scheduler.step(cur_epoch=current_epoch, cur_step=i)
+                
+        current_lr = optimizer.param_groups[0]["lr"]
         prog_bar.set_description(f"Loss: {running_loss/(i+1)} | LR: {current_lr}")
 
-        optimizer.zero_grad()
-        with record_function("backward_update") if enable_profile else nullcontext():
+        # 反向传播与优化
+        if scaler is not None:
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         # 每log_freq个批次记录一次TensorBoard
         if writer is not None and i % log_freq == 0:
@@ -304,7 +334,6 @@ def train(
                     writer.add_scalar(
                         f"Train/Detection/{loss_name}", loss_value.item(), global_step
                     )
-
             elif config.PHASE == "PRETRAIN_VIT":
                 # 批量记录ViT相关损失
                 vit_losses = {
@@ -313,6 +342,9 @@ def train(
                 }
                 for tag, value in vit_losses.items():
                     writer.add_scalar(tag, value, global_step)
+            elif config.PHASE == "FINETUNE_MISTRAL":
+                # 记录Mistral相关损失
+                writer.add_scalar("Train/Mistral/Loss", loss.item(), global_step)
 
         # 如果启用了性能分析，调用prof.step()
         if enable_profile:
@@ -542,43 +574,60 @@ def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
     )
 
 
-def load(path, model, optimizer=None, scheduler=None):
+def load(path, model, optimizer=None, scheduler=None, load_model="object_detector"):
     checkpoint = torch.load(path, weights_only=False)
     # --- Model Statistics ---
     epoch = checkpoint["epoch"]
     stats = checkpoint["stats"]
 
-    # --- 提取detector部分的参数 ---
+    # --- 提取模型参数 ---
     if "model_state_dict" in checkpoint:
         checkpoint_state_dict = checkpoint["model_state_dict"]
 
-        # 检查是否是MOE模型的检查点
-        is_moe_checkpoint = any(
-            key.startswith("object_detector.") for key in checkpoint_state_dict.keys()
-        )
+        # 根据load_model参数决定加载哪部分权重
+        if load_model == "object_detector":
+            print("加载目标检测器参数...")
+            # 检查是否是MOE模型的检查点
+            is_moe_checkpoint = any(
+                key.startswith("object_detector.") for key in checkpoint_state_dict.keys()
+            )
 
-        if is_moe_checkpoint:
-            print("检测到MOE模型检查点，正在提取目标检测器参数...")
-            # 创建一个新的state_dict，只包含detector部分
-            detector_state_dict = {}
+            if is_moe_checkpoint:
+                print("检测到MOE模型检查点，正在提取目标检测器参数...")
+                # 创建一个新的state_dict，只包含detector部分
+                filtered_state_dict = {}
 
+                # 遍历checkpoint中的所有键
+                for key, value in checkpoint_state_dict.items():
+                    # 如果键以"object_detector."开头，则提取
+                    if key.startswith("object_detector."):
+                        # 去掉"object_detector."前缀
+                        new_key = key[len("object_detector.") :]
+                        filtered_state_dict[new_key] = value
+            else:
+                # 如果不是MOE检查点，直接使用原state_dict
+                filtered_state_dict = checkpoint_state_dict
+                
+        elif load_model == "vit":
+            print("加载ViT图像编码器参数...")
+            # 提取以image_encoder.开头的权重
+            filtered_state_dict = {}
+            
             # 遍历checkpoint中的所有键
             for key, value in checkpoint_state_dict.items():
-                # 如果键以"object_detector."开头，则提取
-                if key.startswith("object_detector."):
-                    # 去掉"object_detector."前缀
-                    new_key = key[len("object_detector.") :]
-                    detector_state_dict[new_key] = value
-
-            # 加载提取后的state_dict到模型
-            missing_keys, unexpected_keys = model.load_state_dict(
-                detector_state_dict, strict=False
-            )
+                # 如果键以"image_encoder."开头，则提取
+                if key.startswith("image_encoder."):
+                    # 去掉"image_encoder."前缀
+                    new_key = key[len("image_encoder.") :]
+                    filtered_state_dict[new_key] = value
         else:
-            # 如果不是MOE检查点，直接尝试加载
-            missing_keys, unexpected_keys = model.load_state_dict(
-                checkpoint_state_dict, strict=False
-            )
+            print(f"未知的load_model值: {load_model}，使用完整模型权重")
+            filtered_state_dict = checkpoint_state_dict
+
+        # 加载提取后的state_dict到模型
+        missing_keys, unexpected_keys = model.load_state_dict(
+            filtered_state_dict, strict=False
+        )
     else:
         print("检查点中没有找到模型状态字典！")
         return epoch, stats
@@ -1849,3 +1898,209 @@ def get_memory_profiler(enable_profile=False, log_path=None):
             ),
         )
     return nullcontext()
+
+def test_mistral(
+    config,
+    data_loader,
+    model,
+    logger,
+    mode="val",
+    device="cuda",
+    epoch=None,
+    writer=None,
+):
+    """测试Mistral模型的生成效果
+    
+    Args:
+        config: 配置对象
+        data_loader: 数据加载器
+        model: MOE模型
+        logger: 日志记录器
+        mode: 测试模式（val或test）
+        device: 设备
+        epoch: 当前训练轮数
+        writer: TensorBoard写入器
+    
+    Returns:
+        test_loss: 测试损失
+        result: 测试结果（包含各种评估指标）
+    """
+    torch.cuda.empty_cache()
+    gc.collect()
+    model.eval()
+    
+    # 记录总测试损失和样本数
+    running_loss = 0
+    total_samples = 0
+    
+    # 存储所有的预测结果和真实值
+    all_preds = []
+    all_targets = []
+    
+    # 设置进度条
+    prog_bar = tqdm(data_loader, desc=f"{mode} Mistral Evaluation")
+    
+    with torch.no_grad():
+        # 遍历批次数据
+        for batch_idx, batch in enumerate(prog_bar):
+            # 准备批次数据
+            source, target, _ = prepare_batch_data(
+                config, 
+                batch, 
+                data_loader, 
+                device, 
+                findings=True, 
+                history=True, 
+                label=True, 
+                bbox=True
+            )
+            
+            # 转换为kwargs格式
+            source = args_to_kwargs(source)
+            target = args_to_kwargs(target)
+            
+            # 设置模型阶段和模式
+            source["phase"] = config.PHASE
+            source["mode"] = "test"
+            
+            # 使用数据分发器执行模型推理
+            outputs = data_distributor(model, source)
+            
+            # 获取批次大小
+            batch_size = source["image"].size(0) if "image" in source else len(batch["findings"])
+            
+            # 记录损失
+            if hasattr(outputs, "loss"):
+                loss = outputs.loss
+                running_loss += loss.item() * batch_size
+                total_samples += batch_size
+            
+            # 生成报告文本
+            generated_texts = outputs.generated_text if hasattr(outputs, "generated_text") else []
+            
+            # 提取真实报告文本
+            target_texts = []
+            for idx in range(batch_size):
+                if "findings" in batch and isinstance(batch["findings"][idx], str):
+                    target_texts.append(batch["findings"][idx])
+                elif "findings" in target and "input_ids" in target["findings"]:
+                    # 如果findings是已编码的token IDs，进行解码
+                    findings_ids = target["findings"]["input_ids"][idx]
+                    # 使用模型内部的tokenizer解码
+                    tokenizer = getattr(model.findings_decoder, "tokenizer", None)
+                    if tokenizer:
+                        target_texts.append(tokenizer.decode(findings_ids, skip_special_tokens=True))
+                    else:
+                        # 如果无法直接访问tokenizer，可以将ID保存为字符串
+                        target_texts.append(f"[IDs:{findings_ids.tolist()}]")
+            
+            # 收集预测结果和真实值
+            all_preds.extend(generated_texts)
+            all_targets.extend(target_texts)
+    
+    # 计算平均损失
+    avg_loss = running_loss / max(total_samples, 1)
+    
+    # 文本生成评估指标库
+    from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
+    from rouge import Rouge
+    import nltk
+    
+    try:
+        nltk.data.find("tokenizers/punkt")
+    except LookupError:
+        nltk.download("punkt")
+    
+    # 分词处理预测和目标文本
+    tokenized_preds = []
+    tokenized_targets = []
+    
+    for pred, target in zip(all_preds, all_targets):
+        if pred and target:  # 确保文本非空
+            tokenized_preds.append(nltk.word_tokenize(pred.lower()))
+            tokenized_targets.append([nltk.word_tokenize(target.lower())])  # BLEU需要目标作为参考列表
+    
+    # 初始化结果字典
+    result = {}
+    
+    # 计算BLEU分数
+    if tokenized_preds and tokenized_targets:
+        smoothing = SmoothingFunction().method1
+        try:
+            bleu1 = corpus_bleu(
+                tokenized_targets,
+                tokenized_preds,
+                weights=(1, 0, 0, 0),
+                smoothing_function=smoothing,
+            )
+            bleu2 = corpus_bleu(
+                tokenized_targets,
+                tokenized_preds,
+                weights=(0.5, 0.5, 0, 0),
+                smoothing_function=smoothing,
+            )
+            bleu4 = corpus_bleu(
+                tokenized_targets,
+                tokenized_preds,
+                weights=(0.25, 0.25, 0.25, 0.25),
+                smoothing_function=smoothing,
+            )
+            
+            result.update({
+                "bleu1": bleu1,
+                "bleu2": bleu2,
+                "bleu4": bleu4,
+            })
+            
+            # 记录到日志
+            logger.info(f"BLEU-1: {bleu1:.4f}, BLEU-2: {bleu2:.4f}, BLEU-4: {bleu4:.4f}")
+        except Exception as e:
+            logger.error(f"计算BLEU分数时出错: {e}")
+    
+    # 计算ROUGE分数
+    if all_preds and all_targets:
+        try:
+            # 确保所有文本都非空
+            valid_pairs = [(p, t) for p, t in zip(all_preds, all_targets) if p and t]
+            if valid_pairs:
+                valid_preds, valid_targets = zip(*valid_pairs)
+                
+                rouge = Rouge()
+                rouge_scores = rouge.get_scores(valid_preds, valid_targets, avg=True)
+                
+                result.update({
+                    "rouge1": rouge_scores["rouge-1"]["f"],
+                    "rouge2": rouge_scores["rouge-2"]["f"],
+                    "rougeL": rouge_scores["rouge-l"]["f"],
+                })
+                
+                # 记录到日志
+                logger.info(f"ROUGE-1: {rouge_scores['rouge-1']['f']:.4f}, ROUGE-2: {rouge_scores['rouge-2']['f']:.4f}, ROUGE-L: {rouge_scores['rouge-l']['f']:.4f}")
+        except Exception as e:
+            logger.error(f"计算ROUGE分数时出错: {e}")
+    
+    # 记录测试损失
+    logger.info(f"Test ({mode}) Loss: {avg_loss:.4f}")
+    
+    # 记录到TensorBoard
+    if writer is not None and epoch is not None:
+        writer.add_scalar(f"{mode}/loss", avg_loss, epoch)
+        for metric, value in result.items():
+            writer.add_scalar(f"{mode}/{metric}", value, epoch)
+        
+        # 记录示例预测
+        if all_preds and all_targets:
+            num_examples = min(5, len(all_preds))
+            examples_text = ""
+            for i in range(num_examples):
+                if i < len(all_preds) and i < len(all_targets):
+                    examples_text += f"Example {i+1}:\n"
+                    examples_text += f"Target: {all_targets[i]}\n"
+                    examples_text += f"Pred: {all_preds[i]}\n\n"
+            writer.add_text(f"{mode}/examples", examples_text, epoch)
+    
+    # 释放内存
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    return avg_loss, {"text_generation_metrics": result}
