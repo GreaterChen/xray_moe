@@ -409,6 +409,7 @@ if __name__ == "__main__":
                 data_loader=val_loader,
                 model=model,
                 logger=logger,
+                metric_ftns=compute_scores,
                 mode="val",
                 device="cuda",
                 epoch=epoch,
@@ -444,6 +445,7 @@ if __name__ == "__main__":
             data_loader=val_loader,
             model=model,
             logger=logger,
+            metric_ftns=compute_scores,
             mode="val",
             device="cuda",
         )
@@ -455,6 +457,7 @@ if __name__ == "__main__":
             data_loader=test_loader,
             model=model,
             logger=logger,
+            metric_ftns=compute_scores,
             mode="test",
             device="cuda",
         )

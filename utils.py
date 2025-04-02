@@ -1932,6 +1932,7 @@ def test_mistral(
     model,
     logger,
     mode="val",
+    metric_ftns=None,
     device="cuda",
     epoch=None,
     writer=None,
@@ -1944,6 +1945,7 @@ def test_mistral(
         model: MOE模型
         logger: 日志记录器
         mode: 测试模式（val或test）
+        metric_ftns: 计算指标的函数
         device: 设备
         epoch: 当前训练轮数
         writer: TensorBoard写入器
@@ -1960,9 +1962,11 @@ def test_mistral(
     running_loss = 0
     total_samples = 0
 
-    # 存储所有的预测结果和真实值
+    # 存储所有的预测结果和真实值以及元数据
     all_preds = []
     all_targets = []
+    image_paths_list = []
+    labels_list = []
 
     # 设置进度条
     prog_bar = tqdm(data_loader, desc=f"{mode} Mistral Evaluation")
@@ -1970,6 +1974,11 @@ def test_mistral(
     with torch.no_grad():
         # 遍历批次数据
         for batch_idx, batch in enumerate(prog_bar):
+            # 收集元数据
+            image_paths_list.extend(batch["image_path"])
+            if "label" in batch:
+                labels_list.extend(batch["label"].cpu().numpy().tolist())
+
             # 准备批次数据
             source, target, _ = prepare_batch_data(
                 config,
@@ -2005,9 +2014,7 @@ def test_mistral(
                 total_samples += batch_size
 
             # 生成报告文本
-            generated_texts = (
-                outputs.generated_text if hasattr(outputs, "generated_text") else []
-            )
+            generated_texts = outputs['generated_texts']
 
             # 提取真实报告文本
             target_texts = []
@@ -2031,104 +2038,71 @@ def test_mistral(
             all_preds.extend(generated_texts)
             all_targets.extend(target_texts)
 
+            # 更新进度条
+            prog_bar.set_description(f"Loss: {running_loss/(batch_idx+1):.4f}")
+
     # 计算平均损失
     avg_loss = running_loss / max(total_samples, 1)
 
-    # 文本生成评估指标库
-    from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
-    from rouge import Rouge
-    import nltk
+    # 创建结果数据字典
+    results_data = {
+        "image_path": image_paths_list,
+        "findings_gt": all_targets,
+        "findings_pred": all_preds,
+        "timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")] * len(all_targets),
+    }
+    
+    # 如果有标签数据，也添加进去
+    if labels_list:
+        results_data["labels"] = labels_list
 
-    try:
-        nltk.data.find("tokenizers/punkt")
-    except LookupError:
-        nltk.download("punkt")
+    # 计算评估指标 - 使用与test函数相同的方式
+    report_metrics = {}
+    if metric_ftns is not None:
+        report_metrics = metric_ftns(
+            {i: [gt] for i, gt in enumerate(all_targets)},
+            {i: [pred] for i, pred in enumerate(all_preds)},
+        )
+        
+        # 记录评估指标
+        for metric_name, value in report_metrics.items():
+            logger.info(f"{metric_name}: {value:.4f}")
 
-    # 分词处理预测和目标文本
-    tokenized_preds = []
-    tokenized_targets = []
+    # 创建结果目录
+    results_dir = os.path.join(config.CHECKPOINT_PATH_TO, "test_results")
+    os.makedirs(results_dir, exist_ok=True)
 
-    for pred, target in zip(all_preds, all_targets):
-        if pred and target:  # 确保文本非空
-            tokenized_preds.append(nltk.word_tokenize(pred.lower()))
-            tokenized_targets.append(
-                [nltk.word_tokenize(target.lower())]
-            )  # BLEU需要目标作为参考列表
+    # 将结果转换为DataFrame并保存
+    results_df = pd.DataFrame(results_data)
 
-    # 初始化结果字典
-    result = {}
+    # 保存为CSV文件，添加epoch信息
+    epoch_str = str(epoch) if epoch is not None else "TEST"
+    csv_filename = f"{mode}_results_epoch_{epoch_str}.csv"
+    results_df.to_csv(os.path.join(results_dir, csv_filename), index=False)
+    logger.info(f"结果已保存到CSV文件: {csv_filename}")
+    
+    # 计算并保存评估指标
+    metrics_data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": mode,
+        "epoch": epoch_str,
+        "loss": avg_loss,
+    }
 
-    # 计算BLEU分数
-    if tokenized_preds and tokenized_targets:
-        smoothing = SmoothingFunction().method1
-        try:
-            bleu1 = corpus_bleu(
-                tokenized_targets,
-                tokenized_preds,
-                weights=(1, 0, 0, 0),
-                smoothing_function=smoothing,
-            )
-            bleu2 = corpus_bleu(
-                tokenized_targets,
-                tokenized_preds,
-                weights=(0.5, 0.5, 0, 0),
-                smoothing_function=smoothing,
-            )
-            bleu4 = corpus_bleu(
-                tokenized_targets,
-                tokenized_preds,
-                weights=(0.25, 0.25, 0.25, 0.25),
-                smoothing_function=smoothing,
-            )
+    # 添加文本生成指标
+    for metric_name, value in report_metrics.items():
+        metrics_data[f"report_{metric_name}"] = value
 
-            result.update(
-                {
-                    "bleu1": bleu1,
-                    "bleu2": bleu2,
-                    "bleu4": bleu4,
-                }
-            )
-
-            # 记录到日志
-            logger.info(
-                f"BLEU-1: {bleu1:.4f}, BLEU-2: {bleu2:.4f}, BLEU-4: {bleu4:.4f}"
-            )
-        except Exception as e:
-            logger.error(f"计算BLEU分数时出错: {e}")
-
-    # 计算ROUGE分数
-    if all_preds and all_targets:
-        try:
-            # 确保所有文本都非空
-            valid_pairs = [(p, t) for p, t in zip(all_preds, all_targets) if p and t]
-            if valid_pairs:
-                valid_preds, valid_targets = zip(*valid_pairs)
-
-                rouge = Rouge()
-                rouge_scores = rouge.get_scores(valid_preds, valid_targets, avg=True)
-
-                result.update(
-                    {
-                        "rouge1": rouge_scores["rouge-1"]["f"],
-                        "rouge2": rouge_scores["rouge-2"]["f"],
-                        "rougeL": rouge_scores["rouge-l"]["f"],
-                    }
-                )
-
-                # 记录到日志
-                logger.info(
-                    f"ROUGE-1: {rouge_scores['rouge-1']['f']:.4f}, ROUGE-2: {rouge_scores['rouge-2']['f']:.4f}, ROUGE-L: {rouge_scores['rouge-l']['f']:.4f}"
-                )
-        except Exception as e:
-            logger.error(f"计算ROUGE分数时出错: {e}")
-
-    # 记录测试损失
-    logger.info(f"Test ({mode}) Loss: {avg_loss:.4f}")
+    # 保存评估指标，添加epoch信息
+    metrics_df = pd.DataFrame([metrics_data])
+    metrics_filename = f"{mode}_metrics_epoch_{epoch_str}.csv"
+    metrics_df.to_csv(os.path.join(results_dir, metrics_filename), index=False)
+    logger.info(f"评估指标已保存到CSV文件: {metrics_filename}")
 
     # 记录到TensorBoard
     if writer is not None and epoch is not None:
         writer.add_scalar(f"{mode}/loss", avg_loss, epoch)
-        for metric, value in result.items():
+        for metric, value in report_metrics.items():
             writer.add_scalar(f"{mode}/{metric}", value, epoch)
 
         # 记录示例预测
@@ -2146,4 +2120,13 @@ def test_mistral(
     torch.cuda.empty_cache()
     gc.collect()
 
-    return avg_loss, {"text_generation_metrics": result}
+    # 构建返回结果，保持键名一致性
+    result = {
+        "report_generation_metrics": report_metrics,
+        "text_generation_metrics": report_metrics,  # 同时保留旧键名以保持兼容性
+        "loss": avg_loss,
+        "results_df": results_df,
+        "metrics_df": metrics_df,
+    }
+
+    return avg_loss, result

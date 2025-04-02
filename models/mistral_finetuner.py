@@ -371,7 +371,7 @@ class MistralFinetuner(nn.Module):
         # 我们只解码input_length之后的部分，这就是新生成的内容
         decoded_outputs = self.tokenizer.batch_decode(
             generated_ids[:, input_length:], 
-            skip_special_tokens=False  # 保留特殊标记以保持一致性
+            skip_special_tokens=True  # 保留特殊标记以保持一致性
         )
         
         return decoded_outputs
