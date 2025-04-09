@@ -164,7 +164,7 @@ class MOE(nn.Module):
                 # 返回文本特征
                 return {"text_cls_token": text_cls_token}
 
-        elif phase == "FINETUNE_MISTRAL":
+        elif phase == "FINETUNE_MISTRAL" or phase == "FINETUNE_LLAMA":
             # 第一步：使用目标检测器提取区域特征（冻结）
             with torch.no_grad():
                 detection_outputs = self.object_detector(
@@ -179,7 +179,7 @@ class MOE(nn.Module):
             # 第二步：通过ViT处理区域特征（冻结）
             with torch.no_grad():
                 image_encoder_outputs = self.image_encoder(
-                    region_features, region_detected=region_detected
+                    region_features, region_detected=region_detected, image_labels=label
                 )
 
             # 获取ViT的最后一层隐藏层输出
@@ -187,7 +187,7 @@ class MOE(nn.Module):
                 "final_region_features"
             ]  # [B, num_tokens, hidden_size]
 
-            # 第三步：通过Mistral生成模型进行文本生成（可训练）
+            # 第三步：通过生成模型进行文本生成（可训练）
             if mode == "train":
                 # 训练模式：使用findings计算损失
                 outputs = self.findings_decoder(
@@ -197,17 +197,6 @@ class MOE(nn.Module):
                 )
                 return outputs
             else:
-                # 测试/评估模式
-                # if findings is not None:
-                #     # 如果提供了findings，计算损失和perplexity进行评估
-                #     with torch.no_grad():
-                #         outputs = self.findings_decoder(
-                #             visual_features=visual_features,
-                #             history_encoding=history,
-                #             findings=findings,
-                #         )
-                #     return outputs
-                # else:
                 # 纯生成模式：不计算损失，只生成文本
                 with torch.no_grad():
                     generated_texts = self.findings_decoder.generate(

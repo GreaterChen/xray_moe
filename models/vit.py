@@ -222,10 +222,10 @@ class MedicalVisionTransformer(nn.Module):
 
         return {
             "loss": loss,
-            "hidden_states": all_hidden_states,
-            "disease_preds": all_disease_preds,
+            # "hidden_states": all_hidden_states,
+            # "disease_preds": all_disease_preds,
             "final_disease_preds": final_preds,
-            "cls_output": final_cls_output,  # 保留CLS输出用于对比学习
+            "cls_output": final_cls_output, 
             "final_region_features": final_region_features,
         }
 

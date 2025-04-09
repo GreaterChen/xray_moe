@@ -265,7 +265,7 @@ def train(
                     label=True,
                     bbox=True,
                 )
-            elif config.PHASE == "FINETUNE_MISTRAL":
+            elif config.PHASE == "FINETUNE_MISTRAL" or config.PHASE == "FINETUNE_LLAMA":
                 source, target, _ = prepare_batch_data(
                     config,
                     batch,
@@ -290,11 +290,11 @@ def train(
         optimizer.zero_grad()
 
         # 根据不同阶段执行不同的训练逻辑
-        if config.PHASE == "FINETUNE_MISTRAL":
+        if config.PHASE == "FINETUNE_MISTRAL" or config.PHASE == "FINETUNE_LLAMA":
             with torch.amp.autocast("cuda", enabled=scaler is not None):
                 # 直接将所有数据分发给模型，由模型内部处理各组件间的逻辑
                 output = data_distributor(model, source)
-                loss = output.loss  # Mistral模型直接返回loss
+                loss = output.loss
         else:
             with torch.amp.autocast("cuda"):
                 with record_function(
@@ -1926,7 +1926,7 @@ def get_memory_profiler(enable_profile=False, log_path=None):
     return nullcontext()
 
 
-def test_mistral(
+def test_llm(
     config,
     data_loader,
     model,
@@ -1937,7 +1937,7 @@ def test_mistral(
     epoch=None,
     writer=None,
 ):
-    """测试Mistral模型的生成效果
+    """测试llm模型的生成效果
 
     Args:
         config: 配置对象
@@ -2123,7 +2123,6 @@ def test_mistral(
     # 构建返回结果，保持键名一致性
     result = {
         "report_generation_metrics": report_metrics,
-        "text_generation_metrics": report_metrics,  # 同时保留旧键名以保持兼容性
         "loss": avg_loss,
         "results_df": results_df,
         "metrics_df": metrics_df,
