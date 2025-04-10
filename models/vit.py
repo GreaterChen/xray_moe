@@ -316,76 +316,98 @@ class MedicalVisionTransformer(nn.Module):
                 
                 # 创建输出张量，初始化为0
                 batch_size, seq_len, hidden_dim = normalized_residual.shape
-                expert_output = torch.zeros_like(normalized_residual)
                 
                 # 首先使用原始FFN批量处理所有token (包括CLS和区域token)
                 base_output = layer_module.output.dense(layer_module.intermediate(normalized_residual))
                 
-                # 创建专家权重矩阵 [batch_size, seq_len, num_experts]
-                # seq_len包括cls token和所有区域token
-                # 初始值为1，后续会归一化
-                expert_weights = torch.ones(batch_size, seq_len, self.num_experts, device=device)
+                # 创建专家权重和激活掩码
+                # 使用矩阵运算批量构建激活掩码，避免嵌套循环
                 
-                # 创建掩码，标记哪些token-专家对需要处理 [batch_size, seq_len, num_experts]
-                # 通用专家(最后一个)默认对所有token有效
+                # 1. 创建通用专家的激活掩码 - 对所有token都激活
                 active_experts = torch.zeros(batch_size, seq_len, self.num_experts, device=device)
-                active_experts[:, :, -1] = 1.0  # 通用专家对所有token生效，包括CLS
+                active_experts[:, :, -1] = 1.0  # 通用专家对所有token激活
                 
-                # 处理疾病专家 (不包括通用专家)
-                for d in range(self.num_diseases):
-                    # 创建该疾病的掩码，标记哪些样本-区域需要处理
-                    # [batch_size, seq_len] (seq_len包括CLS和所有区域)
-                    disease_mask = torch.zeros(batch_size, seq_len, device=device)
+                # 2. 为疾病专家创建激活掩码 - 批量处理
+                # 先处理CLS token - CLS永远不使用疾病专家
+                
+                # 对于区域token，批量确定哪些区域应该被哪些疾病专家处理
+                if seq_len > 1:  # 确保有区域token
+                    # 将disease_probs扩展为 [batch_size, 1, num_diseases]
+                    disease_probs_expanded = disease_probs.unsqueeze(1)  # [B, 1, num_diseases]
                     
-                    # 遍历每个批次样本
+                    # 创建区域掩码 [num_regions, num_diseases]
+                    region_disease_expanded = self.anatomy_disease_mask
+                    
+                    # 创建病情掩码，标记哪些疾病被诊断为有病 [batch_size, num_diseases]
+                    disease_active = (disease_probs > 0.5).float()  # [B, num_diseases]
+                    
+                    # 遍历每个批次样本，批量激活专家
                     for b in range(batch_size):
-                        # 检查该疾病是否被诊断为有病 (>0.5)
-                        if disease_probs[b, d] > 0.5:
-                            # 找出与该疾病相关的所有区域 (跳过CLS token，即索引0)
-                            for r in range(1, seq_len):
-                                region_idx = r - 1  # 实际区域索引
-                                if region_idx < self.num_regions and self.anatomy_disease_mask[region_idx, d] > 0:
-                                    # 标记该区域为需要处理
-                                    disease_mask[b, r] = 1.0
-                                    # 记录激活的专家
-                                    active_experts[b, r, d] = 1.0
+                        # 获取当前样本的疾病激活状态 [num_diseases]
+                        sample_disease_active = disease_active[b]  # [num_diseases]
+                        
+                        # 只有在至少有一种疾病被诊断为有病时才继续处理
+                        if sample_disease_active.sum() > 0:
+                            # 找出被诊断为有病的疾病
+                            active_disease_indices = torch.where(sample_disease_active > 0)[0]
+                            
+                            # 对于每个活跃的疾病，标记相关区域
+                            for d_idx in active_disease_indices:
+                                # 找出与该疾病相关的区域
+                                related_regions = torch.where(region_disease_expanded[:, d_idx] > 0)[0]
+                                
+                                # 在active_experts中标记这些区域-专家对
+                                for r_idx in related_regions:
+                                    if r_idx < self.num_regions:  # 确保在有效范围内
+                                        token_idx = r_idx + 1  # 区域token的实际索引 (+1跳过CLS)
+                                        if token_idx < seq_len:  # 确保在序列长度范围内
+                                            active_experts[b, token_idx, d_idx] = 1.0
                 
-                # 归一化专家权重
-                expert_sum = active_experts * expert_weights  # 只考虑激活的专家
-                expert_sum = expert_sum.sum(dim=-1, keepdim=True)  # [batch_size, seq_len, 1]
-                expert_weights = expert_weights / torch.clamp(expert_sum, min=1.0)  # 归一化，避免除零
+                # 3. 创建专家权重矩阵 - 所有激活的专家权重相等
+                expert_weights = active_experts.clone()
                 
-                # 获取通用专家并应用到所有token
+                # 4. 归一化专家权重
+                expert_sum = expert_weights.sum(dim=-1, keepdim=True)  # [batch_size, seq_len, 1]
+                expert_weights = expert_weights / torch.clamp(expert_sum, min=1.0)  # 归一化权重
+                
+                # 5. 应用通用专家 - 一次性处理所有token
                 general_expert = self.experts[f"layer_{i}"][-1]
                 general_output = general_expert.compute_lora_output(normalized_residual, base_output)
                 
                 # 初始化最终输出为通用专家的加权输出
                 final_output = general_output * expert_weights[:, :, -1].unsqueeze(-1)
                 
-                # 为每个疾病专家添加输出
+                # 6. 处理疾病专家 - 使用掩码批量处理
+                # 为每个疾病专家找出需要处理的所有token，然后批量处理
                 for d in range(self.num_diseases):
-                    disease_expert = self.experts[f"layer_{i}"][d]
+                    # 获取当前疾病专家的激活掩码
+                    disease_mask = active_experts[:, :, d]  # [batch_size, seq_len]
                     
-                    # 创建掩码，标记该专家激活的token [batch_size, seq_len]
-                    disease_active = active_experts[:, :, d]
-                    
-                    if disease_active.sum() > 0:
-                        # 获取激活token的索引
-                        batch_indices, token_indices = torch.where(disease_active > 0)
+                    # 检查是否有任何token需要该专家处理
+                    if disease_mask.sum() > 0:
+                        # 获取需要处理的token索引
+                        batch_indices, token_indices = torch.where(disease_mask > 0)
                         
+                        # 如果有需要处理的token
                         if len(batch_indices) > 0:
-                            # 收集需要处理的token
+                            # 收集所有需要处理的token
                             selected_tokens = normalized_residual[batch_indices, token_indices].unsqueeze(0)
                             selected_base_output = base_output[batch_indices, token_indices].unsqueeze(0)
                             
-                            # 应用LoRA增强
-                            selected_expert_output = disease_expert.compute_lora_output(selected_tokens, selected_base_output)
-                            selected_expert_output = selected_expert_output.squeeze(0)  # [num_selected, hidden_dim]
+                            # 获取当前疾病专家
+                            disease_expert = self.experts[f"layer_{i}"][d]
                             
-                            # 加权添加到输出
-                            for idx, (b, t) in enumerate(zip(batch_indices, token_indices)):
-                                weight = expert_weights[b, t, d]
-                                final_output[b, t] += selected_expert_output[idx] * weight
+                            # 批量应用专家
+                            selected_expert_output = disease_expert.compute_lora_output(selected_tokens, selected_base_output)
+                            selected_expert_output = selected_expert_output.squeeze(0)
+                            
+                            # 收集权重
+                            weights = expert_weights[batch_indices, token_indices, d]
+                            
+                            # 批量更新最终输出
+                            for idx in range(len(batch_indices)):
+                                b, t = batch_indices[idx], token_indices[idx]
+                                final_output[b, t] += selected_expert_output[idx] * weights[idx]
                 
                 # 应用第二个残差连接 (FFN输出 + 第一个残差连接的结果)
                 hidden_states = final_output + first_residual
