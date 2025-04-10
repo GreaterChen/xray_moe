@@ -6,7 +6,7 @@
 
 class DefaultConfig:
     # Debug模式
-    DEBUG = True
+    DEBUG = False
 
     # 数据目录设置
     ROOT_DIR = "/path/to/xray_moe/"  # 需要在local_config中覆盖
@@ -51,7 +51,7 @@ class DefaultConfig:
     DETECTION_CHECKPOINT_PATH_FROM = (
         "/path/to/detection_checkpoint.pth"  # 需要在local_config中覆盖
     )
-    CHECKPOINT_PATH_FROM = None
+    CHECKPOINT_PATH_FROM = "/home/chenlb/xray_moe/results/finetune_llama/epoch_0_bleu_0.0000.pth"
     CHECKPOINT_PATH_TO = "/path/to/save/checkpoint/"  # 需要在local_config中覆盖
 
     # TensorBoard设置

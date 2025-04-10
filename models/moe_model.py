@@ -179,9 +179,12 @@ class MOE(nn.Module):
             # 第二步：通过ViT处理区域特征（冻结）
             with torch.no_grad():
                 image_encoder_outputs = self.image_encoder(
-                    region_features, region_detected=region_detected, image_labels=label
+                    region_features, 
+                    region_detected=region_detected, 
+                    image_labels=label,
+                    phase=phase  # 传递phase参数给ViT，启用MOE
                 )
-
+ 
             # 获取ViT的最后一层隐藏层输出
             visual_features = image_encoder_outputs[
                 "final_region_features"

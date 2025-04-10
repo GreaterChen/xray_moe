@@ -630,8 +630,20 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
                     # 去掉"image_encoder."前缀
                     new_key = key[len("image_encoder.") :]
                     filtered_state_dict[new_key] = value
+                    
+        elif load_model == "decoder":
+            print("加载报告生成解码器参数...")
+            # 提取以findings_decoder.开头的权重
+            filtered_state_dict = {}
+
+            # 遍历checkpoint中的所有键
+            for key, value in checkpoint_state_dict.items():
+                # 如果键以"findings_decoder."开头，则提取
+                if key.startswith("findings_decoder."):
+                    # 去掉"findings_decoder."前缀
+                    new_key = key[len("findings_decoder.") :]
+                    filtered_state_dict[new_key] = value
         else:
-            print(f"未知的load_model值: {load_model}，使用完整模型权重")
             filtered_state_dict = checkpoint_state_dict
 
         # 加载提取后的state_dict到模型

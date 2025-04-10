@@ -530,7 +530,7 @@ if __name__ == "__main__":
     elif config.PHASE == "FINETUNE_LLAMA":
         # Llama微调阶段
         if config.CHECKPOINT_PATH_FROM:
-            _, _ = load(config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler)
+            _, _ = load(config.CHECKPOINT_PATH_FROM, model.findings_decoder, optimizer, scheduler, load_model="decoder")
             logger.info(f"从 {config.CHECKPOINT_PATH_FROM} 加载模型权重")
 
         criterion = None
