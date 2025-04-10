@@ -113,7 +113,7 @@ class DiseaseClassifier(nn.Module):
 
 class CompleteFeedForwardExpert(nn.Module):
     """
-    完整的前馈网络专家模块，直接使用原始模型的FFN，只添加LoRA部分
+    完整的前馈网络专家模块，优化批处理效率
     """
     def __init__(self, ffn_intermediate, ffn_output, lora_r=8, lora_alpha=16, lora_dropout=0.1):
         super(CompleteFeedForwardExpert, self).__init__()
@@ -147,52 +147,36 @@ class CompleteFeedForwardExpert(nn.Module):
         nn.init.zeros_(self.lora_B_up)
         nn.init.kaiming_uniform_(self.lora_A_down, a=math.sqrt(5))
         nn.init.zeros_(self.lora_B_down)
-        
     
-    def forward(self, x):
-        # 获取输入的形状
-        orig_shape = x.shape
-        batch_size = orig_shape[0]
+    def compute_lora_output(self, x, base_output):
+        """
+        计算LoRA部分的输出
+        x: [batch_size, seq_len, input_dim] 原始输入
+        base_output: [batch_size, seq_len, output_dim] FFN的基础输出
+        """
+        batch_size, seq_len, _ = x.shape
         
-        # 如果是二维输入(batch_size已经被展平)，则调整为三维
-        if len(orig_shape) == 2:
-            x = x.unsqueeze(0)
-        
-        # 1. 运行原始intermediate（上投影+激活）
-        hidden = self.intermediate(x)
-        
-        # 2. 处理LoRA部分 - 确保正确处理批次维度
-        # 将输入展平为2D，以便于矩阵乘法
-        x_2d = x.view(-1, x.size(-1))
-        
-        # 应用LoRA上投影，但降低缩放因子以控制数值范围
-        lora_scaling = self.scaling  # 限制缩放因子大小
+        # 1. 计算上投影LoRA
+        x_2d = x.reshape(-1, x.size(-1))
         lora_a_out = self.lora_dropout(x_2d) @ self.lora_A_up.T  # [batch_size*seq_len, lora_r]
         lora_up = lora_a_out @ self.lora_B_up.T  # [batch_size*seq_len, hidden_dim]
-        lora_up = lora_up.view(hidden.shape) * lora_scaling  # 恢复原始形状，使用较小的缩放因子
+        lora_up = lora_up.view(batch_size, seq_len, -1) * self.scaling
         
-        # 添加LoRA结果到中间层输出
-        hidden = hidden + lora_up
+        # 2. 运行原始intermediate（上投影+激活）获取隐藏状态
+        hidden = self.intermediate(x) + lora_up
         
-        # 3. 处理下投影 (dense层)
-        output = self.output.dense(hidden)
-        
-        # 4. 应用LoRA下投影
-        hidden_2d = hidden.view(-1, hidden.size(-1))
+        # 3. 计算下投影LoRA
+        hidden_2d = hidden.reshape(-1, hidden.size(-1))
         lora_a_down_out = self.lora_dropout(hidden_2d) @ self.lora_A_down.T  # [batch_size*seq_len, lora_r]
         lora_down = lora_a_down_out @ self.lora_B_down.T  # [batch_size*seq_len, output_dim]
-        lora_down = lora_down.view(output.shape) * lora_scaling  # 使用较小的缩放因子
+        lora_down = lora_down.view(batch_size, seq_len, -1) * self.scaling
         
-        # 添加LoRA结果到输出
-        output = output + lora_down
+        # 4. 应用下投影并添加LoRA结果
+        output = base_output + lora_down
         
-        # 应用LayerNorm确保输出在合理范围内
+        # 5. 归一化
         output = F.layer_norm(output, normalized_shape=output.shape[-1:])
         
-        # 如果原始输入是展平的，恢复为展平的形状
-        if len(orig_shape) == 2:
-            output = output.squeeze(0)
-            
         return output
 
 
@@ -316,7 +300,13 @@ class MedicalVisionTransformer(nn.Module):
                 normalized_hidden_states = layer_module.layernorm_before(hidden_states)
                 attention_output = layer_module.attention(normalized_hidden_states)[0]
                 
-                # 获取区域特征（不含CLS token）
+                # 应用第一个残差连接 (attention_output + 原始输入)
+                first_residual = attention_output + hidden_states
+                
+                # 应用第二个layer norm
+                normalized_residual = layer_module.layernorm_after(first_residual)
+                
+                # 获取区域特征（不含CLS token）用于疾病分类
                 region_hidden_states = attention_output[:, 1:, :]
                 
                 # 通过疾病分类器获取路由权重
@@ -324,76 +314,81 @@ class MedicalVisionTransformer(nn.Module):
                     disease_preds = self.classifiers[i](region_hidden_states)  # [B, num_diseases]
                     disease_probs = torch.sigmoid(disease_preds)  # [B, num_diseases]
                 
-                # 路由到专家
-                expert_outputs = []
+                # 创建输出张量，初始化为0
+                batch_size, seq_len, hidden_dim = normalized_residual.shape
+                expert_output = torch.zeros_like(normalized_residual)
                 
-                # 处理每个样本
-                for b in range(batch_size):
-                    sample_hidden = attention_output[b]  # [1+num_regions, hidden_size]
-                    sample_output = torch.zeros_like(sample_hidden)  # 初始化输出
+                # 首先使用原始FFN批量处理所有token (包括CLS和区域token)
+                base_output = layer_module.output.dense(layer_module.intermediate(normalized_residual))
+                
+                # 创建专家权重矩阵 [batch_size, seq_len, num_experts]
+                # seq_len包括cls token和所有区域token
+                # 初始值为1，后续会归一化
+                expert_weights = torch.ones(batch_size, seq_len, self.num_experts, device=device)
+                
+                # 创建掩码，标记哪些token-专家对需要处理 [batch_size, seq_len, num_experts]
+                # 通用专家(最后一个)默认对所有token有效
+                active_experts = torch.zeros(batch_size, seq_len, self.num_experts, device=device)
+                active_experts[:, :, -1] = 1.0  # 通用专家对所有token生效，包括CLS
+                
+                # 处理疾病专家 (不包括通用专家)
+                for d in range(self.num_diseases):
+                    # 创建该疾病的掩码，标记哪些样本-区域需要处理
+                    # [batch_size, seq_len] (seq_len包括CLS和所有区域)
+                    disease_mask = torch.zeros(batch_size, seq_len, device=device)
                     
-                    # 处理cls token (使用通用专家)
-                    cls_token_hidden = sample_hidden[0].unsqueeze(0)  # [1, hidden_size]
-                    general_expert = self.experts[f"layer_{i}"][-1]  # 通用专家是最后一个
-                    # 直接输入和输出处理
-                    cls_output = general_expert(cls_token_hidden)
-                    sample_output[0] = cls_output.squeeze(0)
+                    # 遍历每个批次样本
+                    for b in range(batch_size):
+                        # 检查该疾病是否被诊断为有病 (>0.5)
+                        if disease_probs[b, d] > 0.5:
+                            # 找出与该疾病相关的所有区域 (跳过CLS token，即索引0)
+                            for r in range(1, seq_len):
+                                region_idx = r - 1  # 实际区域索引
+                                if region_idx < self.num_regions and self.anatomy_disease_mask[region_idx, d] > 0:
+                                    # 标记该区域为需要处理
+                                    disease_mask[b, r] = 1.0
+                                    # 记录激活的专家
+                                    active_experts[b, r, d] = 1.0
+                
+                # 归一化专家权重
+                expert_sum = active_experts * expert_weights  # 只考虑激活的专家
+                expert_sum = expert_sum.sum(dim=-1, keepdim=True)  # [batch_size, seq_len, 1]
+                expert_weights = expert_weights / torch.clamp(expert_sum, min=1.0)  # 归一化，避免除零
+                
+                # 获取通用专家并应用到所有token
+                general_expert = self.experts[f"layer_{i}"][-1]
+                general_output = general_expert.compute_lora_output(normalized_residual, base_output)
+                
+                # 初始化最终输出为通用专家的加权输出
+                final_output = general_output * expert_weights[:, :, -1].unsqueeze(-1)
+                
+                # 为每个疾病专家添加输出
+                for d in range(self.num_diseases):
+                    disease_expert = self.experts[f"layer_{i}"][d]
                     
-                    # 处理每个区域token
-                    for r in range(1, sample_hidden.size(0)):  # 跳过cls token
-                        region_idx = r - 1  # 实际区域索引
-                        
-                        # 初始化加权输出
-                        weighted_output = torch.zeros_like(sample_hidden[r])
-                        
-                        # 获取当前区域关联的疾病列表
-                        region_disease_mask = self.anatomy_disease_mask[region_idx]  # [num_diseases]
-                        
-                        # 找出与该区域相关且被诊断为有病(>0.5)的疾病
-                        active_disease_indices = []
-                        for d in range(self.num_diseases):
-                            if region_disease_mask[d] > 0 and disease_probs[b, d] > 0.5:
-                                active_disease_indices.append(d)
-                        
-                        # 如果没有相关疾病或没有疾病被诊断为有病，则使用通用专家
-                        if len(active_disease_indices) == 0:
-                            general_expert = self.experts[f"layer_{i}"][-1]
-                            general_input = sample_hidden[r].unsqueeze(0)  # [1, hidden_size]
-                            general_output = general_expert(general_input).squeeze(0)  # [hidden_size]
-                            weighted_output = general_output
-                        else:
-                            # 统计需要处理的专家数量（有病的相关疾病 + 通用专家）
-                            num_experts = len(active_disease_indices) + 1  # +1是通用专家
-                            
-                            # 每个专家的权重相同
-                            expert_weight = 1.0 / num_experts
-                            
-                            # 累加每个激活疾病专家的输出
-                            for d_idx in active_disease_indices:
-                                disease_expert = self.experts[f"layer_{i}"][d_idx]
-                                expert_input = sample_hidden[r].unsqueeze(0)  # [1, hidden_size]
-                                expert_output = disease_expert(expert_input).squeeze(0)  # [hidden_size]
-                                weighted_output += expert_weight * expert_output
-                            
-                            # 添加通用专家的输出
-                            general_expert = self.experts[f"layer_{i}"][-1]
-                            general_input = sample_hidden[r].unsqueeze(0)
-                            general_output = general_expert(general_input).squeeze(0)
-                            weighted_output += expert_weight * general_output
-                        
-                        # 更新样本输出
-                        sample_output[r] = weighted_output
+                    # 创建掩码，标记该专家激活的token [batch_size, seq_len]
+                    disease_active = active_experts[:, :, d]
                     
-                    expert_outputs.append(sample_output)
+                    if disease_active.sum() > 0:
+                        # 获取激活token的索引
+                        batch_indices, token_indices = torch.where(disease_active > 0)
+                        
+                        if len(batch_indices) > 0:
+                            # 收集需要处理的token
+                            selected_tokens = normalized_residual[batch_indices, token_indices].unsqueeze(0)
+                            selected_base_output = base_output[batch_indices, token_indices].unsqueeze(0)
+                            
+                            # 应用LoRA增强
+                            selected_expert_output = disease_expert.compute_lora_output(selected_tokens, selected_base_output)
+                            selected_expert_output = selected_expert_output.squeeze(0)  # [num_selected, hidden_dim]
+                            
+                            # 加权添加到输出
+                            for idx, (b, t) in enumerate(zip(batch_indices, token_indices)):
+                                weight = expert_weights[b, t, d]
+                                final_output[b, t] += selected_expert_output[idx] * weight
                 
-                # 组合批次输出
-                hidden_states = torch.stack(expert_outputs)
-                
-                # 使用ViT正确的层归一化
-                hidden_states = layer_module.layernorm_after(hidden_states + attention_output)
-                
-                # 模拟ViT的intermediate层处理(FFN的上半部分)
-                # 注意：在我们的MOE中，这部分已经被专家处理，所以这里不需要再应用intermediate
+                # 应用第二个残差连接 (FFN输出 + 第一个残差连接的结果)
+                hidden_states = final_output + first_residual
             else:
                 # 正常的Transformer前向传播
                 layer_outputs = layer_module(hidden_states)
