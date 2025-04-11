@@ -132,7 +132,7 @@ class LlamaFinetuner(nn.Module):
         findings_idx = torch.where(prompt_input_ids[0] == findings_token_id)[0][0].item()
         
         # 一次性构建完整的嵌入序列
-        # 1. <s>到<image>部分
+        # 1. 到<image>部分
         prefix_ids = prompt_input_ids[0, :image_start_idx+1]
         prefix_embeds = self.model.get_input_embeddings()(prefix_ids)
         batch_prefix_embeds = prefix_embeds.unsqueeze(0).expand(batch_size, -1, -1)
@@ -185,7 +185,7 @@ class LlamaFinetuner(nn.Module):
         labels = torch.full((batch_size, total_len), -100, device=device)
         
         # 填充各部分
-        # 1. 前缀部分：<s>到<image>
+        # 1. 前缀部分：到<image>
         inputs_embeds[:, current_pos:current_pos+prefix_len] = batch_prefix_embeds
         attention_mask[:, current_pos:current_pos+prefix_len] = 1
         current_pos += prefix_len
@@ -225,13 +225,26 @@ class LlamaFinetuner(nn.Module):
             return_dict=True,
         )
         
+        # 解码预测的文本
+        logits = outputs.logits  # shape: [batch_size, seq_len, vocab_size]
+        predicted_token_ids = torch.argmax(logits, dim=-1)  # shape: [batch_size, seq_len]
+        
+        # 只解码findings部分（从current_pos开始到序列结束）
+        decoded_texts = self.tokenizer.batch_decode(
+            predicted_token_ids[:, current_pos:],
+            skip_special_tokens=True
+        )
+        
+        # 将解码后的文本添加到输出中
+        outputs.decoded_texts = decoded_texts
+        
         return outputs
     
     def generate(
         self,
         visual_features,
         history_encoding,
-        max_new_tokens=100,
+        max_new_tokens=150,
         do_sample=True,
         temperature=0.7,
         top_p=0.9,
@@ -285,7 +298,7 @@ class LlamaFinetuner(nn.Module):
         findings_idx = torch.where(prompt_input_ids[0] == findings_token_id)[0][0].item()
         
         # 一次性构建完整的嵌入序列
-        # 1. <s>到<image>部分
+        # 1. 到<image>部分
         prefix_ids = prompt_input_ids[0, :image_start_idx+1]
         prefix_embeds = self.model.get_input_embeddings()(prefix_ids)
         batch_prefix_embeds = prefix_embeds.unsqueeze(0).expand(batch_size, -1, -1)
@@ -321,7 +334,7 @@ class LlamaFinetuner(nn.Module):
         # 一次性填充所有部分
         current_pos = 0
         
-        # 1. 前缀部分：<s>到<image>
+        # 1. 前缀部分：到<image>
         inputs_embeds[:, current_pos:current_pos+prefix_len] = batch_prefix_embeds
         current_pos += prefix_len
         
@@ -351,10 +364,22 @@ class LlamaFinetuner(nn.Module):
             top_p=top_p,
             pad_token_id=self.tokenizer.pad_token_id if self.tokenizer.pad_token_id else self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
+            bos_token_id=self.tokenizer.bos_token_id,
+            use_cache=True,
+            min_new_tokens=50,  # 
+            min_length=50,      # 最小总长度
+            # no_repeat_ngram_size=3,  # 避免重复
+            # repetition_penalty=1.2,   # 重复惩罚
+            # length_penalty=1.0,       # 长度惩罚
+            # early_stopping=False,     # 禁用早停
         )
         
         # 生成文本
         with torch.no_grad():
+            # 首先获取输入的token表示
+            inputs_embeds.requires_grad_(False)  # 确保不需要梯度
+            attention_mask = attention_mask.to(dtype=torch.long)  # 确保类型正确
+            
             generation_output = self.model.generate(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
@@ -362,16 +387,25 @@ class LlamaFinetuner(nn.Module):
                 return_dict_in_generate=True,
                 output_scores=True,
             )
+            
+            # 获取生成的token序列
+            generated_ids = generation_output.sequences
+            print(f"Generated ids shape: {generated_ids.shape}")
+            print(f"Generated ids: {generated_ids.tolist()}")  # 打印实际的token ids
+            
+            # 解码完整序列
+            full_decoded = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=False)  # 保留特殊token以便调试
+            print(f"Full decoded text (with special tokens): {full_decoded}")
+            
+            # 只解码新生成的部分
+            new_tokens = generated_ids[:, input_length:]
+            print(f"New tokens shape: {new_tokens.shape}")
+            print(f"New tokens: {new_tokens.tolist()}")  # 打印新生成的token ids
+            
+            decoded_outputs = self.tokenizer.batch_decode(
+                new_tokens,
+                skip_special_tokens=True
+            )
+            print(f"New generated text: {decoded_outputs}")
         
-        # 获取生成的token序列
-        generated_ids = generation_output.sequences
-        
-        # 直接使用batch_decode解码生成部分，跳过输入部分
-        # 注意：input_length是输入序列的长度，对应模型内部转换的token IDs长度
-        # 我们只解码input_length之后的部分，这就是新生成的内容
-        decoded_outputs = self.tokenizer.batch_decode(
-            generated_ids[:, input_length:], 
-            skip_special_tokens=True  # 保留特殊标记以保持一致性
-        )
-        
-        return decoded_outputs 
+        return decoded_outputs

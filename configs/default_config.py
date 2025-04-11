@@ -6,7 +6,7 @@
 
 class DefaultConfig:
     # Debug模式
-    DEBUG = False
+    DEBUG = True
 
     # 数据目录设置
     ROOT_DIR = "/path/to/xray_moe/"  # 需要在local_config中覆盖
@@ -32,8 +32,8 @@ class DefaultConfig:
     PHASE = "FINETUNE_LLAMA"
     MODE = "TRAIN"
     USE_MIXED_PRECISION = True
-    TRAIN_BATCH_SIZE = 32
-    VAL_BATCH_SIZE = 32
+    TRAIN_BATCH_SIZE = 4
+    VAL_BATCH_SIZE = 4
     NUM_WORKERS = 16
     EPOCHS = 30
     LEARNING_RATE = 1e-4

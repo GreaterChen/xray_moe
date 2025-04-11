@@ -264,6 +264,7 @@ class MedicalVisionTransformer(nn.Module):
         region_detected=None,
         image_labels=None,
         phase="PRETRAIN_VIT",
+        use_moe=True,
     ):
         """
         前向传播
@@ -273,6 +274,7 @@ class MedicalVisionTransformer(nn.Module):
             region_detected: [batch_size, num_regions] - 已检测区域的掩码 (未使用，保留兼容性)
             image_labels: [batch_size, num_diseases] - 图像标签
             phase: 当前训练阶段
+            use_moe: 是否启用MOE，如果为False则使用普通FFN
         """
         batch_size = region_features.shape[0]
         device = region_features.device
@@ -291,8 +293,8 @@ class MedicalVisionTransformer(nn.Module):
         # 通过Transformer层
         hidden_states = x
         for i, layer_module in enumerate(self.encoder.layer):
-            # 在FINETUNE阶段，使用MOE
-            if phase in ["FINETUNE_MISTRAL", "FINETUNE_LLAMA"] and i % 2 == 0:
+            # 在FINETUNE阶段，使用MOE（如果启用）
+            if phase in ["FINETUNE_MISTRAL", "FINETUNE_LLAMA"] and i % 2 == 0 and use_moe:
                 # 先应用layernorm_before，再使用原始注意力机制
                 normalized_hidden_states = layer_module.layernorm_before(hidden_states)
                 attention_output = layer_module.attention(normalized_hidden_states)[0]
