@@ -225,18 +225,18 @@ class LlamaFinetuner(nn.Module):
             return_dict=True,
         )
         
-        # 解码预测的文本
-        logits = outputs.logits  # shape: [batch_size, seq_len, vocab_size]
-        predicted_token_ids = torch.argmax(logits, dim=-1)  # shape: [batch_size, seq_len]
+        # # 解码预测的文本
+        # logits = outputs.logits  # shape: [batch_size, seq_len, vocab_size]
+        # predicted_token_ids = torch.argmax(logits, dim=-1)  # shape: [batch_size, seq_len]
         
-        # 只解码findings部分（从current_pos开始到序列结束）
-        decoded_texts = self.tokenizer.batch_decode(
-            predicted_token_ids[:, current_pos:],
-            skip_special_tokens=True
-        )
+        # # 只解码findings部分（从current_pos开始到序列结束）
+        # decoded_texts = self.tokenizer.batch_decode(
+        #     predicted_token_ids[:, current_pos:],
+        #     skip_special_tokens=True
+        # )
         
-        # 将解码后的文本添加到输出中
-        outputs.decoded_texts = decoded_texts
+        # # 将解码后的文本添加到输出中
+        # outputs.decoded_texts = decoded_texts
         
         return outputs
     
@@ -244,7 +244,7 @@ class LlamaFinetuner(nn.Module):
         self,
         visual_features,
         history_encoding,
-        max_new_tokens=150,
+        max_new_tokens=100,
         do_sample=True,
         temperature=0.7,
         top_p=0.9,
@@ -366,7 +366,7 @@ class LlamaFinetuner(nn.Module):
             eos_token_id=self.tokenizer.eos_token_id,
             bos_token_id=self.tokenizer.bos_token_id,
             use_cache=True,
-            min_new_tokens=50,  # 
+            min_new_tokens=50,  
             min_length=50,      # 最小总长度
             # no_repeat_ngram_size=3,  # 避免重复
             # repetition_penalty=1.2,   # 重复惩罚
@@ -390,22 +390,9 @@ class LlamaFinetuner(nn.Module):
             
             # 获取生成的token序列
             generated_ids = generation_output.sequences
-            print(f"Generated ids shape: {generated_ids.shape}")
-            print(f"Generated ids: {generated_ids.tolist()}")  # 打印实际的token ids
             
             # 解码完整序列
-            full_decoded = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=False)  # 保留特殊token以便调试
-            print(f"Full decoded text (with special tokens): {full_decoded}")
+            full_decoded = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True) 
+            print(f"Full decoded text: {full_decoded}")
             
-            # 只解码新生成的部分
-            new_tokens = generated_ids[:, input_length:]
-            print(f"New tokens shape: {new_tokens.shape}")
-            print(f"New tokens: {new_tokens.tolist()}")  # 打印新生成的token ids
-            
-            decoded_outputs = self.tokenizer.batch_decode(
-                new_tokens,
-                skip_special_tokens=True
-            )
-            print(f"New generated text: {decoded_outputs}")
-        
-        return decoded_outputs
+        return full_decoded

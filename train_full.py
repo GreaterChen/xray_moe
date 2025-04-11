@@ -559,7 +559,7 @@ if __name__ == "__main__":
             # 测试
             test_loss, result = test_llm(
                 config=config,
-                data_loader=val_loader,
+                data_loader=test_loader,
                 model=model,
                 logger=logger,
                 metric_ftns=compute_scores,
