@@ -164,7 +164,7 @@ class MOE(nn.Module):
                 # 返回文本特征
                 return {"text_cls_token": text_cls_token}
 
-        elif phase == "FINETUNE_MISTRAL" or phase == "FINETUNE_LLAMA":
+        elif phase == "FINETUNE_MISTRAL" or phase == "FINETUNE_LLAMA" or phase == "FINETUNE_BERT":
             # 第一步：使用目标检测器提取区域特征（冻结）
             with torch.no_grad():
                 detection_outputs = self.object_detector(
@@ -192,6 +192,51 @@ class MOE(nn.Module):
             ]  # [B, num_tokens, hidden_size]
 
             # 第三步：通过生成模型进行文本生成（可训练）
+            if mode == "train":
+                # 训练模式：使用findings计算损失
+                outputs = self.findings_decoder(
+                    visual_features=visual_features,
+                    history_encoding=history,
+                    findings=findings,
+                )
+                return outputs
+            else:
+                # 纯生成模式：不计算损失，只生成文本
+                with torch.no_grad():
+                    generated_texts = self.findings_decoder.generate(
+                        visual_features=visual_features,
+                        history_encoding=history,
+                    )
+                return {"generated_texts": generated_texts}
+
+        elif phase == "FINETUNE_BERT":
+            # 第一步：使用目标检测器提取区域特征（冻结）
+            with torch.no_grad():
+                detection_outputs = self.object_detector(
+                    image,
+                    bbox_targets,
+                    current_epoch=current_epoch,
+                    total_epochs=total_epochs,
+                )
+                region_features = detection_outputs["region_features"]
+                region_detected = detection_outputs["region_detected"]
+
+            # 第二步：通过ViT处理区域特征（冻结）
+            with torch.no_grad():
+                image_encoder_outputs = self.image_encoder(
+                    region_features, 
+                    region_detected=region_detected, 
+                    image_labels=label,
+                    phase=phase,
+                    use_moe=False
+                )
+ 
+            # 获取ViT的最后一层隐藏层输出
+            visual_features = image_encoder_outputs[
+                "final_region_features"
+            ]  # [B, num_tokens, hidden_size]
+
+            # 第三步：通过BERT解码器进行文本生成（可训练）
             if mode == "train":
                 # 训练模式：使用findings计算损失
                 outputs = self.findings_decoder(

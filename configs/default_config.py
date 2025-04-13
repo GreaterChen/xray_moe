@@ -6,7 +6,7 @@
 
 class DefaultConfig:
     # Debug模式
-    DEBUG = False
+    DEBUG = True
 
     # 数据目录设置
     ROOT_DIR = "/path/to/xray_moe/"  # 需要在local_config中覆盖
@@ -29,7 +29,7 @@ class DefaultConfig:
     KW_TGT = ["findings", "label"]
 
     # 训练设置
-    PHASE = "FINETUNE_LLAMA"
+    PHASE = "FINETUNE_BERT"
     MODE = "TRAIN"
     USE_MIXED_PRECISION = True
     TRAIN_BATCH_SIZE = 16

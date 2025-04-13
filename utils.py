@@ -265,7 +265,7 @@ def train(
                     label=True,
                     bbox=True,
                 )
-            elif config.PHASE == "FINETUNE_MISTRAL" or config.PHASE == "FINETUNE_LLAMA":
+            elif config.PHASE == "FINETUNE_MISTRAL" or config.PHASE == "FINETUNE_LLAMA" or config.PHASE == "FINETUNE_BERT":
                 source, target, _ = prepare_batch_data(
                     config,
                     batch,
@@ -277,7 +277,7 @@ def train(
                     bbox=True,
                 )
             else:
-                pass
+                raise ValueError("Invalid phase")
         # 转换为kwargs格式
         source = args_to_kwargs(source)
         target = args_to_kwargs(target)
@@ -290,7 +290,7 @@ def train(
         optimizer.zero_grad()
 
         # 根据不同阶段执行不同的训练逻辑
-        if config.PHASE == "FINETUNE_MISTRAL" or config.PHASE == "FINETUNE_LLAMA":
+        if config.PHASE == "FINETUNE_MISTRAL" or config.PHASE == "FINETUNE_LLAMA" or config.PHASE == "FINETUNE_BERT":
             with torch.amp.autocast("cuda", enabled=scaler is not None):
                 # 直接将所有数据分发给模型，由模型内部处理各组件间的逻辑
                 output = data_distributor(model, source)
@@ -309,7 +309,7 @@ def train(
                 elif config.PHASE == "PRETRAIN_VIT":
                     loss = output["ltc_loss"] + output["cls_loss"]
                 else:
-                    pass
+                    raise ValueError("Invalid phase")
 
         running_loss += loss.item()
 
@@ -1949,7 +1949,7 @@ def test_llm(
     epoch=None,
     writer=None,
 ):
-    """测试llm模型的生成效果
+    """测试语言模型的生成效果（支持MISTRAL/LLAMA/BERT）
 
     Args:
         config: 配置对象
@@ -1981,7 +1981,7 @@ def test_llm(
     labels_list = []
 
     # 设置进度条
-    prog_bar = tqdm(data_loader, desc=f"{mode} Mistral Evaluation")
+    prog_bar = tqdm(data_loader, desc=f"{mode} Evaluation")
 
     with torch.no_grad():
         # 遍历批次数据
@@ -1990,6 +1990,15 @@ def test_llm(
             image_paths_list.extend(batch["image_path"])
             if "label" in batch:
                 labels_list.extend(batch["label"].cpu().numpy().tolist())
+                
+            # 在这里先保存原始的findings字符串
+            original_findings = batch["findings"]
+            # 确保findings是字符串列表
+            if isinstance(original_findings, list) and all(isinstance(f, str) for f in original_findings):
+                target_texts = original_findings.copy()  # 直接使用原始字符串列表
+            else:
+                # 如果不是字符串列表，初始化为空列表，后续再填充
+                target_texts = []
 
             # 准备批次数据
             source, target, _ = prepare_batch_data(
@@ -2019,32 +2028,69 @@ def test_llm(
                 source["image"].size(0) if "image" in source else len(batch["findings"])
             )
 
-            # 记录损失
-            if hasattr(outputs, "loss"):
+            # 记录损失（如果有）
+            if (hasattr(outputs, "loss") and outputs.loss is not None):
                 loss = outputs.loss
                 running_loss += loss.item() * batch_size
                 total_samples += batch_size
 
-            # 生成报告文本
-            generated_texts = outputs['generated_texts']
+            # 提取生成的文本
+            if isinstance(outputs, dict) and "generated_texts" in outputs:
+                # MOE模型的输出格式
+                generated_texts = outputs["generated_texts"]
+            elif hasattr(outputs, "decoded_texts"):
+                # BERT模型的输出格式
+                generated_texts = outputs.decoded_texts
+            else:
+                logger.error(f"不支持的输出格式: {type(outputs)}")
+                generated_texts = ["生成失败"] * batch_size
 
-            # 提取真实报告文本
-            target_texts = []
-            for idx in range(batch_size):
-                if "findings" in batch and isinstance(batch["findings"][idx], str):
-                    target_texts.append(batch["findings"][idx])
+            # 如果target_texts为空（不是字符串列表的情况），则需要解码获取
+            if not target_texts:
+                # 检查batch["findings"]是否为字符串列表
+                if "findings" in batch and isinstance(batch["findings"], list) and len(batch["findings"]) > 0 and isinstance(batch["findings"][0], str):
+                    target_texts = batch["findings"]
+                # 检查batch["findings"]是否为BatchEncoding类型
+                elif "findings" in batch and hasattr(batch["findings"], "input_ids"):
+                    # 处理BatchEncoding对象
+                    target_texts = []
+                    for idx in range(batch_size):
+                        findings_ids = batch["findings"].input_ids[idx]
+                        if hasattr(model.findings_decoder, "tokenizer"):
+                            tokenizer = model.findings_decoder.tokenizer
+                            target_texts.append(
+                                tokenizer.decode(findings_ids, skip_special_tokens=True)
+                            )
+                        elif hasattr(model.findings_decoder, "decoder") and hasattr(model.findings_decoder.decoder, "tokenizer"):
+                            tokenizer = model.findings_decoder.decoder.tokenizer
+                            target_texts.append(
+                                tokenizer.decode(findings_ids, skip_special_tokens=True)
+                            )
+                        else:
+                            target_texts.append(f"[BatchEncoding]")
+                # 检查target中的findings
                 elif "findings" in target and "input_ids" in target["findings"]:
                     # 如果findings是已编码的token IDs，进行解码
-                    findings_ids = target["findings"]["input_ids"][idx]
-                    # 使用模型内部的tokenizer解码
-                    tokenizer = getattr(model.findings_decoder, "tokenizer", None)
-                    if tokenizer:
-                        target_texts.append(
-                            tokenizer.decode(findings_ids, skip_special_tokens=True)
-                        )
-                    else:
-                        # 如果无法直接访问tokenizer，可以将ID保存为字符串
-                        target_texts.append(f"[IDs:{findings_ids.tolist()}]")
+                    target_texts = []
+                    for idx in range(batch_size):
+                        findings_ids = target["findings"]["input_ids"][idx]
+                        # 尝试使用模型内部的tokenizer解码
+                        if hasattr(model.findings_decoder, "tokenizer"):
+                            tokenizer = model.findings_decoder.tokenizer
+                            target_texts.append(
+                                tokenizer.decode(findings_ids, skip_special_tokens=True)
+                            )
+                        elif hasattr(model.findings_decoder, "decoder") and hasattr(model.findings_decoder.decoder, "tokenizer"):
+                            # 针对BERT解码器的特殊处理
+                            tokenizer = model.findings_decoder.decoder.tokenizer
+                            target_texts.append(
+                                tokenizer.decode(findings_ids, skip_special_tokens=True)
+                            )
+                        else:
+                            # 如果无法直接访问tokenizer，可以将ID保存为字符串
+                            target_texts.append(f"[IDs:{findings_ids.tolist()}]")
+                else:
+                    target_texts = ["[无目标文本]"] * batch_size
 
             # 收集预测结果和真实值
             all_preds.extend(generated_texts)
@@ -2093,51 +2139,16 @@ def test_llm(
     results_df.to_csv(os.path.join(results_dir, csv_filename), index=False)
     logger.info(f"结果已保存到CSV文件: {csv_filename}")
     
-    # 计算并保存评估指标
-    metrics_data = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "mode": mode,
-        "epoch": epoch_str,
-        "loss": avg_loss,
-    }
-
-    # 添加文本生成指标
-    for metric_name, value in report_metrics.items():
-        metrics_data[f"report_{metric_name}"] = value
-
-    # 保存评估指标，添加epoch信息
-    metrics_df = pd.DataFrame([metrics_data])
-    metrics_filename = f"{mode}_metrics_epoch_{epoch_str}.csv"
-    metrics_df.to_csv(os.path.join(results_dir, metrics_filename), index=False)
-    logger.info(f"评估指标已保存到CSV文件: {metrics_filename}")
-
-    # 记录到TensorBoard
+    # 如果有writer和epoch，记录到TensorBoard
     if writer is not None and epoch is not None:
+        for metric_name, value in report_metrics.items():
+            writer.add_scalar(f"{mode}/{metric_name}", value, epoch)
         writer.add_scalar(f"{mode}/loss", avg_loss, epoch)
-        for metric, value in report_metrics.items():
-            writer.add_scalar(f"{mode}/{metric}", value, epoch)
 
-        # 记录示例预测
-        if all_preds and all_targets:
-            num_examples = min(5, len(all_preds))
-            examples_text = ""
-            for i in range(num_examples):
-                if i < len(all_preds) and i < len(all_targets):
-                    examples_text += f"Example {i+1}:\n"
-                    examples_text += f"Target: {all_targets[i]}\n"
-                    examples_text += f"Pred: {all_preds[i]}\n\n"
-            writer.add_text(f"{mode}/examples", examples_text, epoch)
-
-    # 释放内存
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    # 构建返回结果，保持键名一致性
+    # 汇总结果
     result = {
         "report_generation_metrics": report_metrics,
         "loss": avg_loss,
-        "results_df": results_df,
-        "metrics_df": metrics_df,
     }
 
     return avg_loss, result
