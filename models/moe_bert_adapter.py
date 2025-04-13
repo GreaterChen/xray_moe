@@ -101,7 +101,7 @@ class MoEBertAdapter(nn.Module):
                 "temperature": temperature,
                 "top_p": top_p,
                 "repetition_penalty": repetition_penalty,
-                "num_beams": num_beams,
-                "early_stopping": num_beams > 1  # 只有当num_beams>1时设置early_stopping为True
+                "num_beams": num_beams
+                # early_stopping参数由decoder的generate方法根据num_beams自动设置
             }
         ) 

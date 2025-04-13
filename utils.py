@@ -120,6 +120,10 @@ def prepare_batch_data(
         batch: 输入的批次数据
         data_loader: 数据加载器
         device: 计算设备
+        findings: 是否处理findings字段
+        history: 是否处理history字段
+        label: 是否处理label字段
+        bbox: 是否处理bbox_targets字段
 
     Returns:
         source_data: 源数据字典
@@ -139,8 +143,12 @@ def prepare_batch_data(
     if history and "history" in batch:
         text_fields_to_process.append(("history", config.MAX_LEN_HISTORY))
 
-    # 优化: 预先创建tokenizer以避免多次创建
+    # 获取tokenizer并确保设置正确的padding_side
     tokenizer = data_loader.dataset.tokenizer
+    original_padding_side = tokenizer.padding_side
+    
+    # 为生成任务设置左侧padding
+    tokenizer.padding_side = 'left'
 
     # 批量处理文本字段
     for field, max_len in text_fields_to_process:
@@ -150,7 +158,7 @@ def prepare_batch_data(
         encoded = tokenizer(
             texts,
             max_length=max_len,
-            padding="longest",  # 只padding到批次中最长序列长度
+            padding="max_length",  # 使用max_length保持一致性
             truncation=True,
             return_tensors="pt",
         ).to(device)
@@ -158,6 +166,9 @@ def prepare_batch_data(
         batch[field] = encoded
         source[field] = encoded  # 直接使用同一个对象引用
         target[field] = encoded  # 直接使用同一个对象引用
+
+    # 恢复tokenizer原始padding_side设置
+    tokenizer.padding_side = original_padding_side
 
     # 优化: 一次性处理标签数据
     if label and "label" in batch:
@@ -633,16 +644,33 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
                     
         elif load_model == "decoder":
             print("加载报告生成解码器参数...")
-            # 提取以findings_decoder.开头的权重
+            # 提取解码器部分的权重
+            decoder_prefix = "findings_decoder.decoder."
+            
             filtered_state_dict = {}
 
             # 遍历checkpoint中的所有键
             for key, value in checkpoint_state_dict.items():
-                # 如果键以"findings_decoder."开头，则提取
-                if key.startswith("findings_decoder."):
-                    # 去掉"findings_decoder."前缀
-                    new_key = key[len("findings_decoder.") :]
+                # 如果键以decoder_prefix开头，则提取
+                if key.startswith(decoder_prefix):
+                    # 去掉decoder_prefix前缀
+                    new_key = key[len(decoder_prefix):]
                     filtered_state_dict[new_key] = value
+            
+            # 尝试使用 'findings_decoder.' 作为前缀 （兼容旧逻辑或 Mistral/Llama）
+            if not filtered_state_dict:
+                print(f"未找到前缀为 '{decoder_prefix}' 的键，尝试使用 'findings_decoder.' ...")
+                legacy_prefix = "findings_decoder."
+                for key, value in checkpoint_state_dict.items():
+                    if key.startswith(legacy_prefix):
+                        new_key = key[len(legacy_prefix):]
+                        filtered_state_dict[new_key] = value
+                        
+            if not filtered_state_dict:
+                print("警告：在检查点中未找到解码器权重！将使用随机初始化的权重。")
+                # 返回空字典，让模型使用初始权重
+                pass # filtered_state_dict 已经是 {} 了
+
         else:
             filtered_state_dict = checkpoint_state_dict
 

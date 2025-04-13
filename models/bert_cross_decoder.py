@@ -181,13 +181,8 @@ class BertCrossDecoder(nn.Module):
             
             # 如果提供了生成参数，将它们添加到参数字典中
             if generation_params:
-                # 确保num_beams和early_stopping参数一致
-                if "num_beams" in generation_params:
-                    num_beams = generation_params["num_beams"]
-                    # 如果未指定early_stopping，根据num_beams设置
-                    if "early_stopping" not in generation_params:
-                        generation_params["early_stopping"] = num_beams > 1
-                
+                # 早期版本中单独处理early_stopping的代码已移除
+                # 现在在generate方法中会根据num_beams自动设置early_stopping
                 params.update(generation_params)
                 
             return self.generate(**params)
@@ -204,6 +199,7 @@ class BertCrossDecoder(nn.Module):
         top_p=0.9,
         temperature=0.7,  # 添加温度参数
         repetition_penalty=1.0,
+        early_stopping=None,  # 添加early_stopping参数
     ):
         """
         根据历史编码和视觉特征生成文本
@@ -219,6 +215,7 @@ class BertCrossDecoder(nn.Module):
             top_p: 采样的概率阈值
             temperature: 采样的温度
             repetition_penalty: 重复惩罚系数
+            early_stopping: 是否提前停止生成（当所有束都生成了EOS标记时）
 
         Returns:
             generated_texts: 生成的文本列表
@@ -234,7 +231,7 @@ class BertCrossDecoder(nn.Module):
         # 准备交叉注意力参数
         model_kwargs = {
             "encoder_hidden_states": visual_features,
-            "encoder_attention_mask": extended_vis_attention,
+            "encoder_attention_mask": visual_attention_mask,  # 使用原始的attention_mask而不是扩展版本
         }
         
         # 处理Mask
@@ -244,13 +241,17 @@ class BertCrossDecoder(nn.Module):
         history_length = input_ids.size(1)
         actual_max_length = min(max_length, history_length + 150)  # 确保不超过模型最大长度
         
+        # 如果early_stopping为None，根据num_beams设置默认值
+        if early_stopping is None:
+            early_stopping = num_beams > 1
+        
         # 配置生成参数
         generation_kwargs = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "max_length": actual_max_length,
             "num_beams": num_beams,  # 无论采样与否，都使用设定的beam数量
-            "early_stopping": num_beams > 1,  # 只有当num_beams>1时设置early_stopping为True
+            "early_stopping": early_stopping,  # 使用传入的early_stopping参数
             "eos_token_id": self.tokenizer.sep_token_id,
             "pad_token_id": self.tokenizer.pad_token_id,
             "repetition_penalty": repetition_penalty,
