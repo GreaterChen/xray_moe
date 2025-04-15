@@ -26,13 +26,13 @@ class BertCrossDecoder(nn.Module):
         # 使用传入的tokenizer或创建一个新的
         if tokenizer:
             self.tokenizer = tokenizer
-            # 确保padding_side为left，这对解码器很重要
-            self.tokenizer.padding_side = 'left'
+            # 确保padding_side为right，与BERT预训练一致
+            self.tokenizer.padding_side = 'right'
         else:
             self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", local_files_only=True)
             self.tokenizer.add_special_tokens({"bos_token": "[DEC]"})
-            # 设置padding_side为left，这对解码器架构很重要
-            self.tokenizer.padding_side = 'left'
+            # 设置padding_side为right，与BERT预训练一致
+            self.tokenizer.padding_side = 'right'
         
         # 加载BERT配置，启用交叉注意力
         bert_config_path = os.path.join(config.ROOT_DIR if hasattr(config, 'ROOT_DIR') else '.', "configs/bert_config.json")
@@ -59,7 +59,7 @@ class BertCrossDecoder(nn.Module):
         self.visual_projection = nn.Linear(hidden_dim, hidden_dim)
         self.text_projection = nn.Linear(hidden_dim, hidden_dim)
 
-    def forward(self, visual_features, history, target_text=None, mode="train", generation_params=None):
+    def forward(self, visual_features, history, target_text=None, mode="train", generation_params=None, use_history=False):
         """
         前向传播
         
@@ -69,6 +69,7 @@ class BertCrossDecoder(nn.Module):
             target_text: 目标生成文本编码 {input_ids, attention_mask} 或原始文本列表
             mode: 训练模式 "train" 或 "generate"
             generation_params: 生成参数字典，用于mode="generate"
+            use_history: 是否使用历史文本作为prompt，如为False则仅使用视觉特征
             
         Returns:
             如果mode="train"：返回 logits, hidden_states, decoded_texts, loss_lm
@@ -130,17 +131,30 @@ class BertCrossDecoder(nn.Module):
             else:
                 raise ValueError(f"目标文本必须是BatchEncoding、编码字典或文本列表，当前类型: {type(target_text)}")
             
-            # 创建用于语言建模的完整序列：将历史文本和目标文本拼接
-            full_input_ids = torch.cat([history_input_ids, target_input_ids[:, 1:]], dim=1)  # 跳过目标的第一个token(CLS)
-            
-            # 创建注意力掩码
-            full_attention_mask = torch.cat([history_attention_mask, target_attention_mask[:, 1:]], dim=1)
-            
-            # 创建标签：历史部分设为-100(不计算损失)，目标部分保持原样
-            labels = torch.full_like(full_input_ids, -100)
-            # 目标文本位置的标签设置为目标token ID(从历史长度位置开始)
-            history_len = history_input_ids.shape[1]
-            labels[:, history_len:] = target_input_ids[:, 1:]  # 跳过目标文本的第一个token(CLS)
+            if use_history:
+                # 使用历史作为prompt：将历史文本和目标文本拼接
+                full_input_ids = torch.cat([history_input_ids, target_input_ids[:, 1:]], dim=1)  # 跳过目标的第一个token(CLS)
+                full_attention_mask = torch.cat([history_attention_mask, target_attention_mask[:, 1:]], dim=1)
+                
+                # 创建标签：历史部分设为-100(不计算损失)，目标部分保持原样
+                labels = torch.full_like(full_input_ids, -100)
+                # 目标文本位置的标签设置为目标token ID(从历史长度位置开始)
+                history_len = history_input_ids.shape[1]
+                labels[:, history_len:] = target_input_ids[:, 1:]  # 跳过目标文本的第一个token(CLS)
+            else:
+                # 不使用历史作为prompt，仅使用视觉特征
+                # 直接使用目标文本作为输入和标签
+                full_input_ids = target_input_ids
+                full_attention_mask = target_attention_mask
+                
+                # 创建标签：目标文本的所有token都计算损失
+                labels = target_input_ids.clone()
+                # 设置[PAD]位置的标签为-100，使模型不计算这些位置的损失
+                pad_positions = (full_input_ids == self.tokenizer.pad_token_id)
+                labels[pad_positions] = -100
+                
+                # 将[CLS]标记的标签设为-100（不计算损失）
+                labels[:, 0] = -100
             
             # 模型前向传播
             outputs = self.text_decoder(
@@ -148,7 +162,7 @@ class BertCrossDecoder(nn.Module):
                 attention_mask=full_attention_mask,
                 encoder_hidden_states=projected_visual,  # 视觉特征作为cross-attention的KV源
                 encoder_attention_mask=visual_attention_mask,
-                labels=labels,  # 历史部分不计算损失，只对目标部分计算
+                labels=labels,  # 根据use_history设置不同的标签
                 output_hidden_states=True,
                 return_dict=True,
             )
@@ -158,8 +172,14 @@ class BertCrossDecoder(nn.Module):
             hidden_states = outputs.hidden_states[-1]  # [batch_size, seq_len, hidden_dim]
             
             # 解码预测的文本
-            # 只取历史文本之后的部分进行解码，这才是模型实际生成的部分
-            pred_tokens = torch.argmax(logits[:, history_len:, :], dim=-1)
+            if use_history:
+                # 只取历史文本之后的部分进行解码
+                history_len = history_input_ids.shape[1]
+                pred_tokens = torch.argmax(logits[:, history_len:, :], dim=-1)
+            else:
+                # 取全部内容解码
+                pred_tokens = torch.argmax(logits, dim=-1)
+                
             decoded_texts = []
             for tokens in pred_tokens:
                 text = self.tokenizer.decode(tokens, skip_special_tokens=True)
@@ -171,18 +191,36 @@ class BertCrossDecoder(nn.Module):
             return logits, hidden_states, decoded_texts, loss_lm
             
         else:  # mode == "generate"
-            # 使用历史文本作为起始点生成内容
-            params = {
-                "history_input_ids": history_input_ids,
-                "history_attention_mask": history_attention_mask,
-                "visual_features": projected_visual,
-                "visual_attention_mask": visual_attention_mask,
-            }
+            # 生成模式也需要考虑是否使用历史文本
+            if use_history:
+                # 使用历史文本作为起始点生成内容
+                params = {
+                    "history_input_ids": history_input_ids,
+                    "history_attention_mask": history_attention_mask,
+                    "visual_features": projected_visual,
+                    "visual_attention_mask": visual_attention_mask,
+                }
+            else:
+                # 不使用历史文本，创建空起始序列
+                batch_size = visual_features.shape[0]
+                # 创建仅包含BOS token的输入
+                empty_input_ids = torch.full(
+                    (batch_size, 1),
+                    self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else self.tokenizer.cls_token_id,
+                    dtype=torch.long,
+                    device=device
+                )
+                empty_attention_mask = torch.ones_like(empty_input_ids)
+                
+                params = {
+                    "history_input_ids": empty_input_ids,
+                    "history_attention_mask": empty_attention_mask,
+                    "visual_features": projected_visual,
+                    "visual_attention_mask": visual_attention_mask,
+                }
             
             # 如果提供了生成参数，将它们添加到参数字典中
             if generation_params:
-                # 早期版本中单独处理early_stopping的代码已移除
-                # 现在在generate方法中会根据num_beams自动设置early_stopping
                 params.update(generation_params)
                 
             return self.generate(**params)
@@ -272,11 +310,13 @@ class BertCrossDecoder(nn.Module):
         # 解码生成的文本，去除历史文本部分，只保留新生成的内容
         generated_texts = []
         for i, tokens in enumerate(outputs):
-            # 获取当前批次样本的历史长度
-            curr_history_len = history_length
+            # 获取当前批次样本的实际历史长度 (根据attention mask)
+            # 由于现在使用右侧填充，history_attention_mask中的1表示实际内容
+            actual_history_len = torch.sum(history_attention_mask[i]).item()
             
             # 只解码历史之后生成的内容
-            generated_part = tokens[curr_history_len:]
+            # outputs 包含了输入的 history_input_ids，所以从 actual_history_len 开始截取
+            generated_part = tokens[actual_history_len:]
             
             # 解码生成的部分
             text = self.tokenizer.decode(generated_part, skip_special_tokens=True)

@@ -486,17 +486,17 @@ if __name__ == "__main__":
     # 统一处理所有微调阶段(MISTRAL/LLAMA/BERT)
     elif config.PHASE.startswith("FINETUNE_"):
         # 微调阶段
-        if config.CHECKPOINT_PATH_FROM: # TODO 可能不兼容所有模型
+        if config.DECODER_CHECKPOINT_PATH_FROM:
             if config.PHASE == "FINETUNE_LLAMA":
                 # LLAMA使用特殊的加载器
-                _, _ = load(config.CHECKPOINT_PATH_FROM, model.findings_decoder, optimizer, scheduler, load_model="decoder")
+                _, _ = load(config.DECODER_CHECKPOINT_PATH_FROM, model.findings_decoder, optimizer, scheduler, load_model="decoder")
             elif config.PHASE == "FINETUNE_BERT":
                 # BERT使用标准加载器，但可以指定只加载decoder部分
-                _, _ = load(config.CHECKPOINT_PATH_FROM, model.findings_decoder.decoder, optimizer, scheduler, load_model="decoder")
+                _, _ = load(config.DECODER_CHECKPOINT_PATH_FROM, model.findings_decoder.decoder, optimizer, scheduler, load_model="decoder")
             else:
                 # MISTRAL使用标准加载器
-                _, _ = load(config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler)
-            logger.info(f"从 {config.CHECKPOINT_PATH_FROM} 加载模型权重")
+                _, _ = load(config.DECODER_CHECKPOINT_PATH_FROM, model, optimizer, scheduler)
+            logger.info(f"从 {config.DECODER_CHECKPOINT_PATH_FROM} 加载模型权重")
 
         criterion = None
         scaler = torch.amp.GradScaler() if config.USE_MIXED_PRECISION else None
@@ -524,7 +524,7 @@ if __name__ == "__main__":
             # 测试
             test_loss, result = test_llm(
                 config=config,
-                data_loader=val_loader,
+                data_loader=test_loader,
                 model=model,
                 logger=logger,
                 metric_ftns=compute_scores,
@@ -580,13 +580,13 @@ if __name__ == "__main__":
             device="cuda",
         )
 
-        # 打印最终结果
-        logger.info(
-            f"验证集 - BLEU-4: {final_val_result['report_generation_metrics']['bleu4']:.4f}, ROUGE-L: {final_val_result['report_generation_metrics']['rougeL']:.4f}"
-        )
-        logger.info(
-            f"测试集 - BLEU-4: {final_test_result['report_generation_metrics']['bleu4']:.4f}, ROUGE-L: {final_test_result['report_generation_metrics']['rougeL']:.4f}"
-        )
+        # # 打印最终结果
+        # logger.info(
+        #     f"验证集 - BLEU-4: {final_val_result['report_generation_metrics']['bleu4']:.4f}, ROUGE-L: {final_val_result['report_generation_metrics']['rougeL']:.4f}"
+        # )
+        # logger.info(
+        #     f"测试集 - BLEU-4: {final_test_result['report_generation_metrics']['bleu4']:.4f}, ROUGE-L: {final_test_result['report_generation_metrics']['rougeL']:.4f}"
+        # )
 
     elif config.MODE == "TEST":
         # 确保提供了checkpoint路径

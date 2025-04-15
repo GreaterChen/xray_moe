@@ -147,8 +147,8 @@ def prepare_batch_data(
     tokenizer = data_loader.dataset.tokenizer
     original_padding_side = tokenizer.padding_side
     
-    # 为生成任务设置左侧padding
-    tokenizer.padding_side = 'left'
+    # 确保使用右侧padding，与BERT预训练一致
+    tokenizer.padding_side = 'right'
 
     # 批量处理文本字段
     for field, max_len in text_fields_to_process:
@@ -688,11 +688,11 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
     if len(unexpected_keys) > 0:
         print(f"Unexpected keys: {unexpected_keys}")
 
-    if optimizer != None:
-        try:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        except:  # Input optimizer doesn't fit the checkpoint one --> should be ignored
-            print("Cannot load the optimizer")
+    # if optimizer != None:
+    #     try:
+    #         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    #     except:  # Input optimizer doesn't fit the checkpoint one --> should be ignored
+    #         print("Cannot load the optimizer")
 
     return epoch, stats
 
