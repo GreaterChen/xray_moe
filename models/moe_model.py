@@ -69,11 +69,9 @@ class MOE(nn.Module):
                 region_features, region_detected=region_detected, image_labels=label, use_moe=False
             )
 
-            # 获取ViT的输出
-            cls_token = image_encoder_outputs["cls_output"]  # [B, hidden_size]
-            visual_tokens = image_encoder_outputs[
-                "final_region_features"
-            ]  # [B, 29, hidden_size]
+            # 获取ViT的完整输出，在需要时通过索引提取cls_token
+            visual_features = image_encoder_outputs["visual_features"]  # [B, 1+num_regions, hidden_size]
+            cls_token = visual_features[:, 0]  # 提取cls_token [B, hidden_size]
 
             if mode == "train":
                 # 使用CXR-BERT编码findings，获取text_cls_token
@@ -185,10 +183,8 @@ class MOE(nn.Module):
                 use_moe=False
             )
  
-            # 获取ViT的最后一层隐藏层输出
-            visual_features = image_encoder_outputs[
-                "final_region_features"
-            ]  # [B, num_tokens, hidden_size]
+            # 直接使用ViT输出的完整视觉特征（已包含cls_token和region特征）
+            visual_features = image_encoder_outputs["visual_features"]  # [B, 1+num_regions, hidden_size]
 
             # 第三步：通过生成模型进行文本生成（可训练）
             if mode == "train":

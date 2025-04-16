@@ -79,7 +79,8 @@ class BertCrossDecoder(nn.Module):
         device = visual_features.device
         
         # 将视觉特征映射到decoder隐藏维度
-        projected_visual = self.visual_projection(visual_features)
+        # projected_visual = self.visual_projection(visual_features)
+        projected_visual = visual_features
         
         # 创建视觉特征的attention mask
         visual_attention_mask = torch.ones(
@@ -98,7 +99,7 @@ class BertCrossDecoder(nn.Module):
             # 编码文本列表
             history_encoding = self.tokenizer(
                 history,
-                max_length=196,
+                max_length=100,
                 padding='max_length',
                 truncation=True,
                 return_tensors='pt',
@@ -107,6 +108,16 @@ class BertCrossDecoder(nn.Module):
             history_attention_mask = history_encoding.attention_mask
         else:
             raise ValueError(f"历史文本必须是BatchEncoding、编码字典或文本列表，当前类型: {type(history)}")
+        
+        # 如果不使用历史文本，创建一个只包含起始token的序列
+        if not use_history:
+            history_input_ids = torch.full(
+                (batch_size, 1),
+                self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else self.tokenizer.cls_token_id,
+                dtype=torch.long,
+                device=device
+            )
+            history_attention_mask = torch.ones_like(history_input_ids)
             
         if mode == "train" and target_text is not None:
             # 处理目标文本
@@ -191,33 +202,14 @@ class BertCrossDecoder(nn.Module):
             return logits, hidden_states, decoded_texts, loss_lm
             
         else:  # mode == "generate"
-            # 生成模式也需要考虑是否使用历史文本
-            if use_history:
-                # 使用历史文本作为起始点生成内容
-                params = {
-                    "history_input_ids": history_input_ids,
-                    "history_attention_mask": history_attention_mask,
-                    "visual_features": projected_visual,
-                    "visual_attention_mask": visual_attention_mask,
-                }
-            else:
-                # 不使用历史文本，创建空起始序列
-                batch_size = visual_features.shape[0]
-                # 创建仅包含BOS token的输入
-                empty_input_ids = torch.full(
-                    (batch_size, 1),
-                    self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else self.tokenizer.cls_token_id,
-                    dtype=torch.long,
-                    device=device
-                )
-                empty_attention_mask = torch.ones_like(empty_input_ids)
-                
-                params = {
-                    "history_input_ids": empty_input_ids,
-                    "history_attention_mask": empty_attention_mask,
-                    "visual_features": projected_visual,
-                    "visual_attention_mask": visual_attention_mask,
-                }
+            # 准备生成参数
+            # history_input_ids和history_attention_mask已经根据use_history处理好了
+            params = {
+                "history_input_ids": history_input_ids,
+                "history_attention_mask": history_attention_mask,
+                "visual_features": projected_visual,
+                "visual_attention_mask": visual_attention_mask,
+            }
             
             # 如果提供了生成参数，将它们添加到参数字典中
             if generation_params:
@@ -232,12 +224,11 @@ class BertCrossDecoder(nn.Module):
         visual_features,
         visual_attention_mask,
         num_beams=3,
-        max_length=100,
-        do_sample=True,  # 默认开启采样
+        max_new_tokens=100,
+        do_sample=True,
         top_p=0.9,
-        temperature=0.7,  # 添加温度参数
+        temperature=0.7,
         repetition_penalty=1.0,
-        early_stopping=None,  # 添加early_stopping参数
     ):
         """
         根据历史编码和视觉特征生成文本
@@ -248,59 +239,37 @@ class BertCrossDecoder(nn.Module):
             visual_features: 视觉特征
             visual_attention_mask: 视觉特征的attention_mask
             num_beams: beam search的宽度
-            max_length: 生成的最大长度
-            do_sample: 是否使用采样
+            max_new_tokens: 生成的最大新token数量
             top_p: 采样的概率阈值
             temperature: 采样的温度
             repetition_penalty: 重复惩罚系数
-            early_stopping: 是否提前停止生成（当所有束都生成了EOS标记时）
 
         Returns:
             generated_texts: 生成的文本列表
         """
         # 准备生成所需的输入
         input_ids = history_input_ids
-        
-        # 处理扩展后的视觉特征
-        extended_vis_attention = visual_attention_mask.view(
-            visual_attention_mask.size(0), 1, 1, visual_attention_mask.size(1)
-        ).expand(-1, self.text_decoder.config.num_attention_heads, -1, -1)
+        attention_mask = history_attention_mask
         
         # 准备交叉注意力参数
         model_kwargs = {
             "encoder_hidden_states": visual_features,
-            "encoder_attention_mask": visual_attention_mask,  # 使用原始的attention_mask而不是扩展版本
+            "encoder_attention_mask": visual_attention_mask,
         }
-        
-        # 处理Mask
-        attention_mask = history_attention_mask
-        
-        # 计算实际需要生成的最大长度（考虑已有的历史长度）
-        history_length = input_ids.size(1)
-        actual_max_length = min(max_length, history_length + 150)  # 确保不超过模型最大长度
-        
-        # 如果early_stopping为None，根据num_beams设置默认值
-        if early_stopping is None:
-            early_stopping = num_beams > 1
         
         # 配置生成参数
         generation_kwargs = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
-            "max_length": actual_max_length,
-            "num_beams": num_beams,  # 无论采样与否，都使用设定的beam数量
-            "early_stopping": early_stopping,  # 使用传入的early_stopping参数
+            "max_new_tokens": max_new_tokens,
+            "num_beams": num_beams,
             "eos_token_id": self.tokenizer.sep_token_id,
             "pad_token_id": self.tokenizer.pad_token_id,
             "repetition_penalty": repetition_penalty,
-            "do_sample": do_sample,  # 控制是否采样
+            "do_sample": do_sample,
+            "top_p": top_p
         }
         
-        # 只有在do_sample=True时才设置top_p和temperature
-        if do_sample:
-            generation_kwargs["top_p"] = top_p
-            generation_kwargs["temperature"] = temperature
-            
         # 添加交叉注意力参数
         generation_kwargs.update(model_kwargs)
         
@@ -310,13 +279,16 @@ class BertCrossDecoder(nn.Module):
         # 解码生成的文本，去除历史文本部分，只保留新生成的内容
         generated_texts = []
         for i, tokens in enumerate(outputs):
-            # 获取当前批次样本的实际历史长度 (根据attention mask)
-            # 由于现在使用右侧填充，history_attention_mask中的1表示实际内容
-            actual_history_len = torch.sum(history_attention_mask[i]).item()
-            
-            # 只解码历史之后生成的内容
-            # outputs 包含了输入的 history_input_ids，所以从 actual_history_len 开始截取
-            generated_part = tokens[actual_history_len:]
+            # 获取当前批次样本的实际历史长度
+            actual_history_len = history_input_ids.size(1)
+            if actual_history_len > 1:  # 如果使用了实际的历史文本
+                # 由于现在使用右侧填充，history_attention_mask中的1表示实际内容
+                actual_history_len = torch.sum(history_attention_mask[i]).item()
+                # 只解码历史之后生成的内容
+                generated_part = tokens[actual_history_len:]
+            else:
+                # 如果只有起始token，直接跳过第一个token
+                generated_part = tokens[1:]
             
             # 解码生成的部分
             text = self.tokenizer.decode(generated_part, skip_special_tokens=True)

@@ -34,6 +34,7 @@ class MoEBertAdapter(nn.Module):
         findings,
         attention_mask=None,
         labels=None,
+        use_history=False,  # 添加use_history参数
     ):
         """
         适配MOE模型的前向传播接口
@@ -44,13 +45,15 @@ class MoEBertAdapter(nn.Module):
             findings: 报告文本编码 {input_ids, attention_mask} 或 BatchEncoding
             attention_mask: 注意力掩码 [batch_size, seq_len]
             labels: 标签 [batch_size, seq_len]
+            use_history: 是否使用历史文本作为prompt，如为False则仅使用视觉特征
         """
         # 调用BERT交叉解码器
         logits, hidden_states, decoded_texts, loss = self.decoder(
             visual_features=visual_features,
             history=history_encoding,
             target_text=findings,
-            mode="train"
+            mode="train",
+            use_history=use_history  # 传递use_history参数
         )
         
         # 构造类似于Llama/Mistral模型输出的格式
@@ -96,12 +99,11 @@ class MoEBertAdapter(nn.Module):
             history=history_encoding,
             mode="generate", 
             generation_params={
-                "max_length": max_new_tokens + history_encoding.input_ids.size(1),  # 添加历史长度
-                "do_sample": do_sample,
+                "max_new_tokens": max_new_tokens,
                 "temperature": temperature,
+                "do_sample": do_sample,
                 "top_p": top_p,
                 "repetition_penalty": repetition_penalty,
                 "num_beams": num_beams
-                # early_stopping参数由decoder的generate方法根据num_beams自动设置
             }
         ) 

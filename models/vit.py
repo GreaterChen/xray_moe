@@ -294,7 +294,7 @@ class MedicalVisionTransformer(nn.Module):
         hidden_states = x
         for i, layer_module in enumerate(self.encoder.layer):
             # 在FINETUNE阶段，使用MOE（如果启用）
-            if phase in ["FINETUNE_MISTRAL", "FINETUNE_LLAMA"] and i % 2 == 0 and use_moe:
+            if phase in ["FINETUNE_MISTRAL", "FINETUNE_LLAMA", "FINETUNE_BERT"] and i % 2 == 0 and use_moe:
                 # 先应用layernorm_before，再使用原始注意力机制
                 normalized_hidden_states = layer_module.layernorm_before(hidden_states)
                 attention_output = layer_module.attention(normalized_hidden_states)[0]
@@ -426,9 +426,7 @@ class MedicalVisionTransformer(nn.Module):
 
         # 最终输出
         final_hidden_states = self.layernorm(hidden_states)
-        final_cls_output = final_hidden_states[:, 0]  # CLS token输出，用于对比学习
-        final_region_features = final_hidden_states[:, 1:]  # 区域特征输出
-
+        
         # 计算损失（如果提供了标签）
         loss = None
         if image_labels is not None and len(all_disease_preds) > 0:
@@ -449,6 +447,5 @@ class MedicalVisionTransformer(nn.Module):
             "loss": loss,
             "disease_preds": final_preds,  # 用于路由的疾病预测
             "final_disease_preds": final_preds,
-            "cls_output": final_cls_output, 
-            "final_region_features": final_region_features,
+            "visual_features": final_hidden_states,  # 完整的视觉特征 [B, 1+num_regions, hidden_size]
         }
