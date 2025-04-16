@@ -176,15 +176,14 @@ class MOE(nn.Module):
                 region_features = detection_outputs["region_features"]
                 region_detected = detection_outputs["region_detected"]
 
-            # 第二步：通过ViT处理区域特征（冻结）
-            with torch.no_grad():
-                image_encoder_outputs = self.image_encoder(
-                    region_features, 
-                    region_detected=region_detected, 
-                    image_labels=label,
-                    phase=phase,  # 传递phase参数给ViT
-                    use_moe=False
-                )
+            # 第二步：通过ViT处理区域特征（不再冻结）
+            image_encoder_outputs = self.image_encoder(
+                region_features, 
+                region_detected=region_detected, 
+                image_labels=label,
+                phase=phase,  # 传递phase参数给ViT
+                use_moe=False
+            )
  
             # 获取ViT的最后一层隐藏层输出
             visual_features = image_encoder_outputs[

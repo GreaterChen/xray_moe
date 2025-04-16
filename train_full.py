@@ -204,13 +204,14 @@ if __name__ == "__main__":
             # 冻结前两个阶段的模型参数
             for param in model.object_detector.parameters():
                 param.requires_grad = False
-            for param in model.image_encoder.parameters():
-                param.requires_grad = False
+            # 注释掉冻结ViT的代码
+            # for param in model.image_encoder.parameters():
+            #     param.requires_grad = False
 
             # 计算每个模块的参数量
             module_parameters = {
                 "Enhanced FastRCNN (frozen)": count_parameters(enhanced_rcnn),
-                "ViT (frozen)": count_parameters(vit_model),
+                "ViT (trainable)": count_parameters(vit_model),
                 "Mistral Generator": count_parameters(mistral_model),
             }
             
@@ -255,13 +256,14 @@ if __name__ == "__main__":
             # 冻结前两个阶段的模型参数
             for param in model.object_detector.parameters():
                 param.requires_grad = False
-            for param in model.image_encoder.parameters():
-                param.requires_grad = False
+            # 注释掉冻结ViT的代码
+            # for param in model.image_encoder.parameters():
+            #     param.requires_grad = False
 
             # 计算每个模块的参数量
             module_parameters = {
                 "Enhanced FastRCNN (frozen)": count_parameters(enhanced_rcnn),
-                "ViT (frozen)": count_parameters(vit_model),
+                "ViT (trainable)": count_parameters(vit_model),
                 "Llama 3.2 3B Generator": count_parameters(llama_model),
             }
         # 创建MOE模型
@@ -308,13 +310,14 @@ if __name__ == "__main__":
             # 冻结前两个阶段的模型参数
             for param in model.object_detector.parameters():
                 param.requires_grad = False
-            for param in model.image_encoder.parameters():
-                param.requires_grad = False
+            # 注释掉冻结ViT的代码
+            # for param in model.image_encoder.parameters():
+            #     param.requires_grad = False
 
             # 计算每个模块的参数量
             module_parameters = {
                 "Enhanced FastRCNN (frozen)": count_parameters(enhanced_rcnn),
-                "ViT (frozen)": count_parameters(vit_model),
+                "ViT (trainable)": count_parameters(vit_model),
                 "BERT Decoder": count_parameters(bert_model),
             }
 
@@ -359,8 +362,8 @@ if __name__ == "__main__":
 
     # 在FINETUNE_MISTRAL或FINETUNE_LLAMA或FINETUNE_BERT阶段，只优化特定参数
     if config.PHASE.startswith("FINETUNE_"):
-        # 只优化解码器的参数
-        trainable_params = list(model.findings_decoder.parameters())
+        # 优化解码器的参数和ViT的参数
+        trainable_params = list(model.findings_decoder.parameters()) + list(model.image_encoder.parameters())
         optimizer = optim.AdamW(
             trainable_params,
             lr=config.LEARNING_RATE,

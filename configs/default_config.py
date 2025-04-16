@@ -32,7 +32,7 @@ class DefaultConfig:
     PHASE = "FINETUNE_BERT"
     MODE = "TRAIN"
     USE_MIXED_PRECISION = True
-    TRAIN_BATCH_SIZE = 64
+    TRAIN_BATCH_SIZE = 32
     VAL_BATCH_SIZE = 32
     NUM_WORKERS = 16
     EPOCHS = 30
