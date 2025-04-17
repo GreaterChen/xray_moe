@@ -3,6 +3,14 @@ import os
 import numpy as np
 import matplotlib
 
+# 添加以下代码来屏蔽特定警告
+import warnings
+from transformers import logging as hf_logging
+# 屏蔽Hugging Face的warning
+hf_logging.set_verbosity_error()  # 只显示错误，不显示警告
+# 也可以使用Python的warnings模块
+warnings.filterwarnings("ignore", message="A decoder-only architecture is being used, but right-padding was detected")
+
 matplotlib.use("Agg")  # 设置后端为Agg（非交互式）
 import matplotlib.pyplot as plt
 import sklearn.metrics as metrics
@@ -397,7 +405,7 @@ if __name__ == "__main__":
     # Load checkpoint if needed
     if config.CHECKPOINT_PATH_FROM:
         last_epoch, (best_metric, test_metric) = load(
-            config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler
+            config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler, None
         )
         logger.info(
             f"Reloaded from {config.CHECKPOINT_PATH_FROM}: Last Epoch {last_epoch}, Best Metric {best_metric}, Test Metric {test_metric}"
@@ -407,9 +415,6 @@ if __name__ == "__main__":
 
     # Training phase
     if config.PHASE == "TRAIN_DETECTION" or config.PHASE == "PRETRAIN_VIT":
-        if config.CHECKPOINT_PATH_FROM:
-            _, _ = load(config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler)
-
         criterion = None
         scaler = torch.amp.GradScaler("cuda")
 

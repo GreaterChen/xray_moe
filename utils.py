@@ -578,6 +578,16 @@ def infer_bert(
 def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
     if not os.path.exists(os.path.dirname(path)):
         os.makedirs(os.path.dirname(path))
+    
+    # 检查scheduler是否有state_dict方法
+    scheduler_state = None
+    if scheduler is not None:
+        try:
+            scheduler_state = scheduler.state_dict()
+        except AttributeError:
+            print("警告: scheduler没有state_dict方法，无法保存scheduler状态")
+            scheduler_state = None
+    
     torch.save(
         {
             # --- Model Statistics ---
@@ -588,7 +598,7 @@ def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
             "optimizer_state_dict": (
                 optimizer.state_dict() if optimizer != None else None
             ),
-            # 'scheduler_state_dict': scheduler.state_dict() if scheduler != None else None,
+            'scheduler_state_dict': scheduler_state,
         },
         path,
     )
@@ -688,11 +698,47 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
     if len(unexpected_keys) > 0:
         print(f"Unexpected keys: {unexpected_keys}")
 
-    # if optimizer != None:
-    #     try:
-    #         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    #     except:  # Input optimizer doesn't fit the checkpoint one --> should be ignored
-    #         print("Cannot load the optimizer")
+    if optimizer != None:
+        try:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        except:  # Input optimizer doesn't fit the checkpoint one --> should be ignored
+            print("Cannot load the optimizer")
+    
+    # 恢复scheduler状态
+    if scheduler is not None and epoch is not None:
+        try:
+            # 检查scheduler是否有load_state_dict方法
+            has_state_dict_method = hasattr(scheduler, 'load_state_dict')
+            
+            # 如果检查点包含scheduler状态，且scheduler支持state_dict，则直接加载
+            if "scheduler_state_dict" in checkpoint and checkpoint["scheduler_state_dict"] is not None and has_state_dict_method:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                print(f"成功加载scheduler状态")
+            else:
+                # 不能直接加载状态的原因
+                if not has_state_dict_method:
+                    print(f"当前scheduler不支持state_dict，将使用step模拟")
+                elif "scheduler_state_dict" not in checkpoint or checkpoint["scheduler_state_dict"] is None:
+                    print(f"检查点中没有scheduler状态，将使用step模拟")
+                
+                # 估算数据加载器的长度（每个epoch的batch数）
+                est_batches_per_epoch = 2500
+                
+                print(f"模拟scheduler调度到epoch {epoch}...")
+                print(f"提示：scheduler在每个batch都会被调用，我们将模拟调用到epoch {epoch}的最后一个batch")
+                
+                # 模拟每个epoch的所有batch
+                for e in range(epoch):
+                    # 模拟该epoch的最后一个batch
+                    # 这是一个简化，实际上我们应该模拟所有batch，但为了效率只模拟最后一个
+                    scheduler.step(cur_epoch=e, cur_step=est_batches_per_epoch-1)
+                
+                print(f"scheduler状态已恢复到接近epoch {epoch}的状态")
+                print(f"当前学习率：{optimizer.param_groups[0]['lr']}")
+        except Exception as e:
+            print(f"恢复scheduler状态失败: {e}")
+            print("继续训练，但scheduler状态可能不正确")
+            print("提示：您可以手动设置学习率：optimizer.param_groups[0]['lr'] = 您想要的学习率值")
 
     return epoch, stats
 
