@@ -143,8 +143,13 @@ class BertCrossDecoder(nn.Module):
                 raise ValueError(f"目标文本必须是BatchEncoding、编码字典或文本列表，当前类型: {type(target_text)}")
             
             if use_history:
+                # 直接将历史最后一个token(SEP)替换为PAD
+                history_input_ids[:, -1] = self.tokenizer.pad_token_id
+                history_attention_mask[:, -1] = 0
+                
                 # 使用历史作为prompt：将历史文本和目标文本拼接
-                full_input_ids = torch.cat([history_input_ids, target_input_ids[:, 1:]], dim=1)  # 跳过目标的第一个token(CLS)
+                # 跳过目标的第一个token(CLS)，确保拼接后只有一个有效的SEP标记
+                full_input_ids = torch.cat([history_input_ids, target_input_ids[:, 1:]], dim=1)
                 full_attention_mask = torch.cat([history_attention_mask, target_attention_mask[:, 1:]], dim=1)
                 
                 # 创建标签：历史部分设为-100(不计算损失)，目标部分保持原样
@@ -152,6 +157,11 @@ class BertCrossDecoder(nn.Module):
                 # 目标文本位置的标签设置为目标token ID(从历史长度位置开始)
                 history_len = history_input_ids.shape[1]
                 labels[:, history_len:] = target_input_ids[:, 1:]  # 跳过目标文本的第一个token(CLS)
+                
+                # 设置[PAD]位置的标签为-100，使模型不计算这些位置的损失
+                pad_positions = (full_input_ids == self.tokenizer.pad_token_id)
+                labels[pad_positions] = -100
+            
             else:
                 # 不使用历史作为prompt，仅使用视觉特征
                 # 直接使用目标文本作为输入和标签

@@ -193,6 +193,7 @@ class MOE(nn.Module):
                     visual_features=visual_features,
                     history_encoding=history,
                     findings=findings,
+                    use_history=True
                 )
                 return outputs
             else:
@@ -201,6 +202,7 @@ class MOE(nn.Module):
                     generated_texts = self.findings_decoder.generate(
                         visual_features=visual_features,
                         history_encoding=history,
+                        use_history=True
                     )
                 return {"generated_texts": generated_texts}
 

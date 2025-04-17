@@ -75,6 +75,7 @@ class MoEBertAdapter(nn.Module):
         top_p=0.9,
         repetition_penalty=1.0,
         num_beams=3,
+        use_history=False,  # 添加use_history参数
     ):
         """
         适配MOE模型的生成接口
@@ -105,5 +106,6 @@ class MoEBertAdapter(nn.Module):
                 "top_p": top_p,
                 "repetition_penalty": repetition_penalty,
                 "num_beams": num_beams
-            }
+            },
+            use_history=use_history  # 传递use_history参数
         ) 
