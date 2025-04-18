@@ -289,7 +289,10 @@ class MedicalVisionTransformer(nn.Module):
         # 跟踪每层输出和预测
         all_hidden_states = []
         all_disease_preds = []
-
+        
+        # 保存各层的分类结果，避免重复计算
+        layer_disease_predictions = {}
+        
         # 通过Transformer层
         hidden_states = x
         for i, layer_module in enumerate(self.encoder.layer):
@@ -308,10 +311,13 @@ class MedicalVisionTransformer(nn.Module):
                 # 获取区域特征（不含CLS token）用于疾病分类
                 region_hidden_states = attention_output[:, 1:, :]
                 
-                # 通过疾病分类器获取路由权重
-                with torch.no_grad():
-                    disease_preds = self.classifiers[i](region_hidden_states)  # [B, num_diseases]
-                    disease_probs = torch.sigmoid(disease_preds)  # [B, num_diseases]
+                # 进行分类预测（带梯度）
+                disease_preds = self.classifiers[i](region_hidden_states)  # [B, num_diseases]
+                disease_probs = torch.sigmoid(disease_preds)  # [B, num_diseases]
+                
+                # 保存分类结果到字典中，以便后续复用
+                layer_disease_predictions[i] = disease_preds
+                all_disease_preds.append(disease_preds)
                 
                 # 创建输出张量，初始化为0
                 batch_size, seq_len, hidden_dim = normalized_residual.shape
@@ -361,51 +367,46 @@ class MedicalVisionTransformer(nn.Module):
                 # 初始化最终输出为通用专家的加权输出
                 final_output = general_output * expert_weights[:, :, -1].unsqueeze(-1)
                 
-                # 6. 处理疾病专家 - 使用掩码批量处理
-                # 为每个疾病专家找出需要处理的所有token，然后批量处理
+                # 6. 疾病专家处理 - 批量处理有效的专家和token
+                # 找出所有激活的疾病专家
+                active_disease_experts = []
                 for d in range(self.num_diseases):
+                    if active_experts[:, :, d].sum() > 0:  # 只处理有激活的专家
+                        active_disease_experts.append(d)
+                
+                # 批量处理激活的专家
+                for d in active_disease_experts:
                     # 获取当前疾病专家的激活掩码
                     disease_mask = active_experts[:, :, d]  # [batch_size, seq_len]
                     
-                    # 检查是否有任何token需要该专家处理
-                    if disease_mask.sum() > 0:
-                        # 获取需要处理的token索引
-                        batch_indices, token_indices = torch.where(disease_mask > 0)
+                    # 获取需要处理的token索引
+                    batch_indices, token_indices = torch.where(disease_mask > 0)
+                    
+                    if len(batch_indices) > 0:
+                        # 收集所有需要处理的token
+                        selected_tokens = normalized_residual[batch_indices, token_indices]
+                        selected_intermediate = intermediate_output[batch_indices, token_indices]
+                        selected_base_output = base_output[batch_indices, token_indices]
                         
-                        # 如果有需要处理的token
-                        if len(batch_indices) > 0:
-                            # 收集所有需要处理的token
-                            selected_tokens = normalized_residual[batch_indices, token_indices].unsqueeze(0)
-                            selected_intermediate = intermediate_output[batch_indices, token_indices].unsqueeze(0)
-                            selected_base_output = base_output[batch_indices, token_indices].unsqueeze(0)
-                            
-                            # 获取当前疾病专家
-                            disease_expert = self.experts[f"layer_{i}"][d]
-                            
-                            # 批量应用专家
-                            selected_expert_output = disease_expert.compute_lora_output(
-                                selected_tokens, 
-                                selected_intermediate, 
-                                selected_base_output
-                            )
-                            selected_expert_output = selected_expert_output.squeeze(0)
-                            
-                            # 收集权重
-                            weights = expert_weights[batch_indices, token_indices, d]
-                            
-                            # 向量化更新最终输出 - 使用index_put_代替循环
-                            if len(batch_indices) > 0:  # 确保有数据要添加
-                                # 计算加权专家输出
-                                weighted_expert_output = selected_expert_output * weights.unsqueeze(-1)  # [N_selected, hidden_dim]
-                                
-                                # 将加权输出添加到最终输出 - 使用index_put_
-                                indices_tuple = (batch_indices, token_indices)
-                                final_output.index_put_(indices_tuple, weighted_expert_output, accumulate=True)
-                                
-                                # 注意：如果PyTorch版本不支持accumulate=True参数，可以使用以下替代方式：
-                                # delta_output = torch.zeros_like(final_output)
-                                # delta_output.index_put_(indices_tuple, weighted_expert_output)
-                                # final_output += delta_output
+                        # 获取当前疾病专家
+                        disease_expert = self.experts[f"layer_{i}"][d]
+                        
+                        # 批量应用专家 - 去除不必要的维度操作
+                        selected_expert_output = disease_expert.compute_lora_output(
+                            selected_tokens.unsqueeze(0), 
+                            selected_intermediate.unsqueeze(0), 
+                            selected_base_output.unsqueeze(0)
+                        ).squeeze(0)
+                        
+                        # 收集权重
+                        weights = expert_weights[batch_indices, token_indices, d]
+                        
+                        # 计算加权专家输出
+                        weighted_expert_output = selected_expert_output * weights.unsqueeze(-1)
+                        
+                        # 将加权输出添加到最终输出
+                        indices_tuple = (batch_indices, token_indices)
+                        final_output.index_put_(indices_tuple, weighted_expert_output, accumulate=True)
                 
                 # 应用第二个残差连接 (FFN输出 + 第一个残差连接的结果)
                 hidden_states = final_output + first_residual
@@ -416,23 +417,26 @@ class MedicalVisionTransformer(nn.Module):
             
             all_hidden_states.append(hidden_states)
 
-            # 只在偶数层进行分类预测
-            if i % 2 == 0 and self.classifiers[i] is not None:
+            # 只在偶数层进行分类预测（如果尚未在MOE中处理过）
+            if i % 2 == 0 and self.classifiers[i] is not None and i not in layer_disease_predictions:
                 # 区域特征（不含CLS token）
                 region_hidden_states = hidden_states[:, 1:, :]
                 # 通过疾病分类器
                 disease_preds = self.classifiers[i](region_hidden_states)
+                # 保存结果
+                layer_disease_predictions[i] = disease_preds
                 all_disease_preds.append(disease_preds)
 
         # 最终输出
         final_hidden_states = self.layernorm(hidden_states)
         
-        # 计算损失（如果提供了标签）
+        # 计算损失（如果提供了标签）- 直接使用之前的分类结果
         loss = None
         if image_labels is not None and len(all_disease_preds) > 0:
             loss = 0
             num_classifier_layers = len(all_disease_preds)  # 实际使用分类器的层数
             for i, disease_preds in enumerate(all_disease_preds):
+                # 直接使用已计算的分类结果计算损失
                 layer_idx = i * 2  # 由于只在偶数层使用分类器
                 layer_loss = self.classifiers[layer_idx].compute_loss(
                     disease_preds, image_labels

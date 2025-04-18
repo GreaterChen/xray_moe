@@ -174,13 +174,13 @@ class MOE(nn.Module):
                 region_features = detection_outputs["region_features"]
                 region_detected = detection_outputs["region_detected"]
 
-            # 第二步：通过ViT处理区域特征（不再冻结）
+            # 第二步：通过ViT处理区域特征
             image_encoder_outputs = self.image_encoder(
                 region_features, 
                 region_detected=region_detected, 
                 image_labels=label,
                 phase=phase,  # 传递phase参数给ViT
-                use_moe=False
+                use_moe=True
             )
  
             # 直接使用ViT输出的完整视觉特征（已包含cls_token和region特征）
