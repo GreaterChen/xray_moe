@@ -147,7 +147,7 @@ class CompleteFeedForwardExpert(nn.Module):
         """
         计算LoRA部分的输出
         x: [batch_size, seq_len, input_dim] 原始输入
-        intermediate_output: [batch_size, seq_len, hidden_dim] 上投影(中间层)的输出
+        intermediate_output: [batch_size, seq_len, hidden_dim] 上投影(中间层)的输出，已经过GELU激活
         base_output: [batch_size, seq_len, output_dim] FFN的基础输出
         """
         batch_size, seq_len, _ = x.shape
@@ -158,8 +158,11 @@ class CompleteFeedForwardExpert(nn.Module):
         lora_up = lora_a_out @ self.lora_B_up.T  # [batch_size*seq_len, hidden_dim]
         lora_up = lora_up.view(batch_size, seq_len, -1) * self.scaling
         
-        # 2. 添加LoRA到中间层输出
-        hidden = intermediate_output + lora_up
+        # 添加激活函数处理LoRA上投影结果，保持与原始FFN一致
+        lora_up_activated = F.gelu(lora_up)
+        
+        # 2. 添加激活后的LoRA到中间层输出
+        hidden = intermediate_output + lora_up_activated
         
         # 3. 计算下投影LoRA
         hidden_2d = hidden.reshape(-1, hidden.size(-1))
@@ -201,9 +204,9 @@ class MedicalVisionTransformer(nn.Module):
         pretrained_vit = ViTModel.from_pretrained(pretrained_vit_name)
         self.encoder = pretrained_vit.encoder
 
-        # 初始化归一化层
+        # 初始化最终输出的归一化层 - 与原始ViT保持一致
         self.layernorm = nn.LayerNorm(self.hidden_size)
-
+        
         # 只为偶数层创建疾病分类器
         self.num_layers = self.config.num_hidden_layers
         self.classifiers = nn.ModuleList(
@@ -408,7 +411,7 @@ class MedicalVisionTransformer(nn.Module):
                         indices_tuple = (batch_indices, token_indices)
                         final_output.index_put_(indices_tuple, weighted_expert_output, accumulate=True)
                 
-                # 应用第二个残差连接 (FFN输出 + 第一个残差连接的结果)
+                # 不在这里使用额外的LayerNorm，直接应用残差连接，与原始ViT保持一致
                 hidden_states = final_output + first_residual
             else:
                 # 正常的Transformer前向传播
@@ -427,9 +430,12 @@ class MedicalVisionTransformer(nn.Module):
                 layer_disease_predictions[i] = disease_preds
                 all_disease_preds.append(disease_preds)
 
-        # 最终输出
-        final_hidden_states = self.layernorm(hidden_states)
+        # 最终输出 
+        final_hidden_states = hidden_states
         
+        # 使用全局LayerNorm处理最终输出，与原始ViT保持一致
+        final_hidden_states = self.layernorm(final_hidden_states)
+
         # 计算损失（如果提供了标签）- 直接使用之前的分类结果
         loss = None
         if image_labels is not None and len(all_disease_preds) > 0:

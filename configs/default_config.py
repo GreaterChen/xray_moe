@@ -6,7 +6,7 @@
 
 class DefaultConfig:
     # Debug模式
-    DEBUG = True
+    DEBUG = False
 
     # 数据目录设置
     ROOT_DIR = "/path/to/xray_moe/"  # 需要在local_config中覆盖
