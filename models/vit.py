@@ -143,11 +143,11 @@ class CompleteFeedForwardExpert(nn.Module):
         nn.init.kaiming_uniform_(self.lora_A_down, a=math.sqrt(5))
         nn.init.zeros_(self.lora_B_down)
     
-    def compute_lora_output(self, x, intermediate_output, base_output):
+    def compute_lora_output(self, x, pre_gelu_output, base_output, act_fn):
         """
         计算LoRA部分的输出
         x: [batch_size, seq_len, input_dim] 原始输入
-        intermediate_output: [batch_size, seq_len, hidden_dim] 上投影(中间层)的输出，已经过GELU激活
+        pre_gelu_output: [batch_size, seq_len, hidden_dim] 上投影(中间层)的输出，在GELU激活之前
         base_output: [batch_size, seq_len, output_dim] FFN的基础输出
         """
         batch_size, seq_len, _ = x.shape
@@ -158,11 +158,8 @@ class CompleteFeedForwardExpert(nn.Module):
         lora_up = lora_a_out @ self.lora_B_up.T  # [batch_size*seq_len, hidden_dim]
         lora_up = lora_up.view(batch_size, seq_len, -1) * self.scaling
         
-        # 添加激活函数处理LoRA上投影结果，保持与原始FFN一致
-        lora_up_activated = F.gelu(lora_up)
-        
-        # 2. 添加激活后的LoRA到中间层输出
-        hidden = intermediate_output + lora_up_activated
+        # 2. 将LoRA输出加到线性层输出上，然后一起通过GELU
+        hidden = act_fn(pre_gelu_output + lora_up)
         
         # 3. 计算下投影LoRA
         hidden_2d = hidden.reshape(-1, hidden.size(-1))
@@ -174,7 +171,7 @@ class CompleteFeedForwardExpert(nn.Module):
         output = base_output + lora_down
         
         # 5. 归一化
-        output = F.layer_norm(output, normalized_shape=output.shape[-1:])
+        # output = F.layer_norm(output, normalized_shape=output.shape[-1:])
         
         return output
 
@@ -326,7 +323,9 @@ class MedicalVisionTransformer(nn.Module):
                 batch_size, seq_len, hidden_dim = normalized_residual.shape
                 
                 # 首先使用原始FFN批量处理所有token (包括CLS和区域token)
-                intermediate_output = layer_module.intermediate(normalized_residual)
+                # 获取上投影的输出（在激活函数之前）
+                intermediate_pre_act = layer_module.intermediate.dense(normalized_residual)
+                intermediate_output = layer_module.intermediate.intermediate_act_fn(intermediate_pre_act)
                 base_output = layer_module.output.dense(intermediate_output)
                 
                 # 创建专家权重和激活掩码
@@ -365,7 +364,13 @@ class MedicalVisionTransformer(nn.Module):
                 
                 # 5. 应用通用专家 - 一次性处理所有token
                 general_expert = self.experts[f"layer_{i}"][-1]
-                general_output = general_expert.compute_lora_output(normalized_residual, intermediate_output, base_output)
+                # 传入激活函数给专家
+                general_output = general_expert.compute_lora_output(
+                    normalized_residual, 
+                    intermediate_pre_act, 
+                    base_output,
+                    act_fn=layer_module.intermediate.intermediate_act_fn
+                )
                 
                 # 初始化最终输出为通用专家的加权输出
                 final_output = general_output * expert_weights[:, :, -1].unsqueeze(-1)
@@ -388,7 +393,7 @@ class MedicalVisionTransformer(nn.Module):
                     if len(batch_indices) > 0:
                         # 收集所有需要处理的token
                         selected_tokens = normalized_residual[batch_indices, token_indices]
-                        selected_intermediate = intermediate_output[batch_indices, token_indices]
+                        selected_intermediate = intermediate_pre_act[batch_indices, token_indices]
                         selected_base_output = base_output[batch_indices, token_indices]
                         
                         # 获取当前疾病专家
@@ -398,7 +403,8 @@ class MedicalVisionTransformer(nn.Module):
                         selected_expert_output = disease_expert.compute_lora_output(
                             selected_tokens.unsqueeze(0), 
                             selected_intermediate.unsqueeze(0), 
-                            selected_base_output.unsqueeze(0)
+                            selected_base_output.unsqueeze(0),
+                            act_fn=layer_module.intermediate.intermediate_act_fn
                         ).squeeze(0)
                         
                         # 收集权重
