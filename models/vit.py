@@ -179,7 +179,7 @@ class CompleteFeedForwardExpert(nn.Module):
 class MedicalVisionTransformer(nn.Module):
     """
     基于解剖区域特征的医学视觉Transformer模型
-    只在偶数层使用分类器进行预测
+    只在奇数层使用分类器进行预测
     """
 
     def __init__(
@@ -204,24 +204,24 @@ class MedicalVisionTransformer(nn.Module):
         # 初始化最终输出的归一化层 - 与原始ViT保持一致
         self.layernorm = nn.LayerNorm(self.hidden_size)
         
-        # 只为偶数层创建疾病分类器
+        # 只为奇数层创建疾病分类器
         self.num_layers = self.config.num_hidden_layers
         self.classifiers = nn.ModuleList(
             [
                 DiseaseClassifier(self.hidden_size, num_diseases)
-                if i % 2 == 0
+                if i % 2 == 1
                 else None
                 for i in range(self.num_layers)
             ]
         )
         
-        # 为偶数层创建MOE专家
+        # 为奇数层创建MOE专家
         self.num_experts = num_diseases + 1  # 14个疾病专家 + 1个通用专家
         self.experts = nn.ModuleDict()
         
-        # 只在偶数层创建专家
+        # 只在奇数层创建专家
         for i in range(self.num_layers):
-            if i % 2 == 0:
+            if i % 2 == 1:
                 layer_experts = nn.ModuleList()
                 # 为每个疾病创建一个专家 + 一个通用专家
                 for j in range(self.num_experts):
@@ -297,7 +297,7 @@ class MedicalVisionTransformer(nn.Module):
         hidden_states = x
         for i, layer_module in enumerate(self.encoder.layer):
             # 在FINETUNE阶段，使用MOE（如果启用）
-            if phase in ["FINETUNE_MISTRAL", "FINETUNE_LLAMA", "FINETUNE_BERT"] and i % 2 == 0 and use_moe:
+            if phase in ["FINETUNE_MISTRAL", "FINETUNE_LLAMA", "FINETUNE_BERT"] and i % 2 == 1 and use_moe:
                 # 先应用layernorm_before，再使用原始注意力机制
                 normalized_hidden_states = layer_module.layernorm_before(hidden_states)
                 attention_output = layer_module.attention(normalized_hidden_states)[0]
@@ -426,8 +426,8 @@ class MedicalVisionTransformer(nn.Module):
             
             all_hidden_states.append(hidden_states)
 
-            # 只在偶数层进行分类预测（如果尚未在MOE中处理过）
-            if i % 2 == 0 and self.classifiers[i] is not None and i not in layer_disease_predictions:
+            # 只在奇数层进行分类预测（如果尚未在MOE中处理过）
+            if i % 2 == 1 and self.classifiers[i] is not None and i not in layer_disease_predictions:
                 # 区域特征（不含CLS token）
                 region_hidden_states = hidden_states[:, 1:, :]
                 # 通过疾病分类器
@@ -449,7 +449,7 @@ class MedicalVisionTransformer(nn.Module):
             num_classifier_layers = len(all_disease_preds)  # 实际使用分类器的层数
             for i, disease_preds in enumerate(all_disease_preds):
                 # 直接使用已计算的分类结果计算损失
-                layer_idx = i * 2  # 由于只在偶数层使用分类器
+                layer_idx = i * 2 + 1  # 由于只在奇数层使用分类器
                 layer_loss = self.classifiers[layer_idx].compute_loss(
                     disease_preds, image_labels
                 )
