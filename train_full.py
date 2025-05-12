@@ -46,6 +46,7 @@ from models.llama_finetuner import LlamaFinetuner
 from metrics import compute_scores
 from tools.optims import *
 from configs import config
+from tools.metrics_clinical import CheXbertMetrics
 
 logger = setup_logger(log_dir="logs")
 
@@ -506,6 +507,21 @@ if __name__ == "__main__":
                 _, _ = load(config.DECODER_CHECKPOINT_PATH_FROM, model, optimizer, scheduler)
             logger.info(f"从 {config.DECODER_CHECKPOINT_PATH_FROM} 加载模型权重")
 
+        # 初始化CheXbert评估器
+        logger.info("初始化CheXbert评估器...")
+        chexbert_path = config.CHEXBERT_CHECKPOINT_PATH
+        try:
+            chexbert_metrics = CheXbertMetrics(
+                checkpoint_path=chexbert_path,
+                mbatch_size=config.VAL_BATCH_SIZE,
+                device="cuda"
+            )
+            logger.info(f"CheXbert评估器初始化成功，使用检查点: {chexbert_path}")
+        except Exception as e:
+            logger.error(f"CheXbert评估器初始化失败: {e}")
+            chexbert_metrics = None
+        
+        
         criterion = None
         scaler = torch.amp.GradScaler() if config.USE_MIXED_PRECISION else None
 
@@ -540,13 +556,20 @@ if __name__ == "__main__":
                 device="cuda",
                 epoch=epoch,
                 writer=writer,
+                chexbert_metrics=chexbert_metrics,
             )
 
-            # 保存检查点
-            save_path = os.path.join(
-                config.CHECKPOINT_PATH_TO,
-                f'epoch_{epoch}_bleu_{result["report_generation_metrics"]["BLEU_1"]:.4f}.pth',
-            )
+            # 保存检查点 - 使用CheXbert指标如果可用
+            if chexbert_metrics is not None and "chexbert_metrics" in result and "ce_f1" in result["chexbert_metrics"]:
+                save_path = os.path.join(
+                    config.CHECKPOINT_PATH_TO,
+                    f'epoch_{epoch}_bleu_{result["report_generation_metrics"]["BLEU_1"]:.4f}_ce_f1_{result["chexbert_metrics"]["ce_f1"]:.4f}.pth',
+                )
+            else:
+                save_path = os.path.join(
+                    config.CHECKPOINT_PATH_TO,
+                    f'epoch_{epoch}_bleu_{result["report_generation_metrics"]["BLEU_1"]:.4f}.pth',
+                )
 
             save(
                 save_path,
@@ -564,18 +587,6 @@ if __name__ == "__main__":
         # 关闭TensorBoard writer
         writer.close()
 
-        # 在验证集上进行最终评估
-        logger.info("在验证集上进行最终评估...")
-        final_val_loss, final_val_result = test_llm(
-            config=config,
-            data_loader=val_loader,
-            model=model,
-            logger=logger,
-            metric_ftns=compute_scores,
-            mode="val",
-            device="cuda",
-        )
-
         # 在测试集上进行最终评估
         logger.info("在测试集上进行最终评估...")
         final_test_loss, final_test_result = test_llm(
@@ -586,6 +597,7 @@ if __name__ == "__main__":
             metric_ftns=compute_scores,
             mode="test",
             device="cuda",
+            chexbert_metrics=chexbert_metrics,
         )
 
         # # 打印最终结果

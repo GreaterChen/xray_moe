@@ -2022,6 +2022,7 @@ def test_llm(
     device="cuda",
     epoch=None,
     writer=None,
+    chexbert_metrics=None,  # 新增CheXbert评估器参数
 ):
     """测试语言模型的生成效果（支持MISTRAL/LLAMA/BERT）
 
@@ -2035,6 +2036,7 @@ def test_llm(
         device: 设备
         epoch: 当前训练轮数
         writer: TensorBoard写入器
+        chexbert_metrics: CheXbert评估指标计算器
 
     Returns:
         test_loss: 测试损失
@@ -2200,6 +2202,18 @@ def test_llm(
         for metric_name, value in report_metrics.items():
             logger.info(f"{metric_name}: {value:.4f}")
 
+    # 计算CheXbert临床评估指标
+    ce_metrics = {}
+    if chexbert_metrics is not None:
+        logger.info("计算CheXbert临床评估指标...")
+        try:
+            ce_metrics = chexbert_metrics.compute(all_targets, all_preds)
+            # 记录CheXbert指标
+            for metric_name, value in ce_metrics.items():
+                logger.info(f"CheXbert - {metric_name}: {value:.4f}")
+        except Exception as e:
+            logger.error(f"计算CheXbert指标时出错: {e}")
+
     # 创建结果目录
     results_dir = os.path.join(config.CHECKPOINT_PATH_TO, "test_results")
     os.makedirs(results_dir, exist_ok=True)
@@ -2213,16 +2227,50 @@ def test_llm(
     results_df.to_csv(os.path.join(results_dir, csv_filename), index=False)
     logger.info(f"结果已保存到CSV文件: {csv_filename}")
     
+    # 计算并保存评估指标
+    metrics_data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": mode,
+        "epoch": epoch_str,
+        "loss": avg_loss,
+    }
+    
+    # 添加常规评估指标
+    if report_metrics:
+        for metric_name, value in report_metrics.items():
+            metrics_data[f"{metric_name}"] = value
+            
+    # 添加CheXbert指标
+    if ce_metrics:
+        for metric_name, value in ce_metrics.items():
+            metrics_data[f"ce_{metric_name}"] = value
+
+    # 保存评估指标，添加epoch信息
+    metrics_df = pd.DataFrame([metrics_data])
+    metrics_filename = f"{mode}_metrics_epoch_{epoch_str}.csv"
+    metrics_df.to_csv(os.path.join(results_dir, metrics_filename), index=False)
+    logger.info(f"评估指标已保存到CSV文件: {metrics_filename}")
+    
     # 如果有writer和epoch，记录到TensorBoard
     if writer is not None and epoch is not None:
+        # 记录常规指标
         for metric_name, value in report_metrics.items():
             writer.add_scalar(f"{mode}/{metric_name}", value, epoch)
+        
+        # 记录CheXbert指标
+        for metric_name, value in ce_metrics.items():
+            writer.add_scalar(f"{mode}/CheXbert/{metric_name}", value, epoch)
+            
+        # 记录损失
         writer.add_scalar(f"{mode}/loss", avg_loss, epoch)
 
     # 汇总结果
     result = {
         "report_generation_metrics": report_metrics,
+        "chexbert_metrics": ce_metrics,
         "loss": avg_loss,
+        "results_df": results_df,
+        "metrics_df": metrics_df,
     }
 
     return avg_loss, result
