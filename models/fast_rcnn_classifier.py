@@ -40,7 +40,7 @@ class DetectionOnlyFastRCNN(nn.Module):
         else:
             return self.detector(images)
 
-    def predict_regions(self, images, confidence_threshold=0.5):
+    def predict_regions(self, images, confidence_threshold=0.1):
         """
         仅执行解剖区域检测
 
@@ -58,11 +58,58 @@ class DetectionOnlyFastRCNN(nn.Module):
         filtered_results = []
         for detection in detections:
             keep = detection["scores"] > confidence_threshold
+            boxes = detection["boxes"][keep]
+            labels = detection["labels"][keep]
+            scores = detection["scores"][keep]
+            
+            if len(labels) == 0:
+                # 如果没有检测到任何目标，返回空结果
+                filtered_results.append(
+                    {
+                        "boxes": torch.zeros((0, 4), device=detection["boxes"].device),
+                        "labels": torch.zeros((0,), dtype=torch.int64, device=detection["labels"].device),
+                        "scores": torch.zeros((0,), device=detection["scores"].device),
+                    }
+                )
+                continue
+            
+            # 对于每个标签，只保留分数最高的检测结果
+            unique_labels = torch.unique(labels)
+            best_boxes = []
+            best_labels = []
+            best_scores = []
+            
+            for label in unique_labels:
+                label_mask = labels == label
+                # 由于unique_labels是从labels中提取的，所以label_mask.any()必然为True
+                label_scores = scores[label_mask]
+                max_score_idx = torch.argmax(label_scores)
+                best_boxes.append(boxes[label_mask][max_score_idx])
+                best_labels.append(label)
+                best_scores.append(label_scores[max_score_idx])
+            
+            # 将boxes转换为张量并向外填充5个像素
+            best_boxes_tensor = torch.stack(best_boxes)
+            padding = 5
+            
+            # 获取图像尺寸 (假设images是标准化为[0,1]的张量列表)
+            if isinstance(images, list):
+                img_height, img_width = images[0].shape[-2:]
+            else:
+                img_height, img_width = images.shape[-2], images.shape[-1]
+                
+            # 应用填充，但确保不超出图像边界
+            padded_boxes = torch.zeros_like(best_boxes_tensor)
+            padded_boxes[:, 0] = torch.clamp(best_boxes_tensor[:, 0] - padding, min=0)  # x1
+            padded_boxes[:, 1] = torch.clamp(best_boxes_tensor[:, 1] - padding, min=0)  # y1
+            padded_boxes[:, 2] = torch.clamp(best_boxes_tensor[:, 2] + padding, max=img_width)  # x2
+            padded_boxes[:, 3] = torch.clamp(best_boxes_tensor[:, 3] + padding, max=img_height)  # y2
+            
             filtered_results.append(
                 {
-                    "boxes": detection["boxes"][keep],
-                    "labels": detection["labels"][keep],
-                    "scores": detection["scores"][keep],
+                    "boxes": padded_boxes,
+                    "labels": torch.tensor(best_labels, device=labels.device),
+                    "scores": torch.tensor(best_scores, device=scores.device),
                 }
             )
 

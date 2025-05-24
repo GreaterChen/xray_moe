@@ -93,7 +93,7 @@ if __name__ == "__main__":
             random_transform=False,
             tokenizer=tokenizer,
             mode="val",
-            subset_size=10 if config.PHASE.startswith("TRAIN") else 100,
+            # subset_size=10 if config.PHASE.startswith("TRAIN") else 100,
         )
 
         test_data = MIMIC(
@@ -102,7 +102,7 @@ if __name__ == "__main__":
             random_transform=False,
             tokenizer=tokenizer,
             mode="test",
-            subset_size=100 if config.DEBUG else None,
+            # subset_size=100 if config.DEBUG else None,
         )
 
         comment = f"Stage{config.PHASE}"
@@ -128,6 +128,25 @@ if __name__ == "__main__":
             )
             module_parameters = {
                 "FastRCNN": count_parameters(fast_rcnn),
+            }
+        elif config.PHASE == "INFER_DETECTION":
+            # 初始化检测器
+            detection_model = DetectionOnlyFastRCNN()
+            _, _ = load(
+                config.DETECTION_CHECKPOINT_PATH_FROM,
+                detection_model,
+                load_model="object_detector",
+            )
+            
+            # 创建MOE模型，但只使用检测器部分
+            model = MOE(
+                config=config,
+                object_detector=detection_model,
+            )
+            
+            # 计算参数量
+            module_parameters = {
+                "FastRCNN (inference only)": count_parameters(detection_model),
             }
         elif config.PHASE == "PRETRAIN_VIT":
             # 初始化检测器
@@ -344,7 +363,7 @@ if __name__ == "__main__":
         num_workers=config.NUM_WORKERS,
         prefetch_factor=2,
         pin_memory=True,
-        drop_last=True,
+        # drop_last=True,
         collate_fn=mimic_collate_fn,
     )
     val_loader = data.DataLoader(
@@ -414,8 +433,70 @@ if __name__ == "__main__":
 
     metrics = compute_scores
 
+    # INFER_DETECTION阶段：用于生成所有训练和验证集的bbox并保存为json文件
+    if config.PHASE == "INFER_DETECTION":
+        logger.info("开始INFER_DETECTION阶段：推断所有样本的bbox...")
+        
+        # 确保模型处于评估模式
+        model.eval()
+        
+        # 创建存储检测结果的字典
+        detection_results = {}
+        
+        # 定义处理单个数据集的函数
+        def process_dataset(data_loader, split_name):
+            logger.info(f"处理{split_name}数据集...")
+            
+            for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Processing {split_name}")):
+                images = batch["image"].cuda()
+                image_paths = batch["image_path"]
+                
+                # 执行推断，获取检测结果
+                with torch.no_grad():
+                    if hasattr(model.object_detector, "predict_regions"):
+                        # 如果是DetectionOnlyFastRCNN类实例
+                        detections = model.object_detector.predict_regions(images)
+                    else:
+                        # 如果目标检测器在MOE模型内部
+                        outputs = model.object_detector(images)
+                        detections = outputs
+                
+                # 对每个样本进行处理
+                for i, (img_path, detection) in enumerate(zip(image_paths, detections)):
+                    # 提取图像ID
+                    image_id = os.path.basename(img_path).split('.')[0]
+                    
+                    # 将检测结果转换为numpy数组，方便保存为json
+                    boxes = detection["boxes"].cpu().numpy().tolist()
+                    labels = detection["labels"].cpu().numpy().tolist()
+                    scores = detection["scores"].cpu().numpy().tolist()
+                    
+                    # 保存到字典中
+                    detection_results[image_id] = {
+                        "boxes": boxes,
+                        "labels": labels,
+                        "scores": scores
+                    }
+        
+        # 处理训练集
+        process_dataset(train_loader, "train")
+        
+        # 处理验证集
+        process_dataset(val_loader, "val")
+        
+        # 处理测试集
+        process_dataset(test_loader, "test")
+        
+        # 保存结果到json文件
+        output_path = os.path.join(config.CHECKPOINT_PATH_TO, "detection_results.json")
+        with open(output_path, 'w') as f:
+            json.dump(detection_results, f)
+        
+        logger.info(f"检测结果已保存到 {output_path}")
+        logger.info("INFER_DETECTION阶段完成")
+
     # Training phase
-    if config.PHASE == "TRAIN_DETECTION" or config.PHASE == "PRETRAIN_VIT":
+    elif config.PHASE == "TRAIN_DETECTION" or config.PHASE == "PRETRAIN_VIT":
         criterion = None
         scaler = torch.amp.GradScaler("cuda")
 

@@ -28,7 +28,9 @@ class MOE(nn.Module):
         self.negative_pool = NegativeSamplePool(
             num_diseases=config.NUM_DISEASES if hasattr(config, "NUM_DISEASES") else 14
         )
-        self.negative_pool.load(config.NEGATIVE_POOL_DIR)
+
+        if self.image_encoder is not None:
+            self.negative_pool.load(config.NEGATIVE_POOL_DIR)
 
         self.visual_projection = nn.Linear(768, 768)
         self.text_projection = nn.Linear(768, 768)

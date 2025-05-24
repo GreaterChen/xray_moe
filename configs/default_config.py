@@ -29,7 +29,7 @@ class DefaultConfig:
     KW_TGT = ["findings", "label"]
 
     # 训练设置
-    PHASE = "FINETUNE_BERT"
+    PHASE = "INFER_DETECTION"
     MODE = "TRAIN"
     USE_MIXED_PRECISION = True
     TRAIN_BATCH_SIZE = 64
