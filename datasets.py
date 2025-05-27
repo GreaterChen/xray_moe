@@ -32,7 +32,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
     }
 
     @classmethod
-    def load_shared_data(cls, directory, ann_dir, mode, binary_mode=True):
+    def load_shared_data(cls, directory, ann_dir, mode, extra_ann_dir=None, binary_mode=True):
         """预处理优化版本"""
         if cls._shared_data["loaded"]:
             return
@@ -68,6 +68,17 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             for mode, result in executor.map(process_split, annotation_data.items()):
                 new_annotation[mode] = result
 
+
+        if extra_ann_dir:
+            with open(extra_ann_dir, 'r') as f:
+                extra_ann = json.load(f)
+            
+            for id, item in extra_ann.items():
+                item['image_id'] = id
+                item['findings'] = cls._clean_report(item['findings'])
+                item['history'] = cls._clean_report(item['history'])
+                new_annotation['train'].append(item)
+
         cls._shared_data["annotation"] = new_annotation
         cls._shared_data["loaded"] = True
 
@@ -75,6 +86,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         self,
         directory,
         ann_dir,
+        extra_ann_dir=None,
         input_size=(224, 224),
         random_transform=True,
         tokenizer=None,
@@ -82,7 +94,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         subset_size=None,
     ):
 
-        self.load_shared_data(directory, ann_dir, mode)
+        self.load_shared_data(directory, ann_dir, mode, extra_ann_dir)
 
         self.tokenizer = tokenizer
         self.bos_token_id = self.tokenizer.bos_token_id

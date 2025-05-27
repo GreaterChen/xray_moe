@@ -76,11 +76,13 @@ if __name__ == "__main__":
         vocab_size = len(tokenizer)
         pad_id = tokenizer.pad_token_id
 
-        MIMIC.load_shared_data(config.DATA_DIR, config.ANN_DIR, config.MODE)
+        MIMIC.load_shared_data(config.DATA_DIR, config.ANN_DIR, config.MODE, config.EXTRA_ANN_DIR)
         # 创建训练、验证和测试数据集
         train_data = MIMIC(
-            config.DATA_DIR,
-            input_size,
+            directory=config.DATA_DIR,
+            ann_dir=config.ANN_DIR,
+            extra_ann_dir=config.EXTRA_ANN_DIR,
+            input_size=input_size,
             random_transform=True,
             tokenizer=tokenizer,
             mode="train",
@@ -88,8 +90,9 @@ if __name__ == "__main__":
         )
 
         val_data = MIMIC(
-            config.DATA_DIR,
-            input_size,
+            directory=config.DATA_DIR,
+            ann_dir=config.ANN_DIR,
+            input_size=input_size,
             random_transform=False,
             tokenizer=tokenizer,
             mode="val",
@@ -97,8 +100,9 @@ if __name__ == "__main__":
         )
 
         test_data = MIMIC(
-            config.DATA_DIR,
-            input_size,
+            directory=config.DATA_DIR,
+            ann_dir=config.ANN_DIR,
+            input_size=input_size,
             random_transform=False,
             tokenizer=tokenizer,
             mode="test",
