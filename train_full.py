@@ -71,12 +71,12 @@ if __name__ == "__main__":
         else:
             tokenizer = BertTokenizer.from_pretrained(
                 "bert-base-uncased", local_files_only=True
-            )
+            ) 
             tokenizer.add_special_tokens({"bos_token": "[DEC]"})
         vocab_size = len(tokenizer)
         pad_id = tokenizer.pad_token_id
 
-        MIMIC.load_shared_data(config.DATA_DIR, config.ANN_DIR, config.MODE, config.EXTRA_ANN_DIR)
+        MIMIC.load_shared_data(config.DATA_DIR, config.ANN_DIR, config.MODE, config.EXTRA_ANN_DIR, True, config.ANATOMICAL_EMBEDDINGS_PATH)
         # 创建训练、验证和测试数据集
         train_data = MIMIC(
             directory=config.DATA_DIR,
@@ -87,6 +87,7 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             mode="train",
             subset_size=100 if config.DEBUG else None,
+            anatomical_embeddings_path="/mnt/chenlb/datasets/MIMIC/anatomical_embeddings.pkl",
         )
 
         val_data = MIMIC(
@@ -96,6 +97,7 @@ if __name__ == "__main__":
             random_transform=False,
             tokenizer=tokenizer,
             mode="val",
+            anatomical_embeddings_path="/mnt/chenlb/datasets/MIMIC/anatomical_embeddings.pkl",
             # subset_size=10 if config.PHASE.startswith("TRAIN") else 100,
         )
 
@@ -106,6 +108,7 @@ if __name__ == "__main__":
             random_transform=False,
             tokenizer=tokenizer,
             mode="test",
+            anatomical_embeddings_path="/mnt/chenlb/datasets/MIMIC/anatomical_embeddings.pkl",
             # subset_size=100 if config.DEBUG else None,
         )
 

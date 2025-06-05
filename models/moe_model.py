@@ -5,6 +5,7 @@ import gc
 from utils import analyze_gpu_memory
 
 from models.negativa_sample_pool import NegativeSamplePool
+from models.text_enhancement import AnatomicalTextEnhancer
 
 
 class MOE(nn.Module):
@@ -37,6 +38,31 @@ class MOE(nn.Module):
 
         # 保存参数配置
         self.config = config
+        
+        # 初始化文本增强模块（仅在FINETUNE_BERT阶段使用）
+        self.text_enhancer = None
+        if hasattr(config, 'PHASE') and config.PHASE == "FINETUNE_BERT":
+            try:
+                # 获取tokenizer（从findings_decoder中获取）
+                if hasattr(self.findings_decoder, 'tokenizer'):
+                    tokenizer = self.findings_decoder.tokenizer
+                elif hasattr(self.findings_decoder, 'decoder') and hasattr(self.findings_decoder.decoder, 'tokenizer'):
+                    tokenizer = self.findings_decoder.decoder.tokenizer
+                else:
+                    print("警告: 无法获取tokenizer，文本增强功能将被禁用")
+                    tokenizer = None
+                
+                if tokenizer is not None:
+                    self.text_enhancer = AnatomicalTextEnhancer(
+                        tokenizer=tokenizer,
+                        visual_projection=self.visual_projection,
+                        text_projection=self.text_projection,
+                        device="cuda" if torch.cuda.is_available() else "cpu"
+                    )
+                    print("文本增强模块已初始化，使用共同空间映射")
+            except Exception as e:
+                print(f"文本增强模块初始化失败: {e}")
+                self.text_enhancer = None
 
     def forward(
         self,
@@ -188,22 +214,82 @@ class MOE(nn.Module):
             # 直接使用ViT输出的完整视觉特征（已包含cls_token和region特征）
             visual_features = image_encoder_outputs["visual_features"]  # [B, 1+num_regions, hidden_size]
 
-            # 第三步：通过生成模型进行文本生成（可训练）
+            # 第三步：处理历史文本并应用文本增强（仅在FINETUNE_BERT阶段）
+            enhanced_history = history  # 默认使用原始历史文本
+            similarity_scores = None
+            
+            if phase == "FINETUNE_BERT" and self.text_enhancer is not None:
+                try:
+                    # 准备历史文本输入
+                    from transformers.tokenization_utils_base import BatchEncoding
+                    
+                    if isinstance(history, BatchEncoding) and hasattr(history, 'input_ids'):
+                        # 如果history是BatchEncoding格式，解码为文本
+                        batch_size = history.input_ids.size(0)
+                        history_texts = []
+                        for i in range(batch_size):
+                            hist_ids = history.input_ids[i]
+                            hist_text = self.text_enhancer.tokenizer.decode(hist_ids, skip_special_tokens=True)
+                            history_texts.append(hist_text)
+                    elif isinstance(history, dict) and 'input_ids' in history:
+                        # 如果history是普通字典格式
+                        batch_size = history['input_ids'].size(0)
+                        history_texts = []
+                        for i in range(batch_size):
+                            hist_ids = history['input_ids'][i]
+                            hist_text = self.text_enhancer.tokenizer.decode(hist_ids, skip_special_tokens=True)
+                            history_texts.append(hist_text)
+                    elif isinstance(history, list):
+                        # 如果history是文本列表
+                        history_texts = history
+                    else:
+                        # 其他情况，创建空列表
+                        batch_size = visual_features.size(0)
+                        history_texts = [""] * batch_size
+                    
+                    # 应用文本增强
+                    enhanced_history_texts, similarity_scores = self.text_enhancer(
+                        visual_features, 
+                        history_texts, 
+                        similarity_threshold=0.3
+                    )
+                    
+                    # 将增强的文本重新编码
+                    if enhanced_history_texts:
+                        enhanced_history = self.text_enhancer.tokenizer(
+                            enhanced_history_texts,
+                            max_length=getattr(self.config, 'MAX_LEN_HISTORY', 50),
+                            padding="max_length",
+                            truncation=True,
+                            return_tensors="pt",
+                        ).to(visual_features.device)
+                    
+                except Exception as e:
+                    print(f"文本增强过程中出错: {e}")
+                    # 出错时使用原始历史文本
+                    pass
+
+            # 第四步：通过生成模型进行文本生成（可训练）
             if mode == "train":
                 # 训练模式：使用findings计算损失
                 outputs = self.findings_decoder(
                     visual_features=visual_features,
-                    history_encoding=history,
+                    history_encoding=enhanced_history,  # 使用增强后的历史文本
                     findings=findings,
                     use_history=True
                 )
+                
+                # 如果有相似度分数，可以添加到输出中用于分析
+                if similarity_scores is not None:
+                    outputs.similarity_scores = similarity_scores
+                
                 return outputs
             else:
                 # 纯生成模式：不计算损失，只生成文本
                 with torch.no_grad():
                     generated_texts = self.findings_decoder.generate(
                         visual_features=visual_features,
-                        history_encoding=history,
+                        history_encoding=enhanced_history,  # 使用增强后的历史文本
                         use_history=True
                     )
                 return {"generated_texts": generated_texts}

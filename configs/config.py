@@ -43,4 +43,10 @@ CONFIG.TENSORBOARD_DIR = "logs/tensorboard"
 # KV源配置
 CONFIG.KW_SRC = "image history"  # 使用图像和历史文本作为输入
 CONFIG.KW_TGT = "findings"  # 生成findings
-CONFIG.USE_MIXED_PRECISION = True  # 是否使用混合精度训练 
+CONFIG.USE_MIXED_PRECISION = True  # 是否使用混合精度训练
+
+# 添加历史文本和findings文本的最大长度配置
+CONFIG.MAX_LEN_HISTORY = 50
+CONFIG.MAX_LEN_FINDINGS = 100
+
+config = CONFIG 

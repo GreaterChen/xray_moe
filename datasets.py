@@ -29,11 +29,46 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
     _shared_data = {
         "loaded": False,
         "annotation": None,
+        "anatomical_embeddings": None,
+        "region_name_mapping": None,
     }
 
+    # 29个解剖区域的标准名称映射（按照检测器输出的顺序，从1开始）
+    ANATOMICAL_REGIONS = [
+        'left hemidiaphragm',      # 1
+        'right atrium',            # 2  
+        'right hilar structures',  # 3
+        'cardiac silhouette',      # 4
+        'abdomen',                 # 5
+        'trachea',                 # 6
+        'right apical zone',       # 7
+        'right lung',              # 8
+        'right upper lung zone',   # 9
+        'right costophrenic angle', # 10
+        'svc',                     # 11
+        'left lung',               # 12
+        'right mid lung zone',     # 13
+        'cavoatrial junction',     # 14
+        'left costophrenic angle', # 15
+        'left hilar structures',   # 16
+        'mediastinum',             # 17
+        'right lower lung zone',   # 18
+        'left mid lung zone',      # 19
+        'spine',                   # 20
+        'left upper lung zone',    # 21
+        'right hemidiaphragm',     # 22
+        'left clavicle',           # 23
+        'aortic arch',             # 24
+        'right clavicle',          # 25
+        'left apical zone',        # 26
+        'left lower lung zone',    # 27
+        'carina',                  # 28
+        'upper mediastinum'        # 29
+    ]
+
     @classmethod
-    def load_shared_data(cls, directory, ann_dir, mode, extra_ann_dir=None, binary_mode=True):
-        """预处理优化版本"""
+    def load_shared_data(cls, directory, ann_dir, mode, extra_ann_dir=None, binary_mode=True, anatomical_embeddings_path=None):
+        """预处理优化版本，包括解剖区域embeddings的加载"""
         if cls._shared_data["loaded"]:
             return
 
@@ -68,7 +103,6 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             for mode, result in executor.map(process_split, annotation_data.items()):
                 new_annotation[mode] = result
 
-
         if extra_ann_dir:
             with open(extra_ann_dir, 'r') as f:
                 extra_ann = json.load(f)
@@ -79,8 +113,70 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                 item['history'] = cls._clean_report(item['history'])
                 new_annotation['train'].append(item)
 
+        # 加载解剖区域embeddings
+        if anatomical_embeddings_path and os.path.exists(anatomical_embeddings_path):
+            print(f"正在加载解剖区域embeddings: {anatomical_embeddings_path}")
+            try:
+                with open(anatomical_embeddings_path, 'rb') as f:
+                    anatomical_data = pickle.load(f)
+                
+                cls._shared_data["anatomical_embeddings"] = anatomical_data
+                
+                # 创建区域名称映射，将标准区域名称映射到文件中的键
+                available_regions = list(anatomical_data['embeddings'].keys())
+                region_mapping = {}
+                
+                for i, standard_name in enumerate(cls.ANATOMICAL_REGIONS):
+                    # 尝试直接匹配
+                    if standard_name in available_regions:
+                        region_mapping[i] = standard_name
+                    else:
+                        print("")
+                
+                cls._shared_data["region_name_mapping"] = region_mapping
+                
+                print(f"成功加载 {len(available_regions)} 个解剖区域的embeddings")
+                print(f"成功映射 {sum(1 for v in region_mapping.values() if v is not None)}/{len(cls.ANATOMICAL_REGIONS)} 个区域")
+                
+            except Exception as e:
+                print(f"加载解剖区域embeddings失败: {e}")
+                cls._shared_data["anatomical_embeddings"] = None
+                cls._shared_data["region_name_mapping"] = None
+        else:
+            print("未提供解剖区域embeddings路径，跳过加载")
+            cls._shared_data["anatomical_embeddings"] = None
+            cls._shared_data["region_name_mapping"] = None
+
         cls._shared_data["annotation"] = new_annotation
         cls._shared_data["loaded"] = True
+
+    @classmethod
+    def _fuzzy_match_region(cls, standard_name, available_name):
+        """模糊匹配区域名称"""
+        # 移除常见的词汇并比较核心词汇
+        def normalize_name(name):
+            return name.lower().replace(' ', '').replace('_', '').replace('-', '')
+        
+        standard_normalized = normalize_name(standard_name)
+        available_normalized = normalize_name(available_name)
+        
+        # 检查是否包含主要关键词
+        standard_words = set(standard_name.lower().split())
+        available_words = set(available_name.lower().split())
+        
+        # 如果有超过一半的单词匹配，认为是匹配的
+        common_words = standard_words.intersection(available_words)
+        return len(common_words) >= max(1, min(len(standard_words), len(available_words)) // 2)
+
+    @classmethod
+    def get_anatomical_embeddings(cls):
+        """获取解剖区域embeddings数据"""
+        return cls._shared_data["anatomical_embeddings"]
+    
+    @classmethod
+    def get_region_mapping(cls):
+        """获取区域名称映射"""
+        return cls._shared_data["region_name_mapping"]
 
     def __init__(
         self,
@@ -92,9 +188,10 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         tokenizer=None,
         mode="train",
         subset_size=None,
+        anatomical_embeddings_path=None,
     ):
 
-        self.load_shared_data(directory, ann_dir, mode, extra_ann_dir)
+        self.load_shared_data(directory, ann_dir, mode, extra_ann_dir, anatomical_embeddings_path=anatomical_embeddings_path)
 
         self.tokenizer = tokenizer
         self.bos_token_id = self.tokenizer.bos_token_id
@@ -293,4 +390,6 @@ def mimic_collate_fn(batch):
         "history": histories,
         "label": label_tensor,
         "image_path": image_paths,
+        "gts": (findings, [""]*len(findings)),  # 添加gts字段保持兼容性
+        "split": ["train"]*len(findings),  # 添加split字段保持兼容性
     }
