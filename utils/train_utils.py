@@ -1,0 +1,260 @@
+"""训练相关工具函数"""
+import os
+import gc
+import torch
+from tqdm import tqdm
+from torch.profiler import profile, record_function, ProfilerActivity
+from contextlib import nullcontext
+from utils.data_utils import prepare_batch_data, args_to_kwargs, data_distributor
+from utils.memory_utils import analyze_gpu_memory
+
+
+def train(
+    config,
+    data_loader,
+    model,
+    optimizer,
+    criterion,
+    num_epochs,
+    current_epoch,
+    scheduler=None,
+    device="cpu",
+    kw_src=None,
+    kw_tgt=None,
+    kw_out=None,
+    scaler=None,
+    writer=None,
+    enable_profile=False,
+    device_manager=None,
+):
+    """
+    训练一个epoch
+    
+    Args:
+        config: 配置对象
+        data_loader: 数据加载器
+        model: 模型
+        optimizer: 优化器
+        criterion: 损失函数（未使用）
+        num_epochs: 总epoch数
+        current_epoch: 当前epoch
+        scheduler: 学习率调度器
+        device: 设备
+        kw_src: 源关键字列表
+        kw_tgt: 目标关键字列表
+        kw_out: 输出关键字列表
+        scaler: 混合精度训练scaler
+        writer: TensorBoard writer
+        enable_profile: 是否启用性能分析
+        device_manager: 设备管理器
+        
+    Returns:
+        epoch平均损失
+    """
+    # 清理内存
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    model.train()
+    running_loss = 0
+    
+    # 记录当前学习率
+    if writer is not None:
+        current_lr = optimizer.param_groups[0]["lr"]
+        writer.add_scalar("Learning Rate", current_lr, current_epoch)
+    
+    # TensorBoard记录频率
+    log_freq = 500
+    
+    # 性能分析器
+    profiler = None
+    if enable_profile:
+        profiler = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+        )
+        profiler.start()
+    
+    # 训练循环
+    prog_bar = tqdm(data_loader, desc=f"Training Epoch {current_epoch}")
+    
+    for i, batch in enumerate(prog_bar):
+        # 内存分析
+        if i % 100 == 0 and enable_profile:
+            print(f"\nBatch {i} - GPU内存使用:")
+            print(f"已分配: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            print(f"已缓存: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+            analyze_gpu_memory()
+        
+        if enable_profile and i == 4:
+            break
+        
+        # 准备批次数据
+        with record_function("data_preparation") if enable_profile else nullcontext():
+            source, target, _ = _prepare_phase_data(
+                config, batch, data_loader, device
+            )
+        
+        # 转换为kwargs
+        source = args_to_kwargs(source)
+        target = args_to_kwargs(target)
+        
+        # 添加阶段信息
+        source["phase"] = config.PHASE
+        source["mode"] = "train"
+        source["current_epoch"] = current_epoch
+        source["total_epochs"] = num_epochs
+        
+        optimizer.zero_grad()
+        
+        # 前向传播和损失计算
+        with torch.amp.autocast("cuda", enabled=scaler is not None):
+            with record_function("model_forward") if enable_profile else nullcontext():
+                output = data_distributor(model, source)
+            
+            loss = _compute_loss(config, output)
+        
+        # 同步损失（分布式）
+        if device_manager is not None and device_manager.distributed:
+            loss_tensor = loss.detach().clone()
+            loss_reduced = device_manager.reduce_tensor(loss_tensor)
+            running_loss += loss_reduced.item()
+        else:
+            running_loss += loss.item()
+        
+        # 更新学习率
+        if scheduler is not None:
+            scheduler.step(cur_epoch=current_epoch, cur_step=i)
+        
+        # 更新进度条
+        current_lr = optimizer.param_groups[0]["lr"]
+        prog_bar.set_postfix({
+            'loss': f'{running_loss/(i+1):.4f}',
+            'lr': f'{current_lr:.2e}'
+        })
+        
+        # 反向传播
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+        
+        # 记录到TensorBoard
+        if writer is not None and i % log_freq == 0:
+            _log_training_metrics(writer, config, loss, output, current_epoch, i, len(data_loader))
+        
+        # 定期内存清理
+        if i % 50 == 0 and i > 0:
+            del loss, output
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+        
+        # 性能分析
+        if enable_profile and profiler is not None:
+            profiler.step()
+    
+    # 停止性能分析
+    if enable_profile and profiler is not None:
+        profiler.stop()
+        print(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+        profiler.export_chrome_trace("trace_training.json")
+    
+    # 记录epoch平均损失
+    epoch_loss = running_loss / len(data_loader)
+    if writer is not None:
+        writer.add_scalar("Train/Epoch_Loss", epoch_loss, current_epoch)
+    
+    return epoch_loss
+
+
+def _prepare_phase_data(config, batch, data_loader, device):
+    """根据训练阶段准备数据"""
+    phase = config.PHASE
+    
+    if phase == "TRAIN_DETECTION":
+        return prepare_batch_data(
+            config, batch, data_loader, device,
+            findings=False, history=False, label=False, bbox=True
+        )
+    elif phase == "PRETRAIN_VIT":
+        return prepare_batch_data(
+            config, batch, data_loader, device,
+            findings=True, history=False, label=True, bbox=True
+        )
+    elif phase in ["FINETUNE_BERT"]:
+        return prepare_batch_data(
+            config, batch, data_loader, device,
+            findings=True, history=True, label=True, bbox=True
+        )
+    else:
+        raise ValueError(f"Invalid phase: {phase}")
+
+
+def _compute_loss(config, output):
+    """计算损失"""
+    phase = config.PHASE
+    
+    if phase in ["FINETUNE_BERT"]:
+        # 微调阶段直接使用output.loss
+        return output.loss
+    
+    # 其他阶段需要组合损失
+    output = args_to_kwargs(output)
+    
+    if phase == "TRAIN_DETECTION":
+        return sum(loss for loss in output.values())
+    
+    elif phase == "PRETRAIN_VIT":
+        loss = output["ltc_loss"] + output["cls_loss"]
+        # 添加区域级别ITC损失
+        if "region_itc_loss" in output and output["region_itc_loss"] is not None:
+            region_itc_weight = getattr(config, 'REGION_ITC_WEIGHT', 1.0)
+            loss += region_itc_weight * output["region_itc_loss"]
+        return loss
+    
+    else:
+        raise ValueError(f"Invalid phase: {phase}")
+
+
+def _log_training_metrics(writer, config, loss, output, epoch, step, total_steps):
+    """记录训练指标到TensorBoard"""
+    global_step = epoch * total_steps + step
+    
+    # 记录总损失
+    writer.add_scalar("Train/Total_Loss", loss.item(), global_step)
+    
+    # 根据阶段记录特定损失
+    phase = config.PHASE
+    
+    if phase == "TRAIN_DETECTION":
+        for loss_name, loss_value in output.items():
+            writer.add_scalar(
+                f"Train/Detection/{loss_name}",
+                loss_value.item(),
+                global_step
+            )
+    
+    elif phase == "PRETRAIN_VIT":
+        output_dict = args_to_kwargs(output)
+        vit_losses = {
+            "Train/ViT/LTC_Loss": output_dict["ltc_loss"].item(),
+            "Train/ViT/CLS_Loss": output_dict["cls_loss"].item(),
+        }
+        
+        if "region_itc_loss" in output_dict and output_dict["region_itc_loss"] is not None:
+            vit_losses["Train/ViT/Region_ITC_Loss"] = output_dict["region_itc_loss"].item()
+        
+        for tag, value in vit_losses.items():
+            writer.add_scalar(tag, value, global_step)
+    
+    elif phase == "FINETUNE_BERT":
+        writer.add_scalar("Train/BERT/Loss", loss.item(), global_step)

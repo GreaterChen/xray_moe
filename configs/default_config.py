@@ -60,15 +60,21 @@ class DefaultConfig:
     SYNC_BN = False  # 是否使用同步BatchNorm（仅在DDP模式下有效）
 
     # 检查点路径
-    DETECTION_CHECKPOINT_PATH_FROM = (
-        "/path/to/detection_checkpoint.pth"  # 需要在local_config中覆盖
-    )
-    # CHECKPOINT_PATH_FROM = "/home/chenlb/xray_moe/results/finetune_llama/epoch_0_bleu_0.0000.pth"
+    DETECTION_CHECKPOINT_PATH_FROM = "/path/to/detection_checkpoint.pth"  # 需要在local_config中覆盖
     CHECKPOINT_PATH_FROM = None
     CHECKPOINT_PATH_TO = "/path/to/save/checkpoint/"  # 需要在local_config中覆盖
+    VIT_CHECKPOINT_PATH_FROM = None  # ViT预训练权重路径（用于微调阶段）
+    DECODER_CHECKPOINT_PATH_FROM = None  # 解码器权重路径（用于继续训练）
+    IMAGE_ENCODER_CHECKPOINT_PATH_FROM = None  # 图像编码器权重路径（用于推理）
 
     # TensorBoard设置
     TENSORBOARD_DIR = "runs"
+    
+    # 评估设置
+    EVAL_FREQ = 5  # 每N个epoch评估一次
+    
+    # CheXbert路径
+    CHEXBERT_CHECKPOINT_PATH = None  # CheXbert模型路径，需要在local_config中设置
 
     # 文本增强模块配置
     ENABLE_TEXT_ENHANCEMENT = False  # 是否启用文本增强功能
