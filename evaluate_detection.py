@@ -601,12 +601,12 @@ def test_detection_model(model, test_loader, device, output_dir="./test_results"
 def main():
     # 加载模型
     model = DetectionOnlyFastRCNN(num_regions=29)
-    model.load_state_dict(torch.load("detection_model.pth"))
+    model.load_state_dict(torch.load("/mnt/chenlb/xray_moe/results/ltc/detection/epoch_9_BLEU_1_0.8791605068503925.pth"))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
     # 创建测试数据加载器 (假设已有)
-    # test_loader = create_test_data_loader()
+    test_loader = create_test_data_loader()
 
     # 执行测试
     # test_detection_model(model, test_loader, device, output_dir='./test_results')

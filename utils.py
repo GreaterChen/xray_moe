@@ -686,7 +686,7 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
 
         # 加载提取后的state_dict到模型
         missing_keys, unexpected_keys = model.load_state_dict(
-            filtered_state_dict, strict=True
+            filtered_state_dict, strict=False
         )
     else:
         print("检查点中没有找到模型状态字典！")
@@ -1336,6 +1336,13 @@ def test_detection(
         key=lambda x: x[1],
         reverse=True,
     )
+
+    logger.info("\n所有解剖区域:")
+    for class_id, ap in sorted_classes[:]:
+        metrics = class_metrics[class_id]
+        logger.info(
+            f"区域 {class_id}: AP={ap:.4f}, Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}"
+        )
 
     # 打印表现最好的5个类别
     logger.info("\n表现最好的5个解剖区域:")

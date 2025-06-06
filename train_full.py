@@ -664,23 +664,29 @@ if __name__ == "__main__":
             # 分布式训练时设置epoch到sampler
             if device_manager.distributed and train_sampler is not None:
                 train_sampler.set_epoch(epoch)
-                
-            train_loss = train(
-                config,
-                train_loader,
+
+            _, _ = load(
+                config.DETECTION_CHECKPOINT_PATH_FROM,
                 model,
-                optimizer,
-                criterion,
-                config.EPOCHS,
-                epoch,
-                scheduler=scheduler,
-                device=device_manager.device,
-                kw_src=config.KW_SRC,
-                kw_tgt=config.KW_TGT,
-                scaler=scaler,
-                writer=writer,
-                device_manager=device_manager,  # 传递设备管理器
+                load_model=None,
             )
+                
+            # train_loss = train(
+            #     config,
+            #     train_loader,
+            #     model,
+            #     optimizer,
+            #     criterion,
+            #     config.EPOCHS,
+            #     epoch,
+            #     scheduler=scheduler,
+            #     device=device_manager.device,
+            #     kw_src=config.KW_SRC,
+            #     kw_tgt=config.KW_TGT,
+            #     scaler=scaler,
+            #     writer=writer,
+            #     device_manager=device_manager,  # 传递设备管理器
+            # )
             if config.PHASE == "TRAIN_DETECTION":
                 test_loss, result = test_detection(
                     config=config,
