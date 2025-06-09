@@ -76,6 +76,7 @@ class MOE(nn.Module):
         current_epoch=0,
         total_epochs=20,
         mode="train",
+        image_ids=None,  # 添加image_ids参数用于文本增强
     ):
         # 在这里实现前向传播逻辑
         if phase == "TRAIN_DETECTION":
@@ -247,11 +248,13 @@ class MOE(nn.Module):
                         batch_size = visual_features.size(0)
                         history_texts = [""] * batch_size
                     
-                    # 应用文本增强
+                    # 应用文本增强（基于视觉特征检索）
                     enhanced_history_texts, similarity_scores = self.text_enhancer(
                         visual_features, 
                         history_texts, 
-                        similarity_threshold=0.3
+                        query_image_ids=image_ids,  # 传入image_ids用于排除自身
+                        similarity_threshold=0.3,  # 提高阈值，因为视觉到视觉的相似度更可靠
+                        top_k=1  # 只取最相似的一个结果
                     )
                     
                     # 将增强的文本重新编码

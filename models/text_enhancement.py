@@ -2,13 +2,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import pickle
+import os
 from datasets import MIMIC
+from collections import defaultdict
 
 
 class AnatomicalTextEnhancer(nn.Module):
     """
-    解剖区域文本增强模块
-    为每个视觉token找到相似度最高的解剖区域文本token
+    解剖区域文本增强模块 - 基于视觉特征检索
+    通过视觉特征检索相似的视觉特征，然后获取对应的文本描述
+    支持按解剖区域分组检索和排除自身样本
     """
     
     def __init__(self, tokenizer, visual_projection=None, text_projection=None, device="cuda"):
@@ -19,197 +23,327 @@ class AnatomicalTextEnhancer(nn.Module):
         self.visual_projection = visual_projection
         self.text_projection = text_projection
         
-        # 获取解剖区域数据
-        self.anatomical_data = MIMIC.get_anatomical_embeddings()
-        self.region_mapping = MIMIC.get_region_mapping()
+        # 加载新的视觉-文本知识库
+        self.knowledge_base_path = "/mnt/chenlb/datasets/MIMIC/anatomical_database/visual_text_knowledge_base.pkl"
         
-        if self.anatomical_data is None:
-            print("警告: 未加载解剖区域embeddings，文本增强功能将被禁用")
+        if not os.path.exists(self.knowledge_base_path):
+            print(f"警告: 知识库文件 {self.knowledge_base_path} 不存在，文本增强功能将被禁用")
             self.enabled = False
             return
         
-        self.enabled = True
-        
-        # 预处理解剖区域embeddings，转换为tensor并移到设备上
-        self.region_embeddings = {}
-        self.region_phrases = {}
-        
-        for region_idx, region_name in self.region_mapping.items():
-            if region_name is not None and region_name in self.anatomical_data['embeddings']:
-                # 转换embeddings为tensor
-                embeddings = torch.tensor(
-                    self.anatomical_data['embeddings'][region_name], 
-                    dtype=torch.float32,
-                    device=device
-                )
-                self.region_embeddings[region_idx] = embeddings  # [n_phrases, 768]
+        try:
+            # 加载知识库
+            with open(self.knowledge_base_path, 'rb') as f:
+                kb_data = pickle.load(f)
+            
+            self.knowledge_base = kb_data['knowledge_base']
+            self.feature_to_info_map = kb_data['feature_to_info_map']
+            self.statistics = kb_data['statistics']
+            
+            # 获取解剖区域列表（与MIMIC.ANATOMICAL_REGIONS对应）
+            anatomical_regions = MIMIC.ANATOMICAL_REGIONS
+            region_name_to_idx = {name: idx for idx, name in enumerate(anatomical_regions)}
+            
+            # 直接按解剖区域组织知识库，避免重复存储
+            self.region_features_db = {}  # 按区域存储的特征张量
+            self.region_indices = {}      # 按区域存储的原始索引
+            self.region_image_ids = {}    # 按区域存储的image_id
+            self.region_texts = {}        # 按区域存储的文本描述
+            
+            # 预分配存储结构
+            region_data_temp = {idx: {'features': [], 'indices': [], 'image_ids': [], 'texts': []} 
+                               for idx in range(len(anatomical_regions))}
+            
+            # 一次遍历组织所有数据
+            for idx, entry in enumerate(self.knowledge_base):
+                region_name = entry['region_name']
+                if region_name in region_name_to_idx:
+                    region_idx = region_name_to_idx[region_name]
+                    region_data_temp[region_idx]['features'].append(entry['visual_feature'])
+                    region_data_temp[region_idx]['indices'].append(idx)
+                    region_data_temp[region_idx]['image_ids'].append(entry['image_id'])
+                    region_data_temp[region_idx]['texts'].append(entry['text_string'])
+            
+            # 转换为tensor并归一化，只处理有数据的区域
+            successful_regions = 0
+            for region_idx, region_name in enumerate(anatomical_regions):
+                region_data = region_data_temp[region_idx]
                 
-                # 存储对应的句子
-                self.region_phrases[region_idx] = self.anatomical_data['phrases'][region_name]
-        
-        print(f"文本增强模块初始化完成，支持 {len(self.region_embeddings)} 个解剖区域")
-        if self.visual_projection is not None and self.text_projection is not None:
-            print("启用共同空间映射进行相似度计算")
+                if region_data['features']:  # 确保不为空
+                    # 批量转换和归一化
+                    features_array = np.stack(region_data['features'])
+                    region_features_tensor = torch.tensor(
+                        features_array, 
+                        dtype=torch.float32, 
+                        device=device
+                    )
+                    region_features_tensor = F.normalize(region_features_tensor, p=2, dim=1)
+                    
+                    self.region_features_db[region_idx] = region_features_tensor
+                    self.region_indices[region_idx] = region_data['indices']
+                    self.region_image_ids[region_idx] = region_data['image_ids']
+                    self.region_texts[region_idx] = region_data['texts']
+                    successful_regions += 1
+                else:
+                    print(f"警告: 解剖区域 '{region_name}' (索引{region_idx}) 没有数据")
+            
+            # 清理临时数据
+            del region_data_temp
+            del self.knowledge_base  # 释放原始知识库内存
+            
+            self.enabled = True
+            
+            print(f"视觉特征知识库加载成功:")
+            print(f"  - 总条目数: {self.statistics['total_entries']}")
+            print(f"  - 覆盖图像数: {self.statistics['unique_images']}")
+            print(f"  - 解剖区域数: {self.statistics['unique_regions']}")
+            print(f"  - 成功组织的区域数: {successful_regions}")
+            
+            # 打印每个区域的数据量
+            for region_idx, region_name in enumerate(anatomical_regions):
+                if region_idx in self.region_features_db:
+                    count = len(self.region_texts[region_idx])
+                    print(f"    - {region_name}: {count} 个样本")
+            
+        except Exception as e:
+            print(f"加载知识库时出错: {e}")
+            self.enabled = False
+            return
     
-    def find_similar_texts(self, visual_features):
+    def retrieve_similar_visual_features(self, query_visual_features, query_image_ids=None, top_k=1):
         """
-        为每个视觉token找到最相似的文本
+        基于视觉特征检索相似的视觉特征及其对应的文本描述
+        支持按解剖区域分组检索和排除自身样本
         
         Args:
-            visual_features: [batch_size, num_regions+1, hidden_size] ViT输出特征
-                           第0个token是CLS，第1-29个token是解剖区域
+            query_visual_features: [batch_size, num_regions, hidden_size] 查询的视觉特征
+            query_image_ids: list of str，查询样本的image_id列表，用于排除自身
+            top_k: 返回最相似的top-k个结果
         
         Returns:
-            enhanced_texts: list of lists，每个样本对应一个文本列表
-            similarity_scores: [batch_size, num_regions] 相似度分数
+            retrieved_texts: list of lists，每个样本每个区域的检索结果文本
+            similarity_scores: [batch_size, num_regions] 最高相似度分数
         """
         if not self.enabled:
             return None, None
         
-        batch_size = visual_features.size(0)
-        num_regions = 29
+        batch_size, num_regions, hidden_size = query_visual_features.shape
         
-        # 提取区域特征（跳过CLS token）
-        region_features = visual_features[:, 1:1+num_regions, :]  # [batch_size, 29, 768]
+        # 如果没有提供image_ids，创建空列表
+        if query_image_ids is None:
+            query_image_ids = [None] * batch_size
         
-        enhanced_texts = []
-        all_similarity_scores = []
+        # 归一化查询特征
+        query_features_norm = F.normalize(query_visual_features, p=2, dim=2)  # [B, 29, 768]
+        
+        # 预处理：为每个batch样本预计算有效索引（排除自身image_id）
+        batch_valid_indices = []
+        for batch_idx in range(batch_size):
+            query_image_id = query_image_ids[batch_idx]
+            sample_valid_indices = {}
+            
+            for region_idx in range(num_regions):
+                if region_idx not in self.region_features_db:
+                    sample_valid_indices[region_idx] = []
+                    continue
+                
+                region_image_ids = self.region_image_ids[region_idx]
+                if query_image_id is not None:
+                    valid_indices = [
+                        i for i, img_id in enumerate(region_image_ids) 
+                        if img_id != query_image_id
+                    ]
+                else:
+                    valid_indices = list(range(len(region_image_ids)))
+                
+                sample_valid_indices[region_idx] = valid_indices
+            
+            batch_valid_indices.append(sample_valid_indices)
+        
+        # 批量计算相似度和检索结果
+        retrieved_texts = []
+        similarity_scores_list = []
         
         for batch_idx in range(batch_size):
             batch_texts = []
             batch_similarities = []
+            valid_indices_map = batch_valid_indices[batch_idx]
             
+            # 批量处理所有region
             for region_idx in range(num_regions):
-                if region_idx in self.region_embeddings:
-                    # 获取当前区域的视觉特征
-                    visual_feat = region_features[batch_idx, region_idx]  # [768]
-                    
-                    # 获取当前区域的所有文本embeddings
-                    text_embeddings = self.region_embeddings[region_idx]  # [n_phrases, 768]
-                    
-                    # 如果有projection层，先映射到共同空间
-                    if self.visual_projection is not None and self.text_projection is not None:
-                        # 映射视觉特征到共同空间
-                        mapped_visual_feat = self.visual_projection(visual_feat)  # [768]
-                        
-                        # 映射文本embeddings到共同空间
-                        mapped_text_embeddings = self.text_projection(text_embeddings)  # [n_phrases, 768]
-                        
-                        # 在映射后的空间中计算余弦相似度
-                        visual_feat_norm = F.normalize(mapped_visual_feat.unsqueeze(0), p=2, dim=1)  # [1, 768]
-                        text_embeddings_norm = F.normalize(mapped_text_embeddings, p=2, dim=1)  # [n_phrases, 768]
-                    else:
-                        # 如果没有projection层，直接在原始空间计算相似度
-                        visual_feat_norm = F.normalize(visual_feat.unsqueeze(0), p=2, dim=1)  # [1, 768]
-                        text_embeddings_norm = F.normalize(text_embeddings, p=2, dim=1)  # [n_phrases, 768]
-                    
-                    similarities = torch.mm(visual_feat_norm, text_embeddings_norm.t())  # [1, n_phrases]
-                    similarities = similarities.squeeze(0)  # [n_phrases]
-                    
-                    # 找到最相似的文本
-                    best_idx = torch.argmax(similarities).item()
-                    best_similarity = similarities[best_idx].item()
-                    best_text = self.region_phrases[region_idx][best_idx]
+                if region_idx not in self.region_features_db:
+                    batch_texts.append("")
+                    batch_similarities.append(0.0)
+                    continue
+                
+                valid_indices = valid_indices_map[region_idx]
+                if not valid_indices:
+                    batch_texts.append("")
+                    batch_similarities.append(0.0)
+                    continue
+                
+                # 获取查询特征和区域特征
+                query_feat = query_features_norm[batch_idx, region_idx]  # [768]
+                region_features = self.region_features_db[region_idx]    # [N_region, 768]
+                
+                # 只对有效索引计算相似度
+                valid_region_features = region_features[valid_indices]  # [N_valid, 768]
+                
+                # 批量计算相似度
+                similarities = torch.mm(
+                    query_feat.unsqueeze(0),      # [1, 768]
+                    valid_region_features.t()     # [768, N_valid]
+                ).squeeze(0)  # [N_valid]
+                
+                # 获取top-k结果
+                top_k_actual = min(top_k, len(similarities))
+                if top_k_actual == 0:
+                    batch_texts.append("")
+                    batch_similarities.append(0.0)
+                    continue
+                
+                top_similarities, top_relative_indices = torch.topk(similarities, top_k_actual)
+                
+                # 转换为原始索引并获取文本
+                region_texts = self.region_texts[region_idx]
+                if top_k_actual == 1:
+                    best_original_idx = valid_indices[top_relative_indices[0].item()]
+                    best_similarity = top_similarities[0].item()
+                    best_text = region_texts[best_original_idx]
                     
                     batch_texts.append(best_text)
                     batch_similarities.append(best_similarity)
                 else:
-                    # 如果该区域没有文本数据，使用默认文本
-                    batch_texts.append("")
-                    batch_similarities.append(0.0)
+                    # 多个结果拼接
+                    retrieved_descriptions = []
+                    for i in range(top_k_actual):
+                        original_idx = valid_indices[top_relative_indices[i].item()]
+                        retrieved_descriptions.append(region_texts[original_idx])
+                    
+                    combined_text = " . ".join(retrieved_descriptions)
+                    batch_texts.append(combined_text)
+                    batch_similarities.append(top_similarities[0].item())
             
-            enhanced_texts.append(batch_texts)
-            all_similarity_scores.append(batch_similarities)
+            retrieved_texts.append(batch_texts)
+            similarity_scores_list.append(batch_similarities)
         
-        # 转换相似度分数为tensor
-        similarity_scores = torch.tensor(all_similarity_scores, device=self.device)  # [batch_size, 29]
+        # 一次性转换相似度分数为tensor
+        similarity_scores = torch.tensor(similarity_scores_list, 
+                                       dtype=torch.float32, 
+                                       device=self.device)  # [B, 29]
         
-        return enhanced_texts, similarity_scores
+        return retrieved_texts, similarity_scores
     
-    def create_enhanced_prompt(self, enhanced_texts, history_text=None, similarity_threshold=0.3):
+    def create_enhanced_prompt(self, retrieved_texts, similarity_scores, history_text=None, similarity_threshold=0.5):
         """
         创建增强的提示文本
         
         Args:
-            enhanced_texts: list of lists，每个样本的增强文本列表
+            retrieved_texts: list of lists，每个样本的检索文本列表
+            similarity_scores: [batch_size, num_regions] 相似度分数
             history_text: 原始历史文本（可选）
             similarity_threshold: 相似度阈值，低于此值的文本将被过滤
         
         Returns:
             enhanced_prompts: list of str，每个样本的增强提示文本
         """
-        if not self.enabled or enhanced_texts is None:
-            return [history_text] * len(enhanced_texts) if history_text else [""] * len(enhanced_texts)
+        if not self.enabled or retrieved_texts is None:
+            batch_size = len(retrieved_texts) if retrieved_texts else 1
+            if history_text and isinstance(history_text, list):
+                return history_text[:batch_size]
+            else:
+                return [history_text or ""] * batch_size
+        
+        # 预处理history_text
+        is_history_list = isinstance(history_text, list)
+        default_history = history_text or ""
         
         enhanced_prompts = []
+        batch_size = len(retrieved_texts)
         
-        for batch_idx, (texts, similarities) in enumerate(zip(enhanced_texts, self.all_similarity_scores)):
-            # 过滤低相似度的文本
+        for batch_idx in range(batch_size):
+            texts = retrieved_texts[batch_idx]
+            similarities = similarity_scores[batch_idx]
+            
+            # 批量过滤和处理文本
             valid_texts = []
             for text, sim_score in zip(texts, similarities):
-                if sim_score >= similarity_threshold and text.strip():
-                    valid_texts.append(text.strip())
+                if sim_score >= similarity_threshold:
+                    stripped_text = text.strip()
+                    if stripped_text:
+                        valid_texts.append(stripped_text)
             
             # 构建增强提示
             if valid_texts:
-                # 去重并限制长度
-                unique_texts = list(dict.fromkeys(valid_texts))  # 保持顺序的去重
-                enhanced_text = " . ".join(unique_texts[:10])  # 最多使用10个最相似的文本
+                # 去重并限制长度（使用dict.fromkeys保持顺序）  
+                unique_texts = list(dict.fromkeys(valid_texts))[:5]  # 最多5个
+                enhanced_text = " . ".join(unique_texts)
                 
-                # 与历史文本结合
-                if history_text and isinstance(history_text, list):
-                    hist_text = history_text[batch_idx] if batch_idx < len(history_text) else ""
-                elif history_text and isinstance(history_text, str):
-                    hist_text = history_text
+                # 获取历史文本
+                if is_history_list:
+                    hist_text = history_text[batch_idx].strip() if batch_idx < len(history_text) else ""
                 else:
-                    hist_text = ""
+                    hist_text = default_history.strip() if default_history else ""
                 
-                if hist_text.strip():
-                    prompt = f"{hist_text.strip()} [SEP] Anatomical findings: {enhanced_text}"
+                # 构建最终提示
+                if hist_text:
+                    prompt = f"{hist_text} [SEP] Retrieved anatomical findings: {enhanced_text}"
                 else:
-                    prompt = f"Anatomical findings: {enhanced_text}"
+                    prompt = f"Retrieved anatomical findings: {enhanced_text}"
             else:
-                # 如果没有有效的增强文本，使用原始历史文本
-                if history_text and isinstance(history_text, list):
+                # 没有有效增强文本时使用原始历史文本
+                if is_history_list:
                     prompt = history_text[batch_idx] if batch_idx < len(history_text) else ""
-                elif history_text and isinstance(history_text, str):
-                    prompt = history_text
                 else:
-                    prompt = ""
+                    prompt = default_history
             
             enhanced_prompts.append(prompt)
         
         return enhanced_prompts
     
-    def forward(self, visual_features, history_text=None, similarity_threshold=0.3):
+    def forward(self, visual_features, history_text=None, query_image_ids=None, similarity_threshold=0.5, top_k=1):
         """
-        完整的文本增强流程
+        完整的文本增强流程 - 基于视觉特征检索
         
         Args:
             visual_features: [batch_size, num_regions+1, hidden_size] ViT输出特征
             history_text: 原始历史文本
+            query_image_ids: list of str，查询样本的image_id列表，用于排除自身
             similarity_threshold: 相似度阈值
+            top_k: 检索的top-k结果数量
         
         Returns:
             enhanced_prompts: list of str，增强后的提示文本
             similarity_scores: [batch_size, num_regions] 相似度分数
         """
+        batch_size = visual_features.size(0)
+        
         if not self.enabled:
-            batch_size = visual_features.size(0)
-            if history_text and isinstance(history_text, list):
-                return history_text, torch.zeros((batch_size, 29), device=self.device)
+            # 预处理fallback结果
+            fallback_scores = torch.zeros((batch_size, 29), device=self.device)
+            if history_text:
+                if isinstance(history_text, list):
+                    fallback_prompts = history_text[:batch_size]
+                else:
+                    fallback_prompts = [history_text] * batch_size
             else:
-                return [history_text or ""] * batch_size, torch.zeros((batch_size, 29), device=self.device)
+                fallback_prompts = [""] * batch_size
+            return fallback_prompts, fallback_scores
         
-        # 找到相似文本
-        enhanced_texts, similarity_scores = self.find_similar_texts(visual_features)
+        # 提取区域特征（跳过CLS token）
+        region_features = visual_features[:, 1:30, :]  # [batch_size, 29, 768]
         
-        # 保存相似度分数以供create_enhanced_prompt使用
-        self.all_similarity_scores = similarity_scores.cpu().numpy().tolist()
+        # 基于视觉特征检索相似的文本描述
+        retrieved_texts, similarity_scores = self.retrieve_similar_visual_features(
+            region_features, 
+            query_image_ids=query_image_ids,
+            top_k=top_k
+        )
         
         # 创建增强提示
         enhanced_prompts = self.create_enhanced_prompt(
-            enhanced_texts, 
+            retrieved_texts, 
+            similarity_scores,
             history_text, 
             similarity_threshold
         )

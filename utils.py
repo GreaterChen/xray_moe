@@ -196,6 +196,10 @@ def prepare_batch_data(
         batch["bbox_targets"] = processed_bbox_targets
         source["bbox_targets"] = processed_bbox_targets
 
+    # 处理image_id（用于文本增强）
+    if "image_id" in batch:
+        source["image_ids"] = batch["image_id"]  # image_id是字符串列表，不需要移动到设备
+
     return source, target, None
 
 

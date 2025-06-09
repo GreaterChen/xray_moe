@@ -4,3 +4,4 @@ runs/
 logs/
 pycocoevalcap/
 tools/chexbert.pth
+*.json
