@@ -301,7 +301,6 @@ if __name__ == "__main__":
                 "ViT (trainable)": count_parameters(vit_model),
                 "Llama 3.2 3B Generator": count_parameters(llama_model),
             }
-        # 创建MOE模型
         elif config.PHASE == "FINETUNE_BERT":
             # 初始化检测器
             detection_model = DetectionOnlyFastRCNN()
@@ -356,6 +355,43 @@ if __name__ == "__main__":
                 "BERT Decoder": count_parameters(bert_model),
             }
 
+        elif config.PHASE == "BUILD_DATABASE":
+            # 初始化检测器
+            detection_model = DetectionOnlyFastRCNN()
+            _, _ = load(
+                config.DETECTION_CHECKPOINT_PATH_FROM,
+                detection_model,
+                load_model="object_detector",
+            )
+
+            # 创建增强型FastRCNN
+            enhanced_rcnn = EnhancedFastRCNN(
+                pretrained_detector=detection_model, num_regions=29, feature_dim=768
+            )
+
+            # 初始化ViT模型
+            vit_model = MedicalVisionTransformer()
+
+            # 加载预训练的ViT模型
+            _, _ = load(config.VIT_CHECKPOINT_PATH_FROM, vit_model, load_model="vit")
+
+            # 创建MOE模型（只需要检测器和ViT）
+            model = MOE(
+                config=config,
+                object_detector=enhanced_rcnn,
+                image_encoder=vit_model,
+            )
+
+            # 冻结所有参数，仅用于特征提取
+            for param in model.parameters():
+                param.requires_grad = False
+
+            # 计算每个模块的参数量
+            module_parameters = {
+                "Enhanced FastRCNN (frozen)": count_parameters(enhanced_rcnn),
+                "ViT (frozen)": count_parameters(vit_model),
+            }
+
         # 打印每个模块的参数量
         for module_name, param_count in module_parameters.items():
             logger.info(f"{module_name}: {param_count} parameters")
@@ -404,6 +440,8 @@ if __name__ == "__main__":
             lr=config.LEARNING_RATE,
             weight_decay=config.WEIGHT_DECAY,
         )
+    elif config.PHASE in ['BUILD_DATABASE']:
+        optimizer = None
     else:
         optimizer = optim.AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),
@@ -695,6 +733,23 @@ if __name__ == "__main__":
         # logger.info(
         #     f"测试集 - BLEU-4: {final_test_result['report_generation_metrics']['bleu4']:.4f}, ROUGE-L: {final_test_result['report_generation_metrics']['rougeL']:.4f}"
         # )
+
+    elif config.PHASE == "BUILD_DATABASE":
+        # BUILD_DATABASE阶段：构建解剖区域特征数据库
+        logger.info("开始BUILD_DATABASE阶段：构建解剖区域特征数据库...")
+        
+        from utils import build_anatomical_database
+        
+        # 构建数据库
+        build_anatomical_database(
+            config=config,
+            model=model,
+            data_loader=train_loader,
+            logger=logger,
+            device="cuda"
+        )
+        
+        logger.info("解剖区域特征数据库构建完成！")
 
     elif config.MODE == "TEST":
         # 确保提供了checkpoint路径

@@ -114,6 +114,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                 new_annotation['train'].append(item)
 
         # 加载解剖区域embeddings
+        anatomical_embeddings_path = None
         if anatomical_embeddings_path and os.path.exists(anatomical_embeddings_path):
             print(f"正在加载解剖区域embeddings: {anatomical_embeddings_path}")
             try:
@@ -149,24 +150,6 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         cls._shared_data["annotation"] = new_annotation
         cls._shared_data["loaded"] = True
-
-    @classmethod
-    def _fuzzy_match_region(cls, standard_name, available_name):
-        """模糊匹配区域名称"""
-        # 移除常见的词汇并比较核心词汇
-        def normalize_name(name):
-            return name.lower().replace(' ', '').replace('_', '').replace('-', '')
-        
-        standard_normalized = normalize_name(standard_name)
-        available_normalized = normalize_name(available_name)
-        
-        # 检查是否包含主要关键词
-        standard_words = set(standard_name.lower().split())
-        available_words = set(available_name.lower().split())
-        
-        # 如果有超过一半的单词匹配，认为是匹配的
-        common_words = standard_words.intersection(available_words)
-        return len(common_words) >= max(1, min(len(standard_words), len(available_words)) // 2)
 
     @classmethod
     def get_anatomical_embeddings(cls):
@@ -241,6 +224,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         findings = info["findings"]
         history = info["history"]
         disease_label = np.array(info["labels"], dtype=np.float16)
+        image_id = info['image_id']
         
         # 获取图像路径
         image_base_path = "/".join(info["image_path"][0].split("/")[:-1])
@@ -251,7 +235,6 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         # 处理图像
         img = Image.open(img_path).convert("RGB")
         img = self.transform(img)
-
 
         # 处理bbox
         if "bbox_targets" in info:
@@ -291,6 +274,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         output = {
             "image": img,
+            "image_id": image_id,
             "bbox_targets": target,
             "findings": findings,
             "history": history,
@@ -370,6 +354,7 @@ def mimic_collate_fn(batch):
     histories = [None] * batch_size
     labels = np.empty((batch_size, 14), dtype=np.float16)  # 假设有14个标签
     image_paths = [None] * batch_size
+    image_ids = [None] * batch_size
 
     # 填充预分配的数组
     for i, item in enumerate(batch):
@@ -379,6 +364,7 @@ def mimic_collate_fn(batch):
         histories[i] = item["history"]
         labels[i] = item["label"]
         image_paths[i] = item["image_path"]
+        image_ids[i] = item["image_id"]
 
     # 转换标签
     label_tensor = torch.from_numpy(labels)
@@ -390,6 +376,7 @@ def mimic_collate_fn(batch):
         "history": histories,
         "label": label_tensor,
         "image_path": image_paths,
+        "image_id": image_ids,
         "gts": (findings, [""]*len(findings)),  # 添加gts字段保持兼容性
         "split": ["train"]*len(findings),  # 添加split字段保持兼容性
     }

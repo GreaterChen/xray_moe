@@ -294,6 +294,40 @@ class MOE(nn.Module):
                     )
                 return {"generated_texts": generated_texts}
 
+        elif phase == "BUILD_DATABASE":
+            # BUILD_DATABASE阶段：提取解剖区域特征用于构建数据库
+            with torch.no_grad():
+                # 第一步：使用目标检测器提取区域特征
+                detection_outputs = self.object_detector(
+                    image,
+                    bbox_targets,
+                    current_epoch=current_epoch,
+                    total_epochs=total_epochs,
+                )
+                region_features = detection_outputs["region_features"]  # [B, 29, 768]
+                region_detected = detection_outputs["region_detected"]  # [B, 29]
+
+                # 第二步：通过ViT处理区域特征
+                image_encoder_outputs = self.image_encoder(
+                    region_features, 
+                    region_detected=region_detected, 
+                    image_labels=label,
+                    phase="PRETRAIN_VIT",  # 使用PRETRAIN_VIT模式，不启用MOE
+                    use_moe=False
+                )
+
+                # 获取完整的视觉特征
+                visual_features = image_encoder_outputs["visual_features"]  # [B, 1+num_regions, hidden_size]
+                
+                # 提取区域特征（去除CLS token）
+                region_visual_features = visual_features[:, 1:, :]  # [B, 29, 768]
+
+                return {
+                    "region_features": region_visual_features,  # ViT处理后的区域特征
+                    "region_detected": region_detected,  # 区域检测掩码
+                    "raw_region_features": region_features,  # 检测器原始区域特征
+                }
+
     def compute_global_ltc_loss(self, visual_cls, text_cls, negative_samples):
         """
         计算使用全局负样本池的语言-视觉对比损失(LTC)，完全并行处理
