@@ -7,3 +7,5 @@ tensorboard --logdir=runs --port=6006 --bind_all
 ```
 192.168.7.232:6006
 ```
+
+rsync -avz --progress --remove-source-files /path/to/source/ /path/to/destination/
