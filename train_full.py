@@ -96,7 +96,7 @@ if __name__ == "__main__":
             random_transform=False,
             tokenizer=tokenizer,
             mode="val",
-            # subset_size=10 if config.PHASE.startswith("TRAIN") else 100,
+            subset_size=10 if config.PHASE.startswith("TRAIN") else 100,
         )
 
         test_data = MIMIC(
@@ -106,7 +106,7 @@ if __name__ == "__main__":
             random_transform=False,
             tokenizer=tokenizer,
             mode="test",
-            # subset_size=100 if config.DEBUG else None,
+            subset_size=100 if config.DEBUG else None,
         )
 
         comment = f"Stage{config.PHASE}"
@@ -341,14 +341,27 @@ if __name__ == "__main__":
             # 冻结前两个阶段的模型参数
             for param in model.object_detector.parameters():
                 param.requires_grad = False
-            # 注释掉冻结ViT的代码
-            # for param in model.image_encoder.parameters():
-            #     param.requires_grad = False
+            
+            # 冻结ViT的预训练参数，但保留LoRA参数可训练
+            for name, param in model.image_encoder.named_parameters():
+                if 'lora_A' in name or 'lora_B' in name:
+                    # LoRA参数保持可训练
+                    param.requires_grad = True
+                else:
+                    # 冻结其他所有参数（预训练的encoder、分类器等）
+                    param.requires_grad = False
 
             # 计算每个模块的参数量
+            # 统计ViT中可训练和冻结的参数
+            vit_trainable_params = sum(p.numel() for name, p in model.image_encoder.named_parameters() 
+                                     if p.requires_grad and ('lora_A' in name or 'lora_B' in name))
+            vit_frozen_params = sum(p.numel() for name, p in model.image_encoder.named_parameters() 
+                                  if not p.requires_grad)
+            
             module_parameters = {
                 "Enhanced FastRCNN (frozen)": count_parameters(enhanced_rcnn),
-                "ViT (trainable)": count_parameters(vit_model),
+                "ViT LoRA (trainable)": vit_trainable_params,
+                "ViT Base (frozen)": vit_frozen_params,
                 "BERT Decoder": count_parameters(bert_model),
             }
 
@@ -430,8 +443,15 @@ if __name__ == "__main__":
 
     # 在FINETUNE_MISTRAL或FINETUNE_LLAMA或FINETUNE_BERT阶段，只优化特定参数
     if config.PHASE.startswith("FINETUNE_"):
-        # 优化解码器的参数和ViT的参数
-        trainable_params = list(model.findings_decoder.parameters()) + list(model.image_encoder.parameters())
+        # 优化解码器的参数和ViT中可训练的参数（主要是LoRA参数）
+        trainable_params = []
+        # 添加解码器的所有参数
+        trainable_params.extend([p for p in model.findings_decoder.parameters() if p.requires_grad])
+        # 添加ViT中可训练的参数（在FINETUNE_BERT阶段主要是LoRA参数）
+        trainable_params.extend([p for p in model.image_encoder.parameters() if p.requires_grad])
+        
+        logger.info(f"可训练参数数量: {sum(p.numel() for p in trainable_params)}")
+        
         optimizer = optim.AdamW(
             trainable_params,
             lr=config.LEARNING_RATE,

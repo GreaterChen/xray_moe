@@ -34,12 +34,16 @@ class MoEBertAdapter(nn.Module):
         准备历史文本输入，处理各种格式
         
         Args:
-            history_encoding: 历史文本编码，可能是字符串列表、BatchEncoding或dict
+            history_encoding: 历史文本编码，可能是字符串列表、BatchEncoding或dict，也可能是None
             
         Returns:
-            准备好的历史文本编码
+            准备好的历史文本编码，如果输入为None则返回None
         """
         if history_encoding is None:
+            return None
+        
+        # 如果是空列表，也返回None
+        if isinstance(history_encoding, list) and len(history_encoding) == 0:
             return None
             
         # 如果是字符串列表，重新编码
@@ -78,6 +82,11 @@ class MoEBertAdapter(nn.Module):
         """
         # 准备历史文本输入
         prepared_history = self._prepare_history_input(history_encoding) if use_history else None
+        
+        # 如果use_history=True但是prepared_history为None，则强制设置use_history=False
+        if use_history and prepared_history is None:
+            print("警告: use_history=True但history为None，自动设置use_history=False")
+            use_history = False
         
         # 调用BERT交叉解码器
         logits, hidden_states, decoded_texts, loss = self.decoder(
@@ -132,6 +141,10 @@ class MoEBertAdapter(nn.Module):
                 print(f"警告: 历史文本编码格式不正确，类型: {type(prepared_history)}")
                 prepared_history = None
                 use_history = False
+        elif use_history and prepared_history is None:
+            # 如果use_history=True但是history为None，则强制设置use_history=False
+            print("警告: use_history=True但history为None，自动设置use_history=False")
+            use_history = False
             
         # 调用BERT交叉解码器生成文本，传递所有生成参数
         return self.decoder(

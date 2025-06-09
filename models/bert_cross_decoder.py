@@ -88,7 +88,16 @@ class BertCrossDecoder(nn.Module):
         )
         
         # 处理历史文本
-        if hasattr(history, 'input_ids'):
+        if not use_history or history is None:
+            # 如果不使用历史文本或历史文本为空，创建一个只包含起始token的序列
+            history_input_ids = torch.full(
+                (batch_size, 1),
+                self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else self.tokenizer.cls_token_id,
+                dtype=torch.long,
+                device=device
+            )
+            history_attention_mask = torch.ones_like(history_input_ids)
+        elif hasattr(history, 'input_ids'):
             # 处理BatchEncoding或类字典类型
             history_input_ids = history.input_ids
             history_attention_mask = history.attention_mask
@@ -108,16 +117,6 @@ class BertCrossDecoder(nn.Module):
             history_attention_mask = history_encoding.attention_mask
         else:
             raise ValueError(f"历史文本必须是BatchEncoding、编码字典或文本列表，当前类型: {type(history)}")
-        
-        # 如果不使用历史文本，创建一个只包含起始token的序列
-        if not use_history:
-            history_input_ids = torch.full(
-                (batch_size, 1),
-                self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else self.tokenizer.cls_token_id,
-                dtype=torch.long,
-                device=device
-            )
-            history_attention_mask = torch.ones_like(history_input_ids)
             
         if mode == "train" and target_text is not None:
             # 处理目标文本
