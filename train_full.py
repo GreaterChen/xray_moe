@@ -76,12 +76,18 @@ if __name__ == "__main__":
         vocab_size = len(tokenizer)
         pad_id = tokenizer.pad_token_id
 
-        MIMIC.load_shared_data(config.DATA_DIR, config.ANN_DIR, config.MODE, config.EXTRA_ANN_DIR, True)
+        MIMIC.load_shared_data(
+            directory=config.DATA_DIR, 
+            ann_dir=config.ANN_DIR, 
+            mode=config.MODE, 
+            extra_ann_dir=None,
+            binary_mode=True
+        )
         # 创建训练、验证和测试数据集
         train_data = MIMIC(
             directory=config.DATA_DIR,
             ann_dir=config.ANN_DIR,
-            extra_ann_dir=config.EXTRA_ANN_DIR,
+            # extra_ann_dir=config.EXTRA_ANN_DIR,
             input_size=input_size,
             random_transform=True,
             tokenizer=tokenizer,
@@ -174,6 +180,15 @@ if __name__ == "__main__":
                 image_encoder=vit_model,
                 cxr_bert=cxr_bert,
             )
+            
+            # 加载解剖区域数据库（用于区域级别对比学习）
+            if getattr(config, 'ENABLE_REGION_ITC', True):
+                anatomical_db_path = getattr(config, 'ANATOMICAL_DATABASE_PATH', None)
+                if anatomical_db_path:
+                    MIMIC.load_anatomical_embeddings(anatomical_db_path)
+                    logger.info("✅ 解剖区域数据库已加载到MIMIC数据集中")
+                else:
+                    logger.warning("⚠️  未配置解剖区域数据库路径，区域级别ITC将被禁用")
 
             # 计算每个模块的参数量
             module_parameters = {

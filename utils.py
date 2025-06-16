@@ -199,6 +199,10 @@ def prepare_batch_data(
     # 处理image_id（用于文本增强）
     if "image_id" in batch:
         source["image_ids"] = batch["image_id"]  # image_id是字符串列表，不需要移动到设备
+    
+    # 处理解剖区域嵌入数据（用于区域级别ITC损失）
+    if "anatomical_embeddings" in batch:
+        source["anatomical_embeddings_batch"] = batch["anatomical_embeddings"]  # 解剖区域嵌入数据列表
 
     return source, target, None
 
@@ -325,6 +329,12 @@ def train(
                     loss = sum(loss for loss in output.values())
                 elif config.PHASE == "PRETRAIN_VIT":
                     loss = output["ltc_loss"] + output["cls_loss"]
+                    
+                    # 添加区域级别ITC损失（如果存在的话）
+                    if "region_itc_loss" in output and output["region_itc_loss"] is not None:
+                        # 可以调整权重，这里使用与其他损失相同的权重
+                        region_itc_weight = getattr(config, 'REGION_ITC_WEIGHT', 1.0)
+                        loss += region_itc_weight * output["region_itc_loss"]
                 else:
                     raise ValueError("Invalid phase")
 
@@ -366,6 +376,11 @@ def train(
                     "Train/ViT/LTC_Loss": output["ltc_loss"].item(),
                     "Train/ViT/CLS_Loss": output["cls_loss"].item(),
                 }
+                
+                # 记录区域ITC损失（如果存在的话）
+                if "region_itc_loss" in output and output["region_itc_loss"] is not None:
+                    vit_losses["Train/ViT/Region_ITC_Loss"] = output["region_itc_loss"].item()
+                
                 for tag, value in vit_losses.items():
                     writer.add_scalar(tag, value, global_step)
             elif config.PHASE == "FINETUNE_MISTRAL":
@@ -1387,6 +1402,7 @@ def test_vit(
     device="cuda",
     epoch=None,
     writer=None,
+    use_consistent_eval=False,  # 新增参数：是否使用一致性评估模式
 ):
     """
     评估PRETRAIN_VIT阶段的模型性能，只保留全局疾病分类性能评估
@@ -1447,6 +1463,7 @@ def test_vit(
 
             source["phase"] = config.PHASE
             source["mode"] = "test"
+            source["use_consistent_eval"] = use_consistent_eval  # 传递一致性评估参数
 
             outputs = data_distributor(model, source)
             outputs = args_to_kwargs(outputs)

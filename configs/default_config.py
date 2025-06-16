@@ -6,7 +6,7 @@
 
 class DefaultConfig:
     # Debug模式
-    DEBUG = True
+    DEBUG = False
 
     # 数据目录设置
     ROOT_DIR = "/path/to/xray_moe/"  # 需要在local_config中覆盖
@@ -24,6 +24,12 @@ class DefaultConfig:
     NUM_DISEASES = 14  # 疾病类别数量
     TEMPERATURE = 0.07  # 对比学习温度参数
 
+    # 区域级别对比学习设置
+    ANATOMICAL_DATABASE_PATH = None  # 解剖区域知识库路径，需要在local_config中设置
+    REGION_ITC_TEMPERATURE = 0.07  # 区域级别ITC的温度参数
+    ENABLE_REGION_ITC = True  # 是否启用区域级别的ITC损失
+    REGION_ITC_WEIGHT = 1.0  # 区域级别ITC损失的权重
+
     # 输入输出关键字
     KW_SRC = ["image", "findings", "history", "bbox_targets"]
     KW_TGT = ["findings", "label"]
@@ -32,7 +38,7 @@ class DefaultConfig:
     PHASE = "FINETUNE_BERT"
     MODE = "TRAIN"
     USE_MIXED_PRECISION = True
-    TRAIN_BATCH_SIZE = 256
+    TRAIN_BATCH_SIZE = 32
     VAL_BATCH_SIZE = 32
     NUM_WORKERS = 16
     EPOCHS = 30

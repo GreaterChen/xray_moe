@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import gc
+import pickle
+import os
 from utils import analyze_gpu_memory
 
 from models.negativa_sample_pool import NegativeSamplePool
@@ -26,18 +28,22 @@ class MOE(nn.Module):
         self.modality_fusion = modality_fusion
         self.findings_decoder = findings_decoder
         self.cxr_bert = cxr_bert
-        self.negative_pool = NegativeSamplePool(
-            num_diseases=config.NUM_DISEASES if hasattr(config, "NUM_DISEASES") else 14
-        )
-
-        if config.PHASE == "PRETRAIN_VIT":
-            self.negative_pool.load(config.NEGATIVE_POOL_DIR)
-
-        self.visual_projection = nn.Linear(768, 768)
-        self.text_projection = nn.Linear(768, 768)
-
         # 保存参数配置
         self.config = config
+        
+        self.visual_projection = nn.Linear(768, 768)
+        self.text_projection = nn.Linear(768, 768)
+        
+        # 为区域级别对比学习添加独立的投影层
+        self.region_visual_projection = nn.Linear(768, 768)
+        self.region_text_projection = nn.Linear(768, 768)
+
+        # 在PRETRAIN_VIT阶段加载负样本池
+        if config.PHASE == "PRETRAIN_VIT":
+            self.negative_pool = NegativeSamplePool(
+                num_diseases=config.NUM_DISEASES if hasattr(config, "NUM_DISEASES") else 14
+            )
+            self.negative_pool.load(config.NEGATIVE_POOL_DIR)
         
         # 初始化文本增强模块（根据配置决定是否启用）
         self.text_enhancer = None
@@ -84,6 +90,8 @@ class MOE(nn.Module):
         else:
             print("📝 文本增强功能未在配置中启用")
 
+
+
     def forward(
         self,
         image,
@@ -97,6 +105,9 @@ class MOE(nn.Module):
         total_epochs=20,
         mode="train",
         image_ids=None,  # 添加image_ids参数用于文本增强
+        use_consistent_eval=False,  # 新增参数：是否在测试时保持训练模式以确保一致性
+        anatomical_embeddings_batch=None,  # 新增：批次中每个样本的解剖区域嵌入
+        **kwargs
     ):
         # 在这里实现前向传播逻辑
         if phase == "TRAIN_DETECTION":
@@ -114,6 +125,12 @@ class MOE(nn.Module):
                 region_detected = detection_outputs["region_detected"]
 
             # 第二步：通过ViT处理区域特征
+            # 如果是测试模式且要求一致性评估，临时切换到训练模式
+            original_training = self.training
+            if mode != "train" and use_consistent_eval:
+                self.train()  # 切换到训练模式以保持dropout等行为一致
+                print("⚠️  为了一致性比较，在测试时使用训练模式（dropout等保持激活）")
+            
             image_encoder_outputs = self.image_encoder(
                 region_features, region_detected=region_detected, image_labels=label, use_moe=False
             )
@@ -121,6 +138,10 @@ class MOE(nn.Module):
             # 获取ViT的完整输出，在需要时通过索引提取cls_token
             visual_features = image_encoder_outputs["visual_features"]  # [B, 1+num_regions, hidden_size]
             cls_token = visual_features[:, 0]  # 提取cls_token [B, hidden_size]
+
+            # 恢复原始训练状态
+            if mode != "train" and use_consistent_eval:
+                self.train(original_training)
 
             if mode == "train":
                 # 使用CXR-BERT编码findings，获取text_cls_token
@@ -138,11 +159,12 @@ class MOE(nn.Module):
                 if disease_labels is not None and self.negative_pool is not None:
                     # 使用negative pool获取困难负样本
                     batch_size = mapped_visual_cls.size(0)
-                    neg_samples_per_instance = batch_size - 1
-
+                    # 固定负样本数量，避免batch size影响
+                    fixed_neg_samples = 63  # 固定使用63个负样本
+                    
                     # 为每个样本获取对应的负样本并映射到共享空间
                     negative_samples = self.negative_pool.get_negative_samples_batch(
-                        disease_labels, k=neg_samples_per_instance
+                        disease_labels, k=fixed_neg_samples
                     )
                     mapped_negative_samples = self.text_projection(
                         negative_samples
@@ -152,17 +174,27 @@ class MOE(nn.Module):
                     ltc_loss = self.compute_global_ltc_loss(
                         mapped_visual_cls, mapped_text_cls, mapped_negative_samples
                     )
+                    # print(f"[TRAIN] 使用全局负样本池计算LTC loss: {ltc_loss.item():.4f} (neg_samples={fixed_neg_samples})")
                 else:
                     # 如果没有负样本池，使用批内对比
                     ltc_loss = self.compute_batch_ltc_loss(
                         mapped_visual_cls, mapped_text_cls
                     )
+                    # print(f"[TRAIN] 使用批内对比计算LTC loss: {ltc_loss.item():.4f}")
 
-                # 返回包含LTC损失的结果
+                # 计算区域级别的ITC损失（新增）
+                region_itc_loss = None
+                if getattr(self.config, 'ENABLE_REGION_ITC', True):
+                    region_itc_loss = self.compute_region_itc_loss(
+                        visual_features, region_detected, anatomical_embeddings_batch, image_ids
+                    )
+
+                # 返回包含LTC损失和区域ITC损失的结果
                 results = {
                     "disease_preds": image_encoder_outputs["disease_preds"],
                     "final_disease_preds": image_encoder_outputs["final_disease_preds"],
                     "ltc_loss": ltc_loss,
+                    "region_itc_loss": region_itc_loss,
                     "cls_loss": image_encoder_outputs["loss"],
                 }
                 return results
@@ -183,19 +215,50 @@ class MOE(nn.Module):
                         mapped_visual_cls = self.visual_projection(cls_token)
                         mapped_text_cls = self.text_projection(text_cls_token)
 
-                        # 计算批内对比损失
-                        ltc_loss = self.compute_batch_ltc_loss(
-                            mapped_visual_cls, mapped_text_cls
-                        )
+                        # 测试时也使用与训练时相同的loss计算方式
+                        disease_labels = label
+                        if disease_labels is not None and self.negative_pool is not None:
+                            # 使用negative pool获取困难负样本（与训练时相同）
+                            batch_size = mapped_visual_cls.size(0)
+                            # 固定负样本数量，避免batch size影响
+                            fixed_neg_samples = 64  # 固定使用64个负样本
+                            
+                            # 为每个样本获取对应的负样本并映射到共享空间
+                            negative_samples = self.negative_pool.get_negative_samples_batch(
+                                disease_labels, k=fixed_neg_samples
+                            )
+                            mapped_negative_samples = self.text_projection(
+                                negative_samples
+                            )  # [B, K, hidden_size]
+
+                            # 使用困难负样本计算对比损失
+                            ltc_loss = self.compute_global_ltc_loss(
+                                mapped_visual_cls, mapped_text_cls, mapped_negative_samples
+                            )
+                            # print(f"[TEST] 使用全局负样本池计算LTC loss: {ltc_loss.item():.4f} (neg_samples={fixed_neg_samples})")
+                        else:
+                            # 如果没有负样本池，使用批内对比
+                            ltc_loss = self.compute_batch_ltc_loss(
+                                mapped_visual_cls, mapped_text_cls
+                            )
+                            # print(f"[TEST] 使用批内对比计算LTC loss: {ltc_loss.item():.4f}")
 
                     # 获取分类损失
                     cls_loss = image_encoder_outputs.get("loss", None)
+                    
+                    # 计算区域级别的ITC损失（测试模式）
+                    region_itc_loss = None
+                    if getattr(self.config, 'ENABLE_REGION_ITC', True):
+                        region_itc_loss = self.compute_region_itc_loss(
+                            visual_features, region_detected, anatomical_embeddings_batch, image_ids
+                        )
 
                 # 返回简化的结果，只包含需要的字段
                 return {
                     "disease_preds": image_encoder_outputs["disease_preds"],
                     "final_disease_preds": image_encoder_outputs["final_disease_preds"],
                     "ltc_loss": ltc_loss,
+                    "region_itc_loss": region_itc_loss,
                     "cls_loss": cls_loss,
                 }
 
@@ -423,3 +486,89 @@ class MOE(nn.Module):
         loss = (loss_v2t + loss_t2v) / 2
 
         return loss
+
+    def compute_region_itc_loss(self, visual_features, region_detected, anatomical_embeddings_batch, image_ids=None):
+        """
+        计算区域级别的图像-文本对比损失(ITC)
+        
+        参数:
+            visual_features: ViT输出的视觉特征 [B, 1+num_regions, hidden_size]
+            region_detected: 区域检测掩码 [B, num_regions]
+            anatomical_embeddings_batch: 批次中每个样本的解剖区域嵌入，格式为列表，每个元素是字典 {region_index: embedding}
+            image_ids: 图像ID列表（可选，用于调试）
+            
+        返回:
+            region_itc_loss: 区域级别的对比损失，如果无法计算则返回None
+        """
+        if not anatomical_embeddings_batch:
+            return None
+            
+        batch_size = visual_features.size(0)
+        num_regions = 29  # 固定的解剖区域数量
+        device = visual_features.device
+        
+        # 提取区域视觉特征（去除CLS token）
+        region_visual_features = visual_features[:, 1:num_regions+1, :]  # [B, 29, hidden_size]
+        
+        # 收集有效的区域-文本对
+        valid_pairs = []  # 存储 (batch_idx, region_idx, visual_feat, text_embed)
+        
+        # 统计每个样本的有效区域数量
+        samples_with_multiple_regions = 0
+        
+        for batch_idx in range(batch_size):
+            anatomical_embeddings = anatomical_embeddings_batch[batch_idx]
+            if not anatomical_embeddings:  # 如果该样本没有解剖区域嵌入
+                continue
+                
+            batch_valid_pairs = []
+            
+            # 遍历该样本有文本嵌入的区域
+            for region_idx, text_embed in anatomical_embeddings.items():
+                # 检查该区域是否被检测到
+                if region_detected[batch_idx, region_idx - 1] > 0.5:  # region_detected是0-based索引
+                    visual_feat = region_visual_features[batch_idx, region_idx - 1, :]  # [hidden_size]
+                    text_embed = text_embed.to(device)  # [hidden_size]
+                    batch_valid_pairs.append((batch_idx, region_idx, visual_feat, text_embed))
+                        
+            valid_pairs.extend(batch_valid_pairs)
+            samples_with_multiple_regions += 1
+        
+        # 如果没有足够的有效对，返回None
+        if len(valid_pairs) < 2:
+            return None
+            
+        # 提取所有视觉特征和文本嵌入
+        visual_feats = torch.stack([pair[2] for pair in valid_pairs])  # [N, hidden_size]
+        text_embeds = torch.stack([pair[3] for pair in valid_pairs])   # [N, hidden_size]
+        pair_info = [(pair[0], pair[1]) for pair in valid_pairs]  # [(batch_idx, region_idx)]
+        
+        # 通过投影层映射到共享空间
+        mapped_visual = self.region_visual_projection(visual_feats)  # [N, hidden_size]
+        mapped_text = self.region_text_projection(text_embeds)       # [N, hidden_size]
+        
+        # 归一化特征
+        mapped_visual = F.normalize(mapped_visual, p=2, dim=1)
+        mapped_text = F.normalize(mapped_text, p=2, dim=1)
+        
+        # 计算相似度矩阵
+        temperature = getattr(self.config, 'REGION_ITC_TEMPERATURE', 0.07)
+        logits = torch.matmul(mapped_visual, mapped_text.t()) / temperature  # [N, N]
+        
+        # 构建标签：对于第i个视觉特征，它对应的正样本是第i个文本嵌入
+        # 即对角线上的元素是正样本，其他都是负样本
+        labels = torch.arange(len(valid_pairs), device=device, dtype=torch.long)
+        
+        # 计算交叉熵损失（视觉->文本方向）
+        loss_v2t = F.cross_entropy(logits, labels)
+        
+        # 计算交叉熵损失（文本->视觉方向）
+        loss_t2v = F.cross_entropy(logits.t(), labels)
+        
+        # 总损失
+        region_itc_loss = (loss_v2t + loss_t2v) / 2
+        
+        # 统计参与的区域类型数
+        unique_regions = len(set([info[1] for info in pair_info]))
+        
+        return region_itc_loss

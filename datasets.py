@@ -29,6 +29,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
     _shared_data = {
         "loaded": False,
         "annotation": None,
+        "anatomical_embeddings": None,  # 新增：存储解剖区域嵌入数据
     }
 
     # 29个解剖区域的标准名称映射（按照检测器输出的顺序，从1开始）
@@ -63,6 +64,64 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         'carina',                  # 28
         'upper mediastinum'        # 29
     ]
+
+    @classmethod
+    def load_anatomical_embeddings(cls, anatomical_db_path):
+        """
+        加载解剖区域文本嵌入数据
+        
+        参数:
+            anatomical_db_path: 解剖区域数据库文件路径
+        """
+        if cls._shared_data["anatomical_embeddings"] is not None:
+            return  # 已经加载过了
+            
+        if anatomical_db_path is None or not os.path.exists(anatomical_db_path):
+            print(f"⚠️  解剖区域数据库文件不存在或未配置: {anatomical_db_path}")
+            cls._shared_data["anatomical_embeddings"] = {}
+            return
+            
+        try:
+            print(f"📚 正在加载解剖区域数据库: {anatomical_db_path}")
+            with open(anatomical_db_path, 'rb') as f:
+                data = pickle.load(f)
+            
+            if 'image_region_embeddings' in data:
+                raw_embeddings = data['image_region_embeddings']
+                metadata = data.get('metadata', {})
+                print(f"✅ 成功加载解剖区域数据库:")
+                print(f"   - 总条目数: {metadata.get('total_keys', len(raw_embeddings))}")
+                print(f"   - 向量维度: {metadata.get('embedding_dim', 'Unknown')}")
+                print(f"   - 模型名称: {metadata.get('model_name', 'Unknown')}")
+                
+                # 重新组织数据结构: image_id -> {region_index: tensor}
+                organized_embeddings = defaultdict(dict)
+                
+                for key, embedding in tqdm(raw_embeddings.items(), desc="组织解剖区域数据"):
+                    try:
+                        # 解析键格式: image_id_region_index
+                        parts = key.split('_')
+                        if len(parts) >= 2:
+                            region_index = int(parts[-1])  # 最后一部分是区域索引
+                            image_id = parts[0]  # 前面部分是image_id
+                            
+                            embedding_tensor = torch.tensor(embedding, dtype=torch.float32)
+                            organized_embeddings[image_id][region_index] = embedding_tensor  # 直接赋值，不append
+                    except (ValueError, IndexError):
+                        continue  # 忽略格式不正确的键
+                
+                cls._shared_data["anatomical_embeddings"] = dict(organized_embeddings)
+                print(f"📊 组织数据完成，覆盖 {len(organized_embeddings)} 个图像")
+                
+            else:
+                print(f"❌ 数据库格式不正确，缺少 'image_region_embeddings' 字段")
+                cls._shared_data["anatomical_embeddings"] = {}
+                
+        except Exception as e:
+            print(f"❌ 加载解剖区域数据库失败: {e}")
+            import traceback
+            traceback.print_exc()
+            cls._shared_data["anatomical_embeddings"] = {}
 
     @classmethod
     def load_shared_data(cls, directory, ann_dir, mode, extra_ann_dir=None, binary_mode=True):
@@ -228,6 +287,11 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             "iscrowd": torch.zeros((len(boxes),), dtype=torch.int64),
         }
 
+        # 获取该图像的解剖区域文本嵌入（如果有的话）
+        anatomical_embeddings = {}
+        if self._shared_data["anatomical_embeddings"] and image_id in self._shared_data["anatomical_embeddings"]:
+            anatomical_embeddings = self._shared_data["anatomical_embeddings"][image_id]
+
         output = {
             "image": img,
             "image_id": image_id,
@@ -236,6 +300,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             "history": history,
             "label": disease_label,
             "image_path": img_path,
+            "anatomical_embeddings": anatomical_embeddings,  # 新增：该图像的解剖区域嵌入
         }
 
         return output
@@ -311,6 +376,7 @@ def mimic_collate_fn(batch):
     labels = np.empty((batch_size, 14), dtype=np.float16)  # 假设有14个标签
     image_paths = [None] * batch_size
     image_ids = [None] * batch_size
+    anatomical_embeddings = [None] * batch_size  # 新增：解剖区域嵌入
 
     # 填充预分配的数组
     for i, item in enumerate(batch):
@@ -321,6 +387,7 @@ def mimic_collate_fn(batch):
         labels[i] = item["label"]
         image_paths[i] = item["image_path"]
         image_ids[i] = item["image_id"]
+        anatomical_embeddings[i] = item["anatomical_embeddings"]  # 新增
 
     # 转换标签
     label_tensor = torch.from_numpy(labels)
@@ -333,6 +400,7 @@ def mimic_collate_fn(batch):
         "label": label_tensor,
         "image_path": image_paths,
         "image_id": image_ids,
+        "anatomical_embeddings": anatomical_embeddings,  # 新增：解剖区域嵌入
         "gts": (findings, [""]*len(findings)),  # 添加gts字段保持兼容性
         "split": ["train"]*len(findings),  # 添加split字段保持兼容性
     }
