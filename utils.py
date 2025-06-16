@@ -225,6 +225,7 @@ def train(
     writer=None,
     enable_profile=False,
 ):
+    import gc  # 在函数开头导入gc模块
     torch.cuda.empty_cache()
     gc.collect()
     model.train()
@@ -386,6 +387,15 @@ def train(
             elif config.PHASE == "FINETUNE_MISTRAL":
                 # 记录Mistral相关损失
                 writer.add_scalar("Train/Mistral/Loss", loss.item(), global_step)
+
+        # 定期内存清理（每50个批次）
+        if i % 50 == 0 and i > 0:
+            # 清理未使用的中间变量
+            del loss, output
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # 强制垃圾回收
+            gc.collect()
 
         # 如果启用了性能分析，调用prof.step()
         if enable_profile:

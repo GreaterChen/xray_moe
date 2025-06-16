@@ -489,12 +489,12 @@ class MOE(nn.Module):
 
     def compute_region_itc_loss(self, visual_features, region_detected, anatomical_embeddings_batch, image_ids=None):
         """
-        计算区域级别的图像-文本对比损失(ITC)
+        计算区域级别的图像-文本对比损失(ITC) - 内存优化版本
         
         参数:
             visual_features: ViT输出的视觉特征 [B, 1+num_regions, hidden_size]
             region_detected: 区域检测掩码 [B, num_regions]
-            anatomical_embeddings_batch: 批次中每个样本的解剖区域嵌入，格式为列表，每个元素是字典 {region_index: embedding}
+            anatomical_embeddings_batch: 批次中每个样本的解剖区域嵌入
             image_ids: 图像ID列表（可选，用于调试）
             
         返回:
@@ -504,71 +504,88 @@ class MOE(nn.Module):
             return None
             
         batch_size = visual_features.size(0)
-        num_regions = 29  # 固定的解剖区域数量
         device = visual_features.device
         
-        # 提取区域视觉特征（去除CLS token）
-        region_visual_features = visual_features[:, 1:num_regions+1, :]  # [B, 29, hidden_size]
+        # 最大样本数量控制
+        max_samples = getattr(self.config, 'MAX_REGION_ITC_SAMPLES', 64)
         
-        # 收集有效的区域-文本对
-        valid_pairs = []  # 存储 (batch_idx, region_idx, visual_feat, text_embed)
-        
-        # 统计每个样本的有效区域数量
-        samples_with_multiple_regions = 0
-        
-        for batch_idx in range(batch_size):
-            anatomical_embeddings = anatomical_embeddings_batch[batch_idx]
-            if not anatomical_embeddings:  # 如果该样本没有解剖区域嵌入
-                continue
+        try:
+            # 高效数据收集：避免重复列表操作
+            valid_pairs = []
+            text_embeds_list = []
+            
+            # 预计算所有检测mask，减少GPU查询次数
+            detected_masks = region_detected > 0.5  # [B, 29]
+            
+            # 收集有效的视觉-文本对
+            total_candidates = 0
+            for batch_idx in range(batch_size):
+                anatomical_embeddings = anatomical_embeddings_batch[batch_idx]
+                if not anatomical_embeddings:
+                    continue
                 
-            batch_valid_pairs = []
-            
-            # 遍历该样本有文本嵌入的区域
-            for region_idx, text_embed in anatomical_embeddings.items():
-                # 检查该区域是否被检测到
-                if region_detected[batch_idx, region_idx - 1] > 0.5:  # region_detected是0-based索引
-                    visual_feat = region_visual_features[batch_idx, region_idx - 1, :]  # [hidden_size]
-                    text_embed = text_embed.to(device)  # [hidden_size]
-                    batch_valid_pairs.append((batch_idx, region_idx, visual_feat, text_embed))
+                batch_mask = detected_masks[batch_idx]  # [29]
+                
+                for region_idx, text_embed in anatomical_embeddings.items():
+                    if batch_mask[region_idx - 1]:  # 0-based索引
+                        total_candidates += 1
+                        # 早期随机采样控制内存
+                        if total_candidates > max_samples:
+                            if torch.rand(1).item() > (max_samples / total_candidates):
+                                continue
                         
-            valid_pairs.extend(batch_valid_pairs)
-            samples_with_multiple_regions += 1
-        
-        # 如果没有足够的有效对，返回None
-        if len(valid_pairs) < 2:
-            return None
+                        valid_pairs.append((batch_idx, region_idx - 1))
+                        text_embeds_list.append(text_embed)
             
-        # 提取所有视觉特征和文本嵌入
-        visual_feats = torch.stack([pair[2] for pair in valid_pairs])  # [N, hidden_size]
-        text_embeds = torch.stack([pair[3] for pair in valid_pairs])   # [N, hidden_size]
-        pair_info = [(pair[0], pair[1]) for pair in valid_pairs]  # [(batch_idx, region_idx)]
+            # 检查样本数量
+            total_valid = len(valid_pairs)
+            if total_valid < 2:
+                return None
+            
+            # 最终采样确保不超限
+            if total_valid > max_samples:
+                indices = torch.randperm(total_valid)[:max_samples]
+                valid_pairs = [valid_pairs[i] for i in indices]
+                text_embeds_list = [text_embeds_list[i] for i in indices]
+                total_valid = max_samples
+            
+            # 一次性计算所有特征
+            return self._compute_region_itc_direct(
+                visual_features, valid_pairs, text_embeds_list, device
+            )
+                
+        except Exception as e:
+            print(f"⚠️  区域ITC损失计算出错: {e}")
+            return None
+
+    def _compute_region_itc_direct(self, visual_features, valid_pairs, text_embeds_list, device):
+        """直接计算区域ITC损失，内存优化版本"""
+        N = len(valid_pairs)
         
-        # 通过投影层映射到共享空间
-        mapped_visual = self.region_visual_projection(visual_feats)  # [N, hidden_size]
-        mapped_text = self.region_text_projection(text_embeds)       # [N, hidden_size]
+        # 批量构建索引
+        batch_indices = torch.tensor([pair[0] for pair in valid_pairs], device=device)
+        region_indices = torch.tensor([pair[1] for pair in valid_pairs], device=device)
         
-        # 归一化特征
-        mapped_visual = F.normalize(mapped_visual, p=2, dim=1)
-        mapped_text = F.normalize(mapped_text, p=2, dim=1)
+        # 提取区域视觉特征 - 避免重复切片
+        region_visual = visual_features[:, 1:30, :]  # [B, 29, hidden_size]
+        visual_feats = region_visual[batch_indices, region_indices]  # [N, hidden_size]
+        
+        # 批量转换文本特征
+        text_embeds = torch.stack(text_embeds_list).to(device, non_blocking=True)
+        
+        # 投影和归一化 - 合并操作减少内存分配
+        mapped_visual = F.normalize(self.region_visual_projection(visual_feats), p=2, dim=1)
+        mapped_text = F.normalize(self.region_text_projection(text_embeds), p=2, dim=1)
         
         # 计算相似度矩阵
         temperature = getattr(self.config, 'REGION_ITC_TEMPERATURE', 0.07)
         logits = torch.matmul(mapped_visual, mapped_text.t()) / temperature  # [N, N]
         
-        # 构建标签：对于第i个视觉特征，它对应的正样本是第i个文本嵌入
-        # 即对角线上的元素是正样本，其他都是负样本
-        labels = torch.arange(len(valid_pairs), device=device, dtype=torch.long)
+        # 构建标签
+        labels = torch.arange(N, device=device, dtype=torch.long)
         
-        # 计算交叉熵损失（视觉->文本方向）
+        # 计算双向损失
         loss_v2t = F.cross_entropy(logits, labels)
-        
-        # 计算交叉熵损失（文本->视觉方向）
         loss_t2v = F.cross_entropy(logits.t(), labels)
         
-        # 总损失
-        region_itc_loss = (loss_v2t + loss_t2v) / 2
-        
-        # 统计参与的区域类型数
-        unique_regions = len(set([info[1] for info in pair_info]))
-        
-        return region_itc_loss
+        return (loss_v2t + loss_t2v) / 2
