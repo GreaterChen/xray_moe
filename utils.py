@@ -725,9 +725,19 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
 
     # 打印未加载和多余的参数信息
     if len(missing_keys) > 0:
-        print(f"Missing keys: {missing_keys}")
+        print(f"Missing keys ({len(missing_keys)}): {missing_keys[:10]}...")  # 只显示前10个
+        if len(missing_keys) > 10:
+            print(f"... 以及其他 {len(missing_keys) - 10} 个缺失的键")
     if len(unexpected_keys) > 0:
-        print(f"Unexpected keys: {unexpected_keys}")
+        print(f"Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:10]}...")  # 只显示前10个
+        if len(unexpected_keys) > 10:
+            print(f"... 以及其他 {len(unexpected_keys) - 10} 个意外的键")
+            
+    # 计算权重加载成功率
+    total_model_params = len(model.state_dict())
+    loaded_params = total_model_params - len(missing_keys)
+    load_success_rate = loaded_params / total_model_params * 100
+    print(f"权重加载成功率: {load_success_rate:.2f}% ({loaded_params}/{total_model_params})")
 
     if optimizer != None:
         try:
@@ -766,6 +776,13 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
                 
                 print(f"scheduler状态已恢复到接近epoch {epoch}的状态")
                 print(f"当前学习率：{optimizer.param_groups[0]['lr']}")
+                
+                # 验证学习率是否合理
+                current_lr = optimizer.param_groups[0]['lr']
+                if current_lr < 1e-8:
+                    print("⚠️  警告: 当前学习率非常小，可能会导致训练缓慢或损失异常！")
+                elif current_lr > 1e-2:
+                    print("⚠️  警告: 当前学习率较大，可能会导致训练不稳定！")
         except Exception as e:
             print(f"恢复scheduler状态失败: {e}")
             print("继续训练，但scheduler状态可能不正确")

@@ -5,3 +5,6 @@ logs/
 pycocoevalcap/
 tools/chexbert.pth
 *.json
+__pycache__/
+.vscode/
+

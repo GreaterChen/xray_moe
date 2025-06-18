@@ -429,8 +429,8 @@ if __name__ == "__main__":
         batch_size=config.TRAIN_BATCH_SIZE,
         shuffle=True,
         num_workers=config.NUM_WORKERS,
-        prefetch_factor=2,
-        pin_memory=True,
+        # prefetch_factor=2,
+        pin_memory=False,
         # drop_last=True,
         collate_fn=mimic_collate_fn,
     )
@@ -507,7 +507,6 @@ if __name__ == "__main__":
         logger.info(
             f"Reloaded from {config.CHECKPOINT_PATH_FROM}: Last Epoch {last_epoch}, Best Metric {best_metric}, Test Metric {test_metric}"
         )
-
     metrics = compute_scores
 
     # INFER_DETECTION阶段：用于生成所有训练和验证集的bbox并保存为json文件

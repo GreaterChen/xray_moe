@@ -70,8 +70,8 @@ class MOE(nn.Module):
                     if tokenizer is not None:
                         self.text_enhancer = AnatomicalTextEnhancer(
                             tokenizer=tokenizer,
-                            visual_projection=self.visual_projection,
-                            text_projection=self.text_projection,
+                            visual_projection=self.region_visual_projection,
+                            text_projection=self.region_text_projection,
                             device="cuda" if torch.cuda.is_available() else "cpu",
                             config=config  # 传递配置参数
                         )
