@@ -80,15 +80,13 @@ if __name__ == "__main__":
             directory=config.DATA_DIR, 
             ann_dir=config.ANN_DIR, 
             mode=config.MODE, 
-            extra_ann_dir=None,
+            extra_ann_dir=config.EXTRA_ANN_DIR,
             binary_mode=True
         )
         # 创建训练、验证和测试数据集
         train_data = MIMIC(
             directory=config.DATA_DIR,
-            ann_dir=config.ANN_DIR,
-            # extra_ann_dir=config.EXTRA_ANN_DIR,
-            input_size=input_size,
+            ann_dir=config.ANN_DIR,            input_size=input_size,
             random_transform=True,
             tokenizer=tokenizer,
             mode="train",

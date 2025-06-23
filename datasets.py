@@ -169,9 +169,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                 item['findings'] = cls._clean_report(item['findings'])
                 item['history'] = cls._clean_report(item['history'])
                 new_annotation['train'].append(item)
-
-
-
+                
         cls._shared_data["annotation"] = new_annotation
         cls._shared_data["loaded"] = True
 

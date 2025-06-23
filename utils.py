@@ -351,10 +351,15 @@ def train(
         # 反向传播与优化
         if scaler is not None:
             scaler.scale(loss).backward()
+            # 添加梯度裁剪，防止梯度爆炸导致数值不稳定
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
+            # 添加梯度裁剪，防止梯度爆炸导致数值不稳定
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
         # 每log_freq个批次记录一次TensorBoard
