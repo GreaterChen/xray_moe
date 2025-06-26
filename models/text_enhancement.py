@@ -455,23 +455,22 @@ class AnatomicalTextEnhancer(nn.Module):
         
         return enhanced_source
     
-    def forward(self, visual_features, history_text=None, query_image_ids=None, similarity_threshold=0.5, top_k=1, top_sentences=5):
+    def extract_text_features(self, visual_features, query_image_ids=None, similarity_threshold=0.5, top_k=1):
         """
-        前向传播：检索相似的视觉特征并生成增强文本
+        提取文本特征用于cross-attention - 每个解剖区域选择top1
         
         Args:
             visual_features: 视觉特征张量 [batch_size, num_regions, feature_dim]
-            history_text: 历史文本（可选，为了向后兼容）
             query_image_ids: 查询图像ID列表
             similarity_threshold: 相似度阈值
             top_k: 每个区域返回的top相似样本数
-            top_sentences: 全局选择的top句子数
             
         Returns:
-            enhanced_texts: 每个样本的(文本, 分数)元组列表 [batch_size, list_of_tuples]
+            text_features: 文本特征张量 [batch_size, num_regions, hidden_dim]
+            valid_mask: 有效区域掩码 [batch_size, num_regions]
         """
         if not self.enabled:
-            return None
+            return None, None
             
         # 检索相似的视觉特征和对应的文本
         retrieved_texts, similarity_scores = self.retrieve_similar_visual_features(
@@ -480,33 +479,169 @@ class AnatomicalTextEnhancer(nn.Module):
             top_k=top_k
         )
         
-        # 转换为(文本, 分数)元组列表格式
-        enhanced_texts = []
-        batch_size = len(retrieved_texts) if retrieved_texts else 0
-        
-        if batch_size == 0:
-            return None
+        if not retrieved_texts:
+            return None, None
             
+        batch_size = len(retrieved_texts)
+        num_regions = len(retrieved_texts[0]) if retrieved_texts else 29  # 默认29个区域
+        device = visual_features.device
+        
         # 将similarity_scores转换为numpy数组以便处理
         if isinstance(similarity_scores, torch.Tensor):
             similarity_scores_np = similarity_scores.cpu().numpy()
         else:
             similarity_scores_np = np.array(similarity_scores)
         
+        # 为每个区域收集文本
+        all_texts = []
+        text_indices = []  # 记录每个文本对应的batch和区域索引
+        valid_mask = torch.zeros(batch_size, num_regions, dtype=torch.bool, device=device)
+        
         for batch_idx in range(batch_size):
             sample_texts = retrieved_texts[batch_idx]
             sample_scores = similarity_scores_np[batch_idx]
             
-            # 收集当前样本所有区域的(文本, 分数)对
-            sample_enhanced_texts = []
-            
             for region_idx, text in enumerate(sample_texts):
                 region_score = sample_scores[region_idx]
                 
-                # 只添加超过阈值的文本
+                # 只添加超过阈值且非空的文本
                 if region_score >= similarity_threshold and text and text.strip():
-                    sample_enhanced_texts.append((text.strip(), region_score))
-            
-            enhanced_texts.append(sample_enhanced_texts)
+                    all_texts.append(text.strip())
+                    text_indices.append((batch_idx, region_idx))
+                    valid_mask[batch_idx, region_idx] = True
+                else:
+                    # 对于无效区域，添加占位符文本
+                    all_texts.append("")
+                    text_indices.append((batch_idx, region_idx))
         
-        return enhanced_texts
+        if not any(text.strip() for text in all_texts):
+            # 如果没有有效文本，返回零张量
+            zero_features = torch.zeros(batch_size, num_regions, 768, device=device)
+            return zero_features, valid_mask
+        
+        # 批量tokenization
+        with torch.no_grad():
+            encoded = self.tokenizer(
+                all_texts,
+                add_special_tokens=True,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=64  # 限制单句长度
+            ).to(device)
+            
+            # 获取文本嵌入 - 使用更robust的方法获取嵌入层
+            embed_layer = None
+            hidden_dim = 768
+            
+            # 尝试多种方式获取嵌入层
+            if hasattr(self.tokenizer, 'model') and hasattr(self.tokenizer.model, 'get_input_embeddings'):
+                # 对于Transformers模型（如BERT）
+                embed_layer = self.tokenizer.model.get_input_embeddings()
+                hidden_dim = embed_layer.embedding_dim
+            elif hasattr(self.tokenizer, 'get_input_embeddings'):
+                # 直接从tokenizer获取
+                embed_layer = self.tokenizer.get_input_embeddings()
+                hidden_dim = embed_layer.embedding_dim
+            else:
+                # 如果无法获取嵌入层，使用随机初始化的嵌入层
+                print("警告: 无法获取tokenizer的嵌入层，使用随机初始化")
+                vocab_size = len(self.tokenizer.vocab) if hasattr(self.tokenizer, 'vocab') else 30522
+                embed_layer = nn.Embedding(vocab_size, hidden_dim).to(device)
+                # 使用Xavier初始化
+                nn.init.xavier_uniform_(embed_layer.weight)
+            
+            # 计算每个句子的平均嵌入（忽略padding tokens）
+            input_ids = encoded['input_ids']  # [num_texts, seq_len]
+            attention_mask = encoded['attention_mask']  # [num_texts, seq_len]
+            
+            # 获取token嵌入
+            token_embeds = embed_layer(input_ids)  # [num_texts, seq_len, hidden_dim]
+            
+            # 计算每个句子的masked平均嵌入
+            masked_embeds = token_embeds * attention_mask.unsqueeze(-1).float()
+            sentence_embeds = masked_embeds.sum(dim=1) / attention_mask.sum(dim=1, keepdim=True).float()  # [num_texts, hidden_dim]
+            
+            # 如果嵌入维度不是768，需要进行投影
+            if hidden_dim != 768:
+                if not hasattr(self, 'text_embed_projection'):
+                    self.text_embed_projection = nn.Linear(hidden_dim, 768).to(device)
+                sentence_embeds = self.text_embed_projection(sentence_embeds)
+        
+        # 重新组织为batch格式
+        text_features = torch.zeros(batch_size, num_regions, 768, device=device)
+        
+        for i, (batch_idx, region_idx) in enumerate(text_indices):
+            text_features[batch_idx, region_idx] = sentence_embeds[i]
+        
+        return text_features, valid_mask
+
+    def forward(self, visual_features, history_text=None, query_image_ids=None, similarity_threshold=0.5, top_k=1, top_sentences=5, return_features=False):
+        """
+        前向传播：检索相似的视觉特征并生成增强文本或文本特征
+        
+        Args:
+            visual_features: 视觉特征张量 [batch_size, num_regions, feature_dim]
+            history_text: 历史文本（可选，为了向后兼容）
+            query_image_ids: 查询图像ID列表
+            similarity_threshold: 相似度阈值
+            top_k: 每个区域返回的top相似样本数
+            top_sentences: 全局选择的top句子数（仅在return_features=False时使用）
+            return_features: 是否返回文本特征而非文本字符串
+            
+        Returns:
+            如果return_features=True: (text_features [B, num_regions, 768], valid_mask [B, num_regions])
+            如果return_features=False: enhanced_texts (每个样本的(文本, 分数)元组列表)
+        """
+        if not self.enabled:
+            if return_features:
+                return None, None
+            else:
+                return None
+        
+        if return_features:
+            return self.extract_text_features(
+                visual_features, 
+                query_image_ids, 
+                similarity_threshold, 
+                top_k
+            )
+        else:
+            # 原有的文本返回逻辑
+            # 检索相似的视觉特征和对应的文本
+            retrieved_texts, similarity_scores = self.retrieve_similar_visual_features(
+                visual_features, 
+                query_image_ids,
+                top_k=top_k
+            )
+            
+            # 转换为(文本, 分数)元组列表格式
+            enhanced_texts = []
+            batch_size = len(retrieved_texts) if retrieved_texts else 0
+            
+            if batch_size == 0:
+                return None
+                
+            # 将similarity_scores转换为numpy数组以便处理
+            if isinstance(similarity_scores, torch.Tensor):
+                similarity_scores_np = similarity_scores.cpu().numpy()
+            else:
+                similarity_scores_np = np.array(similarity_scores)
+            
+            for batch_idx in range(batch_size):
+                sample_texts = retrieved_texts[batch_idx]
+                sample_scores = similarity_scores_np[batch_idx]
+                
+                # 收集当前样本所有区域的(文本, 分数)对
+                sample_enhanced_texts = []
+                
+                for region_idx, text in enumerate(sample_texts):
+                    region_score = sample_scores[region_idx]
+                    
+                    # 只添加超过阈值的文本
+                    if region_score >= similarity_threshold and text and text.strip():
+                        sample_enhanced_texts.append((text.strip(), region_score))
+                
+                enhanced_texts.append(sample_enhanced_texts)
+            
+            return enhanced_texts

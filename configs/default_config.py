@@ -63,3 +63,17 @@ class DefaultConfig:
 
     # TensorBoard设置
     TENSORBOARD_DIR = "runs"
+
+    # 文本增强模块配置
+    ENABLE_TEXT_ENHANCEMENT = False  # 是否启用文本增强功能
+    TEXT_ENHANCEMENT_PHASES = ["FINETUNE_BERT"]  # 支持文本增强的训练阶段
+    TEXT_ENHANCEMENT_DB_PATH = None  # 文本增强数据库路径，需要在local_config中设置
+    TEXT_ENHANCEMENT_SIMILARITY_THRESHOLD = 0.5  # 相似度阈值
+    TEXT_ENHANCEMENT_TOP_K = 1  # 每个区域返回的top相似样本数
+    TEXT_ENHANCEMENT_TOP_SENTENCES = 5  # 全局选择的top句子数（仅用于传统文本拼接方式）
+    
+    # Cross-Attention文本增强配置
+    TEXT_ENHANCEMENT_USE_CROSS_ATTENTION = True  # 是否使用Cross-Attention方式（新方法）
+    TEXT_ENHANCEMENT_CROSS_ATTN_HEADS = 12  # Cross-Attention头数
+    TEXT_ENHANCEMENT_CROSS_ATTN_DROPOUT = 0.1  # Cross-Attention dropout率
+    TEXT_ENHANCEMENT_FUSION_WEIGHT = 0.3  # 文本增强特征的固定融合权重

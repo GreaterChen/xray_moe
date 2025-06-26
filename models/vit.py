@@ -106,8 +106,25 @@ class DiseaseClassifier(nn.Module):
             disease_preds: [batch_size, num_diseases] - 疾病预测结果
             image_labels: [batch_size, num_diseases] - 图像标签
         """
+        # 数值稳定性检查
+        if torch.isnan(disease_preds).any() or torch.isinf(disease_preds).any():
+            print("⚠️  disease_preds包含NaN或Inf值")
+            disease_preds = torch.nan_to_num(disease_preds, nan=0.0, posinf=10.0, neginf=-10.0)
+            
+        if torch.isnan(image_labels).any() or torch.isinf(image_labels).any():
+            print("⚠️  image_labels包含NaN或Inf值") 
+            image_labels = torch.nan_to_num(image_labels, nan=0.0, posinf=1.0, neginf=0.0)
+        
+        # 限制预测值范围以防止溢出
+        disease_preds = torch.clamp(disease_preds, min=-10.0, max=10.0)
+        
         # 计算二分类交叉熵损失
         loss = F.binary_cross_entropy_with_logits(disease_preds, image_labels)
+        
+        # 最终检查
+        if torch.isnan(loss) or torch.isinf(loss):
+            print("⚠️  疾病分类损失计算出现NaN/Inf，返回零损失")
+            return torch.tensor(0.0, device=disease_preds.device, requires_grad=True)
 
         return loss
 
