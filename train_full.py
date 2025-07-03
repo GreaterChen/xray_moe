@@ -900,8 +900,8 @@ if __name__ == "__main__":
             )
 
             # 每5轮进行一次测试
-            # if (epoch + 1) % 5 == 0 or epoch == config.EPOCHS - 1:
-            if epoch == config.EPOCHS - 1:
+            if (epoch + 1) % 5 == 0 or epoch == config.EPOCHS - 1:
+            # if epoch == config.EPOCHS - 1:
                 # 测试
                 test_loss, result = test_llm(
                     config=config,

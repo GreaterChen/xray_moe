@@ -299,6 +299,8 @@ class AnatomicalTextEnhancer(nn.Module):
         """
         # 检查输入的有效性
         if not enhanced_texts or not any(enhanced_texts):
+            if self.config and getattr(self.config, 'DEBUG_TEXT_ENHANCEMENT', False):
+                print("🔍 create_enhanced_prompt: 没有增强文本，返回原始source")
             return source
             
         # 检查history是否为None或无效
@@ -358,6 +360,10 @@ class AnatomicalTextEnhancer(nn.Module):
         # 第二步：批量tokenization（只对非空文本进行）
         non_empty_texts = [text for text in batch_enhanced_texts if text.strip()]
         
+        # 创建增强文本索引映射，修复索引管理问题
+        enhanced_text_map = {}  # 映射batch_index -> enhanced_encoding_index
+        enhanced_encoding_idx = 0
+        
         if non_empty_texts:
             # 批量编码所有增强文本
             enhanced_encodings = self.tokenizer(
@@ -369,8 +375,14 @@ class AnatomicalTextEnhancer(nn.Module):
                 max_length=100  # 限制增强文本长度
             ).to(device)
             
-            # 批量编码分隔符
-            separator_text = " . "
+            # 建立索引映射，确保索引正确对应
+            for i in range(batch_size):
+                if sample_has_enhancement[i] and batch_enhanced_texts[i].strip():
+                    enhanced_text_map[i] = enhanced_encoding_idx
+                    enhanced_encoding_idx += 1
+            
+            # 使用更合适的分隔符
+            separator_text = " [SEP] "  # 使用更明确的分隔符，而不是简单的点号
             separator_encoding = self.tokenizer(
                 separator_text,
                 add_special_tokens=False,
@@ -387,16 +399,16 @@ class AnatomicalTextEnhancer(nn.Module):
         # 为了并行处理，预先计算所有样本的实际长度
         actual_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
         
-        enhanced_text_idx = 0
         for i in range(batch_size):
             # 获取当前样本的原始history tokens
             actual_length = actual_lengths[i].item()
             actual_history_ids = history_input_ids[i, :actual_length]  # [actual_len]
             
-            if sample_has_enhancement[i] and batch_enhanced_texts[i].strip():
-                # 有增强文本的样本
-                enhanced_ids = enhanced_encodings.input_ids[enhanced_text_idx]  # [enhanced_len]
-                enhanced_mask = enhanced_encodings.attention_mask[enhanced_text_idx]  # [enhanced_len]
+            if sample_has_enhancement[i] and batch_enhanced_texts[i].strip() and i in enhanced_text_map:
+                # 有增强文本的样本，使用修复后的索引映射
+                encoding_idx = enhanced_text_map[i]
+                enhanced_ids = enhanced_encodings.input_ids[encoding_idx]  # [enhanced_len]
+                enhanced_mask = enhanced_encodings.attention_mask[encoding_idx]  # [enhanced_len]
                 
                 # 移除padding（只取有效部分）
                 enhanced_actual_length = enhanced_mask.sum().item()
@@ -404,7 +416,6 @@ class AnatomicalTextEnhancer(nn.Module):
                 
                 # 拼接：original_history + separator + enhanced_text
                 combined_ids = torch.cat([actual_history_ids, separator_ids, enhanced_ids])
-                enhanced_text_idx += 1
             else:
                 # 没有增强文本的样本，保持原始
                 combined_ids = actual_history_ids

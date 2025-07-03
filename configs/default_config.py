@@ -6,7 +6,7 @@
 
 class DefaultConfig:
     # Debug模式
-    DEBUG = True
+    DEBUG = False
 
     # 数据目录设置
     ROOT_DIR = "/path/to/xray_moe/"  # 需要在local_config中覆盖
@@ -38,7 +38,7 @@ class DefaultConfig:
     PHASE = "INFER_BERT"
     MODE = "TRAIN"
     USE_MIXED_PRECISION = True
-    TRAIN_BATCH_SIZE = 64
+    TRAIN_BATCH_SIZE = 32
     VAL_BATCH_SIZE = 64
     NUM_WORKERS = 8
     EPOCHS = 50

@@ -441,13 +441,11 @@ class MOE(nn.Module):
                 getattr(self.config, 'TEXT_ENHANCEMENT_USE_CROSS_ATTENTION', True)
             )
 
-            should_use_cross_attention = False
-            
             if should_use_cross_attention:
                 # 提取区域特征（去除CLS token）用于文本检索
-                region_features = visual_features[:, 1:30, :]  # [batch_size, 29, 768]
+                region_features = visual_features[:, 1:, :]  # [batch_size, 29, 768]
                 
-                # 应用Cross-Attention文本增强，不再处理history拼接
+                # 应用Cross-Attention文本增强
                 enhanced_visual_features = self.apply_text_enhancement(
                     visual_features=visual_features,
                     region_features=region_features,
@@ -503,8 +501,11 @@ class MOE(nn.Module):
                         
                     except Exception as e:
                         print(f"❌ 传统文本增强过程中出错: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        if getattr(self.config, 'DEBUG_TEXT_ENHANCEMENT', False):
+                            import traceback
+                            traceback.print_exc()
+                            print(f"🔍 增强文本格式: {type(enhanced_texts)} - {len(enhanced_texts) if enhanced_texts else 'None'}")
+                            print(f"🔍 History格式: {type(history)}")
                         # 出错时使用原始历史文本
                         enhanced_history = history
 
