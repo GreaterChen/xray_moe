@@ -6,7 +6,7 @@
 
 class DefaultConfig:
     # Debug模式
-    DEBUG = False
+    DEBUG = True
 
     # 数据目录设置
     ROOT_DIR = "/path/to/xray_moe/"  # 需要在local_config中覆盖
@@ -35,7 +35,7 @@ class DefaultConfig:
     KW_TGT = ["findings", "label"]
 
     # 训练设置
-    PHASE = "FINETUNE_BERT"
+    PHASE = "INFER_BERT"
     MODE = "TRAIN"
     USE_MIXED_PRECISION = True
     TRAIN_BATCH_SIZE = 64
@@ -73,7 +73,7 @@ class DefaultConfig:
     TEXT_ENHANCEMENT_TOP_SENTENCES = 5  # 全局选择的top句子数（仅用于传统文本拼接方式）
     
     # Cross-Attention文本增强配置
-    TEXT_ENHANCEMENT_USE_CROSS_ATTENTION = True  # 是否使用Cross-Attention方式（新方法）
+    TEXT_ENHANCEMENT_USE_CROSS_ATTENTION = False  # 是否使用Cross-Attention方式（新方法）
     TEXT_ENHANCEMENT_CROSS_ATTN_HEADS = 12  # Cross-Attention头数
     TEXT_ENHANCEMENT_CROSS_ATTN_DROPOUT = 0.1  # Cross-Attention dropout率
     TEXT_ENHANCEMENT_FUSION_WEIGHT = 0.3  # 文本增强特征的固定融合权重

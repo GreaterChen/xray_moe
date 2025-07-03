@@ -561,53 +561,6 @@ def test(
     return running_loss / len(data_loader), result
 
 
-def infer_bert(
-    config,
-    data_loader,
-    model,
-    num_epochs,
-    current_epoch,
-    device="cuda",
-    kw_src=None,
-    kw_tgt=None,
-    kw_out=None,
-    scaler=None,
-):
-    model.eval()
-    running_loss = 0
-
-    prog_bar = tqdm(data_loader)
-    for i, batch in enumerate(prog_bar):
-        source, target, _ = prepare_batch_data(
-            config,
-            batch,
-            data_loader,
-            device,
-            findings=True,
-            history=False,
-            label=True,
-            bbox=False,
-        )
-        # 转换为kwargs格式
-        source = args_to_kwargs(source)
-        target = args_to_kwargs(target)
-
-        source["phase"] = config.PHASE
-        source["mode"] = "train"
-        source["current_epoch"] = current_epoch
-        source["total_epochs"] = num_epochs
-
-        output = data_distributor(model, source)
-        output = args_to_kwargs(output)
-
-    save_path = os.path.join(config.CHECKPOINT_PATH_TO, "negative_pool", "pool.npy")
-    if not os.path.exists(os.path.dirname(save_path)):
-        os.makedirs(os.path.dirname(save_path))
-
-    model.negative_pool.save(save_path)
-
-    return output
-
 
 def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
     if not os.path.exists(os.path.dirname(path)):
@@ -715,12 +668,17 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
                 # 返回空字典，让模型使用初始权重
                 pass # filtered_state_dict 已经是 {} 了
 
+        elif load_model == "full":
+            print("加载完整模型参数...")
+            # 直接使用完整的state_dict，不进行过滤
+            filtered_state_dict = checkpoint_state_dict
         else:
+            # 默认情况，加载完整模型
             filtered_state_dict = checkpoint_state_dict
 
         # 加载提取后的state_dict到模型
         missing_keys, unexpected_keys = model.load_state_dict(
-            filtered_state_dict, strict=False
+            filtered_state_dict, strict=True
         )
     else:
         print("检查点中没有找到模型状态字典！")
@@ -1106,6 +1064,10 @@ def save_generations(
 
             source["phase"] = config.PHASE
             source["mode"] = mode
+            
+            # 提取image_ids用于检测缓存
+            image_ids = [os.path.basename(path).split('.')[0] for path in batch["image_path"]]
+            source["image_ids"] = image_ids
 
             # 模型推理
             output = data_distributor(model, source)
@@ -2368,6 +2330,10 @@ def test_llm(
             # 设置模型阶段和模式
             source["phase"] = config.PHASE
             source["mode"] = "test"
+            
+            # 提取image_ids用于检测缓存
+            image_ids = [os.path.basename(path).split('.')[0] for path in batch["image_path"]]
+            source["image_ids"] = image_ids
 
             # 使用数据分发器执行模型推理
             outputs = data_distributor(model, source)
@@ -2384,9 +2350,9 @@ def test_llm(
                 total_samples += batch_size
 
             # 提取生成的文本
-            if isinstance(outputs, dict) and "generated_texts" in outputs:
+            if isinstance(outputs, dict) and "findings_text" in outputs:
                 # MOE模型的输出格式
-                generated_texts = outputs["generated_texts"]
+                generated_texts = outputs["findings_text"]
             elif hasattr(outputs, "decoded_texts"):
                 # BERT模型的输出格式
                 generated_texts = outputs.decoded_texts
@@ -2454,8 +2420,8 @@ def test_llm(
     # 创建结果数据字典
     results_data = {
         "image_path": image_paths_list,
-        "findings_gt": all_targets,
         "findings_pred": all_preds,
+        "findings_gt": all_targets,
         "timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")] * len(all_targets),
     }
     

@@ -86,22 +86,23 @@ if __name__ == "__main__":
         # 创建训练、验证和测试数据集
         train_data = MIMIC(
             directory=config.DATA_DIR,
-            ann_dir=config.ANN_DIR,            input_size=input_size,
+            ann_dir=config.ANN_DIR,            
+            input_size=input_size,
             random_transform=True,
             tokenizer=tokenizer,
             mode="train",
             subset_size=100 if config.DEBUG else None,
         )
 
-        val_data = MIMIC(
-            directory=config.DATA_DIR,
-            ann_dir=config.ANN_DIR,
-            input_size=input_size,
-            random_transform=False,
-            tokenizer=tokenizer,
-            mode="val",
-            subset_size=10 if config.PHASE.startswith("TRAIN") else 100,
-        )
+        # val_data = MIMIC(
+        #     directory=config.DATA_DIR,
+        #     ann_dir=config.ANN_DIR,
+        #     input_size=input_size,
+        #     random_transform=False,
+        #     tokenizer=tokenizer,
+        #     mode="val",
+        #     subset_size=10 if config.PHASE.startswith("TRAIN") else 100,
+        # )
 
         test_data = MIMIC(
             directory=config.DATA_DIR,
@@ -195,12 +196,50 @@ if __name__ == "__main__":
                 "CXR BERT": count_parameters(cxr_bert),
             }
         elif config.PHASE == "INFER_BERT":
-            cxr_bert = CXR_BERT_FeatureExtractor()
-            model = MOE(config=config, cxr_bert=cxr_bert)
+            # 初始化检测器
+            detection_model = DetectionOnlyFastRCNN()
+
+            # 创建增强型FastRCNN
+            enhanced_rcnn = EnhancedFastRCNN(
+                pretrained_detector=detection_model, num_regions=29, feature_dim=768
+            )
+
+            # 初始化ViT模型
+            vit_model = MedicalVisionTransformer()
+
+            # 导入必要的模块
+            from models.bert_cross_decoder import BertCrossDecoder
+            from models.moe_bert_adapter import MoEBertAdapter
+
+            # BERT解码器生成模型
+            bert_model = MoEBertAdapter(
+                config=config,
+                tokenizer=tokenizer,
+                hidden_dim=768,
+                max_length=100
+            )
+
+            # 创建MOE模型（和FINETUNE_BERT相同的结构）
+            model = MOE(
+                config=config,
+                object_detector=enhanced_rcnn,
+                image_encoder=vit_model,
+                findings_decoder=bert_model,
+            )
+
+            # 冻结所有参数（推理阶段不需要训练）
+            for param in model.object_detector.parameters():
+                param.requires_grad = False
+            for param in model.image_encoder.parameters():
+                param.requires_grad = False
+            for param in model.findings_decoder.parameters():
+                param.requires_grad = False
 
             # 计算每个模块的参数量
             module_parameters = {
-                "CXR BERT": count_parameters(cxr_bert),
+                "Enhanced FastRCNN (frozen)": count_parameters(enhanced_rcnn),
+                "ViT (frozen)": count_parameters(vit_model),
+                "BERT Decoder (frozen)": count_parameters(bert_model),
             }
         elif config.PHASE == "FINETUNE_MISTRAL":
             # 初始化检测器
@@ -432,13 +471,13 @@ if __name__ == "__main__":
         # drop_last=True,
         collate_fn=mimic_collate_fn,
     )
-    val_loader = data.DataLoader(
-        val_data,
-        batch_size=config.VAL_BATCH_SIZE,
-        shuffle=False,
-        num_workers=config.NUM_WORKERS,
-        collate_fn=mimic_collate_fn,
-    )
+    # val_loader = data.DataLoader(
+    #     val_data,
+    #     batch_size=config.VAL_BATCH_SIZE,
+    #     shuffle=False,
+    #     num_workers=config.NUM_WORKERS,
+    #     collate_fn=mimic_collate_fn,
+    # )
     test_loader = data.DataLoader(
         test_data,
         batch_size=config.VAL_BATCH_SIZE,
@@ -449,7 +488,7 @@ if __name__ == "__main__":
 
     # 打印数量
     logger.info(f"Train Data Size: {len(train_data)}")
-    logger.info(f"Val Data Size: {len(val_data)}")
+    # logger.info(f"Val Data Size: {len(val_data)}")
     logger.info(f"Test Data Size: {len(test_data)}")
 
     model = model.cuda()
@@ -470,7 +509,7 @@ if __name__ == "__main__":
             lr=config.LEARNING_RATE,
             weight_decay=config.WEIGHT_DECAY,
         )
-    elif config.PHASE in ['BUILD_DATABASE']:
+    elif config.PHASE in ['BUILD_DATABASE', 'INFER_BERT']:
         optimizer = None
     else:
         optimizer = optim.AdamW(
@@ -479,15 +518,18 @@ if __name__ == "__main__":
             weight_decay=config.WEIGHT_DECAY,
         )
 
-    scheduler = LinearWarmupCosineLRScheduler(
-        optimizer,
-        config.EPOCHS,
-        config.MIN_LR,
-        config.LEARNING_RATE,
-        decay_rate=None,
-        warmup_start_lr=config.WARMUP_LR,
-        warmup_steps=config.WARMUP_STEPS,
-    )
+    if optimizer is not None:
+        scheduler = LinearWarmupCosineLRScheduler(
+            optimizer,
+            config.EPOCHS,
+            config.MIN_LR,
+            config.LEARNING_RATE,
+            decay_rate=None,
+            warmup_start_lr=config.WARMUP_LR,
+            warmup_steps=config.WARMUP_STEPS,
+        )
+    else:
+        scheduler = None
 
     logger.info(f"Total Parameters: {sum(p.numel() for p in model.parameters())}")
 
@@ -497,14 +539,25 @@ if __name__ == "__main__":
     now = datetime.now()  # current date and time
     date_time = now.strftime("%Y-%m-%d_%H:%M:%S")
 
-    # Load checkpoint if needed
-    if config.CHECKPOINT_PATH_FROM:
-        last_epoch, (best_metric, test_metric) = load(
-            config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler, None
+    # Load checkpoint if needed (但在INFER_BERT阶段将在后面单独处理)
+    if config.CHECKPOINT_PATH_FROM and config.PHASE != "INFER_BERT":
+        loaded_data = load(
+            config.CHECKPOINT_PATH_FROM, model, optimizer, scheduler, load_model="full"
         )
-        logger.info(
-            f"Reloaded from {config.CHECKPOINT_PATH_FROM}: Last Epoch {last_epoch}, Best Metric {best_metric}, Test Metric {test_metric}"
-        )
+        if isinstance(loaded_data, tuple):
+            last_epoch, metrics = loaded_data
+            if metrics is not None and isinstance(metrics, tuple):
+                best_metric, test_metric = metrics
+                logger.info(
+                    f"从 {config.CHECKPOINT_PATH_FROM} 加载模型权重: 上次训练轮次 {last_epoch}, 最佳指标 {best_metric}, 测试指标 {test_metric}"
+                )
+            else:
+                logger.info(
+                    f"从 {config.CHECKPOINT_PATH_FROM} 加载模型权重: 上次训练轮次 {last_epoch}, 无指标数据"
+                )
+        else:
+            last_epoch = -1
+            logger.info(f"从 {config.CHECKPOINT_PATH_FROM} 加载模型权重失败，将从头开始训练")
     metrics = compute_scores
 
     # INFER_DETECTION阶段：用于生成所有训练和验证集的bbox并保存为json文件
@@ -556,7 +609,7 @@ if __name__ == "__main__":
         process_dataset(train_loader, "train")
         
         # 处理验证集
-        process_dataset(val_loader, "val")
+        # process_dataset(val_loader, "val")
         
         # 处理测试集
         process_dataset(test_loader, "test")
@@ -634,18 +687,164 @@ if __name__ == "__main__":
         # 关闭 TensorBoard writer
         writer.close()
     elif config.PHASE == "INFER_BERT":
-        for epoch in range(last_epoch + 1, config.EPOCHS):
-            print(f"Epoch: {epoch}")
-            train_loss = infer_bert(
-                config,
-                train_loader,
-                model,
-                num_epochs=config.EPOCHS,
-                current_epoch=epoch,
-                device="cuda",
-                kw_src=config.KW_SRC,
-                kw_tgt=config.KW_TGT,
-            )
+        # 确保提供了checkpoint路径
+        if not config.CHECKPOINT_PATH_FROM:
+            raise ValueError("INFER_BERT阶段必须提供checkpoint路径用于推理!")
+
+        # 🔧 修复权重加载问题：使用与FINETUNE_BERT相同的加载方式
+        # 分别加载不同组件的权重，而不是一次性加载整个模型
+        
+        # 1. 加载图像编码器权重（ViT）
+        if hasattr(config, 'IMAGE_ENCODER_CHECKPOINT_PATH_FROM') and config.IMAGE_ENCODER_CHECKPOINT_PATH_FROM:
+            _, _ = load(config.IMAGE_ENCODER_CHECKPOINT_PATH_FROM, model.image_encoder, load_model="vit")
+            logger.info(f"从 {config.IMAGE_ENCODER_CHECKPOINT_PATH_FROM} 加载图像编码器权重")
+        
+        # 2. 加载目标检测器权重  
+        if hasattr(config, 'DETECTION_CHECKPOINT_PATH_FROM') and config.DETECTION_CHECKPOINT_PATH_FROM:
+            _, _ = load(config.DETECTION_CHECKPOINT_PATH_FROM, model.object_detector, load_model="object_detector")
+            logger.info(f"从 {config.DETECTION_CHECKPOINT_PATH_FROM} 加载目标检测器权重")
+        
+        # 3. 🚀 关键修复：使用与FINETUNE_BERT相同的方式加载BERT解码器权重
+        logger.info("正在加载BERT解码器权重...")
+        _, _ = load(config.CHECKPOINT_PATH_FROM, model.findings_decoder.decoder, load_model="decoder")
+        logger.info(f"从 {config.CHECKPOINT_PATH_FROM} 加载BERT解码器权重到 model.findings_decoder.decoder")
+        
+        # 4. 如果有其他组件需要加载，可以在这里添加
+        
+        logger.info("权重加载完成！")
+        
+        # 🔧 确保模型处于评估模式
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad = False
+        logger.info("模型已设置为评估模式，所有参数已冻结")
+
+        # 检查是否存在缓存的检测结果
+        detection_cache_path = os.path.join(config.CHECKPOINT_PATH_TO, "detection_cache.json")
+        use_cached_detections = False
+        
+        if os.path.exists(detection_cache_path):
+            logger.info(f"发现检测结果缓存文件: {detection_cache_path}")
+            try:
+                with open(detection_cache_path, 'r') as f:
+                    detection_cache = json.load(f)
+                use_cached_detections = True
+                logger.info(f"成功加载 {len(detection_cache)} 个样本的检测缓存")
+            except Exception as e:
+                logger.warning(f"加载检测缓存失败: {e}，将重新进行检测")
+                use_cached_detections = False
+        else:
+            logger.info("未找到检测结果缓存，将进行首次检测并保存缓存")
+            use_cached_detections = False
+        
+        # 如果没有缓存，先进行bbox检测并保存（只用目标检测器）
+        if not use_cached_detections:
+            logger.info("正在生成bbox检测缓存...")
+            detection_cache = {}
+            
+            # 创建独立的检测器用于bbox预测
+            cache_detector = DetectionOnlyFastRCNN()
+            _, _ = load(config.DETECTION_CHECKPOINT_PATH_FROM, cache_detector, load_model="object_detector")
+            cache_detector = cache_detector.cuda()
+            cache_detector.eval()
+            
+            with torch.no_grad():
+                cache_progress = tqdm(test_loader, desc="生成bbox缓存")
+                for batch_idx, batch in enumerate(cache_progress):
+                    images = batch["image"].cuda()
+                    image_paths = batch["image_path"]
+                    
+                    # 只进行目标检测，获取bbox预测
+                    detections = cache_detector.predict_regions(images)
+                    
+                    # 保存每个样本的bbox预测结果
+                    for i, img_path in enumerate(image_paths):
+                        image_id = os.path.basename(img_path).split('.')[0]
+                        
+                        # 提取单个样本的bbox预测（29个区域）
+                        sample_detection = {
+                            "boxes": detections[i]["boxes"].cpu().numpy().tolist(),  # 预测的bbox坐标
+                            "labels": detections[i]["labels"].cpu().numpy().tolist(),  # 区域标签
+                            "scores": detections[i]["scores"].cpu().numpy().tolist()   # 置信度分数
+                        }
+                        
+                        detection_cache[image_id] = sample_detection
+            
+            # 清理临时检测器
+            del cache_detector
+            torch.cuda.empty_cache()
+            
+            # 保存缓存到文件
+            os.makedirs(os.path.dirname(detection_cache_path), exist_ok=True)
+            with open(detection_cache_path, 'w') as f:
+                json.dump(detection_cache, f)
+            logger.info(f"bbox检测缓存已保存到: {detection_cache_path}")
+
+        # 确保所有参数都被冻结（推理模式）
+        for param in model.parameters():
+            param.requires_grad = False
+
+        # 初始化CheXbert评估器（如果需要）
+        chexbert_metrics = None
+        if hasattr(config, 'CHEXBERT_CHECKPOINT_PATH') and config.CHEXBERT_CHECKPOINT_PATH:
+            try:
+                from tools.metrics_clinical import CheXbertMetrics
+                chexbert_metrics = CheXbertMetrics(
+                    checkpoint_path=config.CHEXBERT_CHECKPOINT_PATH,
+                    mbatch_size=config.VAL_BATCH_SIZE,
+                    device="cuda"
+                )
+                logger.info("CheXbert评估器初始化成功")
+            except Exception as e:
+                logger.warning(f"CheXbert评估器初始化失败: {e}")
+
+        # 设置使用缓存的标志，传递给模型
+        model.use_detection_cache = True
+        model.detection_cache = detection_cache
+        logger.info("启用bbox缓存模式进行推理...")
+
+        # 在测试集上进行推理和评估
+        logger.info("开始INFER_BERT阶段：在测试集上进行推理和评估...")
+        
+        test_loss, result = test_llm(
+            config=config,
+            data_loader=test_loader,
+            model=model,
+            logger=logger,
+            metric_ftns=compute_scores,
+            mode="test",
+            device="cuda",
+            chexbert_metrics=chexbert_metrics,
+        )
+
+        # 打印推理结果
+        if result:
+            logger.info("=== INFER_BERT 推理结果 ===")
+            if "report_generation_metrics" in result:
+                metrics = result["report_generation_metrics"]
+                logger.info(f"BLEU-1: {metrics.get('BLEU_1', 'N/A'):.4f}")
+                logger.info(f"BLEU-4: {metrics.get('BLEU_4', 'N/A'):.4f}")
+                logger.info(f"ROUGE-L: {metrics.get('ROUGE_L', 'N/A'):.4f}")
+                
+            if "chexbert_metrics" in result:
+                chexbert = result["chexbert_metrics"]
+                logger.info(f"CheXbert CE F1: {chexbert.get('ce_f1', 'N/A'):.4f}")
+                logger.info(f"CheXbert CE Precision: {chexbert.get('ce_precision', 'N/A'):.4f}")
+                logger.info(f"CheXbert CE Recall: {chexbert.get('ce_recall', 'N/A'):.4f}")
+
+        # 保存生成结果
+        logger.info("保存推理生成结果...")
+        save_generations(
+            config,
+            test_loader,
+            model,
+            logger,
+            save_dir=os.path.join(config.CHECKPOINT_PATH_TO, "infer_bert_generations"),
+            mode="test",
+            device="cuda",
+            kw_src=config.KW_SRC,
+            kw_tgt=config.KW_TGT,
+        )
 
     # 统一处理所有微调阶段(MISTRAL/LLAMA/BERT)
     elif config.PHASE.startswith("FINETUNE_"):
@@ -700,40 +899,57 @@ if __name__ == "__main__":
                 writer=writer,
             )
 
-            # 测试
-            test_loss, result = test_llm(
-                config=config,
-                data_loader=test_loader,
-                model=model,
-                logger=logger,
-                metric_ftns=compute_scores,
-                mode="val",
-                device="cuda",
-                epoch=epoch,
-                writer=writer,
-                chexbert_metrics=chexbert_metrics,
-            )
+            # 每5轮进行一次测试
+            # if (epoch + 1) % 5 == 0 or epoch == config.EPOCHS - 1:
+            if epoch == config.EPOCHS - 1:
+                # 测试
+                test_loss, result = test_llm(
+                    config=config,
+                    data_loader=test_loader,
+                    model=model,
+                    logger=logger,
+                    metric_ftns=compute_scores,
+                    mode="test",
+                    device="cuda",
+                    epoch=epoch,
+                    writer=writer,
+                    chexbert_metrics=chexbert_metrics,
+                )
 
-            # 保存检查点 - 使用CheXbert指标如果可用
-            if chexbert_metrics is not None and "chexbert_metrics" in result and "ce_f1" in result["chexbert_metrics"]:
-                save_path = os.path.join(
-                    config.CHECKPOINT_PATH_TO,
-                    f'epoch_{epoch}_bleu_{result["report_generation_metrics"]["BLEU_1"]:.4f}_ce_f1_{result["chexbert_metrics"]["ce_f1"]:.4f}.pth',
+                # 保存检查点 - 使用CheXbert指标如果可用
+                if chexbert_metrics is not None and "chexbert_metrics" in result and "ce_f1" in result["chexbert_metrics"]:
+                    save_path = os.path.join(
+                        config.CHECKPOINT_PATH_TO,
+                        f'epoch_{epoch}_bleu_{result["report_generation_metrics"]["BLEU_1"]:.4f}_ce_f1_{result["chexbert_metrics"]["ce_f1"]:.4f}.pth',
+                    )
+                else:
+                    save_path = os.path.join(
+                        config.CHECKPOINT_PATH_TO,
+                        f'epoch_{epoch}_bleu_{result["report_generation_metrics"]["BLEU_1"]:.4f}.pth',
+                    )
+
+                save(
+                    save_path,
+                    model,
+                    optimizer,
+                    scheduler,
+                    epoch,
+                    (test_loss, result),
                 )
             else:
+                # 非测试轮次也保存检查点，但不包含测试指标
                 save_path = os.path.join(
                     config.CHECKPOINT_PATH_TO,
-                    f'epoch_{epoch}_bleu_{result["report_generation_metrics"]["BLEU_1"]:.4f}.pth',
+                    f'epoch_{epoch}.pth',
                 )
-
-            save(
-                save_path,
-                model,
-                optimizer,
-                scheduler,
-                epoch,
-                (test_loss, result),
-            )
+                save(
+                    save_path,
+                    model,
+                    optimizer,
+                    scheduler,
+                    epoch,
+                    None,  # 不包含测试结果
+                )
 
             # 每个epoch后清理内存
             torch.cuda.empty_cache()

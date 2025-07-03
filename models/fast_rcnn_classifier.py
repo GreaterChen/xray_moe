@@ -340,14 +340,14 @@ class EnhancedFastRCNN(nn.Module):
             teacher_forcing_ratio = max(0.2, 1.0 - 0.8 * current_epoch / total_epochs)
 
         # 是否使用ground truth边界框的条件
-        use_gt = (
-            self.training
-            and targets is not None
-            and (
-                teacher_forcing_ratio is not None
-                and random.random() < teacher_forcing_ratio
-            )
-        )
+        # use_gt = (
+        #     self.training
+        #     and targets is not None
+        #     and (
+        #         teacher_forcing_ratio is not None
+        #         and random.random() < teacher_forcing_ratio
+        #     )
+        # )
 
         use_gt = True
 

@@ -256,22 +256,6 @@ class BertCrossDecoder(nn.Module):
         Returns:
             generated_texts: 生成的文本列表
         """
-        # 数值稳定性检查和修复
-        def check_and_fix_tensor(tensor, name):
-            if torch.isnan(tensor).any():
-                print(f"警告: {name} 包含 NaN 值，将被替换为0")
-                tensor = torch.nan_to_num(tensor, nan=0.0)
-            if torch.isinf(tensor).any():
-                print(f"警告: {name} 包含 Inf 值，将被截断")
-                tensor = torch.clamp(tensor, -1e6, 1e6)
-            return tensor
-        
-        # 检查输入特征的数值稳定性
-        visual_features = check_and_fix_tensor(visual_features, "visual_features")
-        
-        # 限制温度参数范围，避免数值不稳定
-        temperature = max(0.1, min(temperature, 2.0))
-        
         # 准备生成所需的输入
         input_ids = history_input_ids
         attention_mask = history_attention_mask
@@ -294,41 +278,14 @@ class BertCrossDecoder(nn.Module):
             "do_sample": do_sample,
             "top_p": top_p,
             "temperature": temperature,
-            # 添加数值稳定性参数
-            "min_length": 1,  # 确保至少生成1个token
-            "bad_words_ids": None,  # 避免bad_words导致的问题
         }
         
         # 添加交叉注意力参数
         generation_kwargs.update(model_kwargs)
         
-        try:
-            # 生成文本
-            outputs = self.text_decoder.generate(**generation_kwargs)
-        except RuntimeError as e:
-            if "device-side assert" in str(e) or "multinomial" in str(e):
-                print(f"生成过程中遇到数值稳定性问题: {e}")
-                print("尝试使用更保守的生成参数重新生成...")
-                
-                # 使用更保守的参数重试
-                conservative_kwargs = generation_kwargs.copy()
-                conservative_kwargs.update({
-                    "do_sample": False,  # 使用贪心解码
-                    "num_beams": 1,      # 不使用beam search
-                    "temperature": 1.0,   # 重置温度
-                    "top_p": 1.0,        # 不使用top_p
-                })
-                
-                try:
-                    outputs = self.text_decoder.generate(**conservative_kwargs)
-                except RuntimeError as e2:
-                    print(f"保守参数重试仍然失败: {e2}")
-                    # 返回空的生成结果
-                    batch_size = input_ids.size(0)
-                    return [""] * batch_size
-            else:
-                raise e
-        
+        # 生成文本
+        outputs = self.text_decoder.generate(**generation_kwargs)
+
         # 解码生成的文本，去除历史文本部分，只保留新生成的内容
         generated_texts = []
         for i, tokens in enumerate(outputs):

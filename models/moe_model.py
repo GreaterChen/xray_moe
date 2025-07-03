@@ -4,6 +4,8 @@ import torch.nn.functional as F
 import gc
 import pickle
 import os
+from models.fast_rcnn_classifier import DetectionOnlyFastRCNN
+from models.vit import MedicalVisionTransformer
 from utils import analyze_gpu_memory
 
 from models.negativa_sample_pool import NegativeSamplePool
@@ -30,6 +32,10 @@ class MOE(nn.Module):
         self.cxr_bert = cxr_bert
         # 保存参数配置
         self.config = config
+        
+        # 添加检测结果缓存支持
+        self.use_detection_cache = False
+        self.detection_cache = {}
         
         self.visual_projection = nn.Linear(768, 768)
         self.text_projection = nn.Linear(768, 768)
@@ -69,7 +75,7 @@ class MOE(nn.Module):
         else:
             print("📝 Cross-Attention文本增强功能未启用")
         
-        # 在PRETRAIN_VIT阶段加载负样本池
+        # 只在PRETRAIN_VIT阶段加载负样本池
         if config.PHASE == "PRETRAIN_VIT":
             self.negative_pool = NegativeSamplePool(
                 num_diseases=config.NUM_DISEASES if hasattr(config, "NUM_DISEASES") else 14
@@ -290,20 +296,113 @@ class MOE(nn.Module):
                     "final_disease_preds": image_encoder_outputs["final_disease_preds"],
                     "ltc_loss": ltc_loss,
                     "region_itc_loss": region_itc_loss,
-                    "cls_loss": cls_loss,
+                    "cls_loss": cls_loss,   
                 }
 
         elif phase == "INFER_BERT":
+            # INFER_BERT阶段：使用完整的模型进行推理（和FINETUNE_BERT类似但在推理模式）
             with torch.no_grad():
-                # 获取文本的CLS token
-                text_cls_token = self.cxr_bert(findings)
+                # 检查是否使用缓存的检测结果
+                if self.use_detection_cache and hasattr(self, 'detection_cache'):
+                    # 从缓存中获取检测结果
+                    batch_size = image.shape[0]
+                    device = image.device
+                    
+                    # 获取当前batch的image_ids
+                    if 'image_ids' in kwargs:
+                        image_ids = kwargs['image_ids']
+                    elif image_ids is not None:
+                        pass  # 使用传入的image_ids
+                    else:
+                        # 如果没有image_ids，回退到正常检测
+                        print("⚠️  警告：缓存模式下未提供image_ids，回退到正常检测")
+                        detection_outputs = self.object_detector(
+                            image, bbox_targets, current_epoch=current_epoch, total_epochs=total_epochs,
+                        )
+                        region_features = detection_outputs["region_features"]
+                        region_detected = detection_outputs["region_detected"]
+                    
+                    if image_ids is not None:
+                        # 从缓存构建bbox targets（作为"ground truth"）
+                        cached_targets = []
+                        
+                        for i, img_id in enumerate(image_ids):
+                            if img_id in self.detection_cache:
+                                cache_data = self.detection_cache[img_id]
+                                # 构建目标格式，使用缓存的bbox作为"ground truth"
+                                target = {
+                                    "boxes": torch.tensor(cache_data["boxes"], device=device, dtype=torch.float32),
+                                    "labels": torch.tensor(cache_data["labels"], device=device, dtype=torch.long),
+                                    "image_id": torch.tensor(i, device=device),
+                                    "area": torch.tensor([0.0] * len(cache_data["boxes"]), device=device),  # 占位符
+                                    "iscrowd": torch.tensor([0] * len(cache_data["boxes"]), device=device, dtype=torch.long)
+                                }
+                                cached_targets.append(target)
+                            else:
+                                print(f"⚠️  警告：图像 {img_id} 不在检测缓存中")
+                                # 回退到实时检测
+                                single_detection = self.object_detector.predict_regions(image[i:i+1])
+                                target = {
+                                    "boxes": single_detection[0]["boxes"],
+                                    "labels": single_detection[0]["labels"], 
+                                    "image_id": torch.tensor(i, device=device),
+                                    "area": torch.tensor([0.0] * len(single_detection[0]["boxes"]), device=device),
+                                    "iscrowd": torch.tensor([0] * len(single_detection[0]["boxes"]), device=device, dtype=torch.long)
+                                }
+                                cached_targets.append(target)
+                        
+                        # 使用缓存的bbox作为"ground truth"提取特征（相当于use_gt=True）
+                        detection_outputs = self.object_detector(
+                            image,
+                            cached_targets,  # 使用缓存的bbox作为targets
+                            current_epoch=current_epoch,
+                            total_epochs=total_epochs,
+                        )
+                        region_features = detection_outputs["region_features"]
+                        region_detected = detection_outputs["region_detected"]
+                        
+                        print(f"✅ 使用 {len(image_ids)} 个样本的缓存bbox提取特征")
+                else:
+                    # 第一步：使用目标检测器提取区域特征（冻结）
+                    detection_outputs = self.object_detector(
+                        image,
+                        bbox_targets,
+                        current_epoch=current_epoch,
+                        total_epochs=total_epochs,
+                    )
+                    region_features = detection_outputs["region_features"]
+                    region_detected = detection_outputs["region_detected"]
 
-                # 如果有标签，更新负样本池
-                if label is not None:
-                    self.negative_pool.update(text_cls_token, label)
+                # 第二步：通过ViT处理区域特征（冻结）
+                image_encoder_outputs = self.image_encoder(
+                    region_features, 
+                    region_detected=region_detected, 
+                    image_labels=label,
+                    phase=phase,  # 传递phase参数给ViT
+                    use_moe=True
+                )
+ 
+                # 直接使用ViT输出的完整视觉特征（已包含cls_token和region特征）
+                visual_features = image_encoder_outputs["visual_features"]  # [B, 1+num_regions, hidden_size]
 
-                # 返回文本特征
-                return {"text_cls_token": text_cls_token}
+                # 第三步：通过BERT解码器进行推理
+                if mode == "train":
+                    # 如果是训练模式（用于构建负样本池等）
+                    outputs = self.findings_decoder(
+                        visual_features=visual_features,
+                        history_encoding=history,
+                        findings=findings,
+                        use_history=True
+                    )
+                    return outputs
+                else:
+                    # 纯推理模式：只生成文本
+                    generated_texts = self.findings_decoder.generate(
+                        visual_features=visual_features,
+                        history_encoding=history,
+                        use_history=True
+                    )
+                    return {"findings_text": generated_texts}
 
         elif phase == "FINETUNE_MISTRAL" or phase == "FINETUNE_LLAMA" or phase == "FINETUNE_BERT":
             # 第一步：使用目标检测器提取区域特征（冻结）
@@ -341,6 +440,8 @@ class MOE(nn.Module):
                 getattr(self.config, 'ENABLE_TEXT_ENHANCEMENT', False) and
                 getattr(self.config, 'TEXT_ENHANCEMENT_USE_CROSS_ATTENTION', True)
             )
+
+            should_use_cross_attention = False
             
             if should_use_cross_attention:
                 # 提取区域特征（去除CLS token）用于文本检索
@@ -426,7 +527,7 @@ class MOE(nn.Module):
                         history_encoding=enhanced_history,  # 使用增强后的历史文本
                         use_history=True
                     )
-                return {"generated_texts": generated_texts}
+                return {"findings_text": generated_texts}
 
         elif phase == "BUILD_DATABASE":
             # BUILD_DATABASE阶段：提取解剖区域特征用于构建数据库
