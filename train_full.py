@@ -377,7 +377,7 @@ if __name__ == "__main__":
             vit_model = MedicalVisionTransformer()
 
             # 加载预训练的ViT模型
-            _, _ = load(config.VIT_CHECKPOINT_PATH_FROM, vit_model, load_model="vit")
+            # _, _ = load(config.VIT_CHECKPOINT_PATH_FROM, vit_model, load_model="vit")
 
             # 导入必要的模块
             from models.bert_cross_decoder import BertCrossDecoder
@@ -404,13 +404,13 @@ if __name__ == "__main__":
                 param.requires_grad = False
             
             # 冻结ViT的预训练参数，但保留LoRA参数可训练
-            for name, param in model.image_encoder.named_parameters():
-                if 'lora_A' in name or 'lora_B' in name:
-                    # LoRA参数保持可训练
-                    param.requires_grad = True
-                else:
-                    # 冻结其他所有参数（预训练的encoder、分类器等）
-                    param.requires_grad = False
+            # for name, param in model.image_encoder.named_parameters():
+            #     if 'lora_A' in name or 'lora_B' in name:
+            #         # LoRA参数保持可训练
+            #         param.requires_grad = True
+            #     else:
+            #         # 冻结其他所有参数（预训练的encoder、分类器等）
+            #         param.requires_grad = False
 
             # 计算每个模块的参数量
             # 统计ViT中可训练和冻结的参数
