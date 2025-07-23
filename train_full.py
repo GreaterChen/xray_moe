@@ -35,6 +35,7 @@ from tqdm import tqdm
 
 # --- Project Packages ---
 from utils import *
+from device_utils import DeviceManager, to_device, setup_for_distributed
 from datasets import MIMIC, mimic_collate_fn
 from losses import *
 from models.mrgn_model import *
@@ -52,8 +53,16 @@ logger = setup_logger(log_dir="logs")
 
 # --- Main Program ---
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = config.CUDA_VISIBLE_DEVICES
+    # 初始化设备管理器
+    device_manager = DeviceManager(config)
+    device_manager.print_info()
+    
+    # 设置分布式训练的打印行为
+    setup_for_distributed(device_manager.is_main_process())
+    
     torch.manual_seed(config.SEED)
+    if device_manager.distributed:
+        torch.manual_seed(config.SEED + device_manager.rank)
 
     # Dataset-specific settings
     if config.DATASET_NAME == "MIMIC":
@@ -461,13 +470,17 @@ if __name__ == "__main__":
         raise ValueError("Invalid model_name")
 
     # Data loaders
+    # 获取分布式采样器
+    train_sampler = device_manager.get_sampler(train_data, shuffle=True)
+    
     train_loader = data.DataLoader(
         train_data,
         batch_size=config.TRAIN_BATCH_SIZE,
-        shuffle=True,
+        sampler=train_sampler,
+        shuffle=(train_sampler is None),  # 如果有sampler就不能设置shuffle
         num_workers=config.NUM_WORKERS,
         # prefetch_factor=2,
-        pin_memory=False,
+        pin_memory=True if device_manager.device.type == 'cuda' else False,
         # drop_last=True,
         collate_fn=mimic_collate_fn,
     )
@@ -478,11 +491,16 @@ if __name__ == "__main__":
     #     num_workers=config.NUM_WORKERS,
     #     collate_fn=mimic_collate_fn,
     # )
+    # 测试集采样器
+    test_sampler = device_manager.get_sampler(test_data, shuffle=False)
+    
     test_loader = data.DataLoader(
         test_data,
         batch_size=config.VAL_BATCH_SIZE,
+        sampler=test_sampler,
         shuffle=False,
         num_workers=config.NUM_WORKERS,
+        pin_memory=True if device_manager.device.type == 'cuda' else False,
         collate_fn=mimic_collate_fn,
     )
 
@@ -491,7 +509,8 @@ if __name__ == "__main__":
     # logger.info(f"Val Data Size: {len(val_data)}")
     logger.info(f"Test Data Size: {len(test_data)}")
 
-    model = model.cuda()
+    # 使用设备管理器包装模型（自动处理单卡/多卡）
+    model = device_manager.wrap_model(model)
 
     # 在FINETUNE_MISTRAL或FINETUNE_LLAMA或FINETUNE_BERT阶段，只优化特定参数
     if config.PHASE.startswith("FINETUNE_"):
@@ -504,19 +523,31 @@ if __name__ == "__main__":
         
         logger.info(f"可训练参数数量: {sum(p.numel() for p in trainable_params)}")
         
+        # 根据GPU数量调整学习率
+        adjusted_lr = device_manager.adjust_learning_rate(config.LEARNING_RATE) if config.ADJUST_LR_FOR_MULTI_GPU else config.LEARNING_RATE
+        
         optimizer = optim.AdamW(
             trainable_params,
-            lr=config.LEARNING_RATE,
+            lr=adjusted_lr,
             weight_decay=config.WEIGHT_DECAY,
         )
+        
+        if device_manager.is_main_process():
+            logger.info(f"原始学习率: {config.LEARNING_RATE}, 调整后学习率: {adjusted_lr}")
     elif config.PHASE in ['BUILD_DATABASE', 'INFER_BERT']:
         optimizer = None
     else:
+        # 根据GPU数量调整学习率
+        adjusted_lr = device_manager.adjust_learning_rate(config.LEARNING_RATE) if config.ADJUST_LR_FOR_MULTI_GPU else config.LEARNING_RATE
+        
         optimizer = optim.AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),
-            lr=config.LEARNING_RATE,
+            lr=adjusted_lr,
             weight_decay=config.WEIGHT_DECAY,
         )
+        
+        if device_manager.is_main_process():
+            logger.info(f"原始学习率: {config.LEARNING_RATE}, 调整后学习率: {adjusted_lr}")
 
     if optimizer is not None:
         scheduler = LinearWarmupCosineLRScheduler(
@@ -575,7 +606,7 @@ if __name__ == "__main__":
             logger.info(f"处理{split_name}数据集...")
             
             for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Processing {split_name}")):
-                images = batch["image"].cuda()
+                images = to_device(batch["image"], device_manager.device)
                 image_paths = batch["image_path"]
                 
                 # 执行推断，获取检测结果
@@ -629,6 +660,11 @@ if __name__ == "__main__":
 
         for epoch in range(last_epoch + 1, config.EPOCHS):
             print(f"Epoch: {epoch}")
+            
+            # 分布式训练时设置epoch到sampler
+            if device_manager.distributed and train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+                
             train_loss = train(
                 config,
                 train_loader,
@@ -638,11 +674,12 @@ if __name__ == "__main__":
                 config.EPOCHS,
                 epoch,
                 scheduler=scheduler,
-                device="cuda",
+                device=device_manager.device,
                 kw_src=config.KW_SRC,
                 kw_tgt=config.KW_TGT,
                 scaler=scaler,
                 writer=writer,
+                device_manager=device_manager,  # 传递设备管理器
             )
             if config.PHASE == "TRAIN_DETECTION":
                 test_loss, result = test_detection(
@@ -745,13 +782,13 @@ if __name__ == "__main__":
             # 创建独立的检测器用于bbox预测
             cache_detector = DetectionOnlyFastRCNN()
             _, _ = load(config.DETECTION_CHECKPOINT_PATH_FROM, cache_detector, load_model="object_detector")
-            cache_detector = cache_detector.cuda()
+            cache_detector = cache_detector.to(device_manager.device)
             cache_detector.eval()
             
             with torch.no_grad():
                 cache_progress = tqdm(test_loader, desc="生成bbox缓存")
                 for batch_idx, batch in enumerate(cache_progress):
-                    images = batch["image"].cuda()
+                    images = to_device(batch["image"], device_manager.device)
                     image_paths = batch["image_path"]
                     
                     # 只进行目标检测，获取bbox预测
@@ -792,7 +829,7 @@ if __name__ == "__main__":
                 chexbert_metrics = CheXbertMetrics(
                     checkpoint_path=config.CHEXBERT_CHECKPOINT_PATH,
                     mbatch_size=config.VAL_BATCH_SIZE,
-                    device="cuda"
+                    device=str(device_manager.device)
                 )
                 logger.info("CheXbert评估器初始化成功")
             except Exception as e:
@@ -813,7 +850,7 @@ if __name__ == "__main__":
             logger=logger,
             metric_ftns=compute_scores,
             mode="test",
-            device="cuda",
+            device=device_manager.device,
             chexbert_metrics=chexbert_metrics,
         )
 
@@ -841,7 +878,7 @@ if __name__ == "__main__":
             logger,
             save_dir=os.path.join(config.CHECKPOINT_PATH_TO, "infer_bert_generations"),
             mode="test",
-            device="cuda",
+            device=device_manager.device,
             kw_src=config.KW_SRC,
             kw_tgt=config.KW_TGT,
         )
@@ -868,7 +905,7 @@ if __name__ == "__main__":
             chexbert_metrics = CheXbertMetrics(
                 checkpoint_path=chexbert_path,
                 mbatch_size=config.VAL_BATCH_SIZE,
-                device="cuda"
+                device=str(device_manager.device)
             )
             logger.info(f"CheXbert评估器初始化成功，使用检查点: {chexbert_path}")
         except Exception as e:
@@ -881,6 +918,10 @@ if __name__ == "__main__":
 
         for epoch in range(last_epoch + 1, config.EPOCHS):
             logger.info(f"Epoch: {epoch}")
+            
+            # 分布式训练时设置epoch到sampler
+            if device_manager.distributed and train_sampler is not None:
+                train_sampler.set_epoch(epoch)
 
             # 训练
             train_loss = train(
@@ -892,11 +933,12 @@ if __name__ == "__main__":
                 config.EPOCHS,
                 epoch,
                 scheduler=scheduler,
-                device="cuda",
+                device=device_manager.device,
                 kw_src=config.KW_SRC,
                 kw_tgt=config.KW_TGT,
                 scaler=scaler,
                 writer=writer,
+                device_manager=device_manager,  # 传递设备管理器
             )
 
             # 每5轮进行一次测试
@@ -910,7 +952,7 @@ if __name__ == "__main__":
                     logger=logger,
                     metric_ftns=compute_scores,
                     mode="test",
-                    device="cuda",
+                    device=device_manager.device,
                     epoch=epoch,
                     writer=writer,
                     chexbert_metrics=chexbert_metrics,
@@ -967,7 +1009,7 @@ if __name__ == "__main__":
             logger=logger,
             metric_ftns=compute_scores,
             mode="test",
-            device="cuda",
+            device=device_manager.device,
             chexbert_metrics=chexbert_metrics,
         )
 
@@ -991,7 +1033,7 @@ if __name__ == "__main__":
             model=model,
             data_loader=train_loader,
             logger=logger,
-            device="cuda"
+            device=device_manager.device,
         )
         
         logger.info("解剖区域特征数据库构建完成！")
@@ -1013,7 +1055,7 @@ if __name__ == "__main__":
             logger,
             save_dir=os.path.join(config.CHECKPOINT_PATH_TO, "generations"),
             mode="test",
-            device="cuda",
+            device=device_manager.device,
             kw_src=config.KW_SRC,
             kw_tgt=config.KW_TGT,
         )

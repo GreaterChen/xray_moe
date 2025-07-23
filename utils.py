@@ -224,6 +224,7 @@ def train(
     scaler=None,
     writer=None,
     enable_profile=False,
+    device_manager=None,  # 新增设备管理器参数
 ):
     import gc  # 在函数开头导入gc模块
     torch.cuda.empty_cache()
@@ -339,7 +340,14 @@ def train(
                 else:
                     raise ValueError("Invalid phase")
 
-        running_loss += loss.item()
+        # 分布式训练时同步损失
+        if device_manager is not None and device_manager.distributed:
+            # 同步损失值
+            loss_tensor = loss.detach().clone()
+            loss_reduced = device_manager.reduce_tensor(loss_tensor)
+            running_loss += loss_reduced.item()
+        else:
+            running_loss += loss.item()
 
         # 学习率更新
         if scheduler is not None:

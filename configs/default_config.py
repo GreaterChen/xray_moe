@@ -39,7 +39,7 @@ class DefaultConfig:
     MODE = "TRAIN"
     USE_MIXED_PRECISION = True
     TRAIN_BATCH_SIZE = 32
-    VAL_BATCH_SIZE = 64
+    VAL_BATCH_SIZE = 16
     NUM_WORKERS = 8
     EPOCHS = 50
     LEARNING_RATE = 1e-4
@@ -50,8 +50,14 @@ class DefaultConfig:
     DROPOUT = 0.1
 
     # 设备设置
-    CUDA_VISIBLE_DEVICES = "0"
+    CUDA_VISIBLE_DEVICES = "0"  # 可以设置为 "0,1,2,3" 来使用多卡
     SEED = 123
+    
+    # 多卡并行设置
+    USE_DISTRIBUTED = False  # 是否使用分布式训练(DDP)，False时使用DataParallel
+    MULTI_GPU_STRATEGY = "auto"  # 多GPU策略: "auto", "dp"(DataParallel), "ddp"(DistributedDataParallel)
+    ADJUST_LR_FOR_MULTI_GPU = True  # 是否根据GPU数量自动调整学习率
+    SYNC_BN = False  # 是否使用同步BatchNorm（仅在DDP模式下有效）
 
     # 检查点路径
     DETECTION_CHECKPOINT_PATH_FROM = (
