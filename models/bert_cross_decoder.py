@@ -2,8 +2,8 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import BertConfig, BertTokenizer
-from models.med import BertLMHeadModel
+from transformers import BertConfig, BertTokenizer, BertLMHeadModel
+# from models.med import BertLMHeadModel
 
 
 class BertCrossDecoder(nn.Module):
