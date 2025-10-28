@@ -6,12 +6,13 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 
-def setup_logger(log_dir="logs"):
+def setup_logger(log_dir="logs", is_main_process=True):
     """
     设置logger，同时输出到控制台和文件
     
     Args:
         log_dir: 日志文件存储目录
+        is_main_process: 是否为主进程（分布式训练中只有主进程输出到控制台）
         
     Returns:
         logger对象
@@ -31,22 +32,23 @@ def setup_logger(log_dir="logs"):
     # 清除已存在的处理器（避免重复）
     logger.handlers.clear()
     
-    # 文件处理器
+    # 文件处理器（所有进程都写入，但文件名包含进程信息）
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
-    
-    # 控制台处理器
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
     
     # 设置格式
     formatter = logging.Formatter("%(asctime)s - %(message)s")
     file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
     
-    # 添加处理器
+    # 添加文件处理器
     logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
+    
+    # 控制台处理器（只有主进程输出到控制台）
+    if is_main_process:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
     
     return logger
 

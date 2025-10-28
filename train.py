@@ -12,6 +12,10 @@ from transformers import logging as hf_logging
 # 屏蔽警告
 hf_logging.set_verbosity_error()
 warnings.filterwarnings("ignore", message="A decoder-only architecture is being used")
+# 屏蔽 torchvision 的 deprecation warnings
+warnings.filterwarnings("ignore", message=".*pretrained.*deprecated.*")
+warnings.filterwarnings("ignore", message=".*Arguments other than.*weights.*deprecated.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
 
 # 项目模块
 from utils import setup_logger
@@ -168,42 +172,47 @@ def create_data_loaders(train_data, valid_data, test_data, config, device_manage
 
 def main():
     """主函数"""
-    logger = setup_logger(log_dir="logs")
+    # 1. 初始化设备管理器（必须最先执行，以便正确设置分布式环境）
+    device_manager = DeviceManager(config)
+    
+    # 2. 设置分布式打印（只有主进程打印，避免重复输出）
+    setup_for_distributed(device_manager.is_main_process())
+    
+    # 3. 初始化日志（只有主进程输出到控制台）
+    logger = setup_logger(log_dir="logs", is_main_process=device_manager.is_main_process())
     logger.info("=" * 80)
     logger.info("开始训练流程")
     logger.info("=" * 80)
     
-    # 1. 初始化设备管理器
-    logger.info("初始化设备管理器...")
-    device_manager = DeviceManager(config)
+    # 4. 打印设备信息
+    logger.info("设备配置信息:")
     device_manager.print_info()
-    setup_for_distributed(device_manager.is_main_process())
     
-    # 2. 设置随机种子
+    # 5. 设置随机种子
     torch.manual_seed(config.SEED)
     if device_manager.distributed:
         torch.manual_seed(config.SEED + device_manager.rank)
     logger.info(f"随机种子已设置: {config.SEED}")
     
-    # 3. 创建tokenizer
+    # 6. 创建tokenizer
     logger.info("创建tokenizer...")
     tokenizer = setup_tokenizer(config)
     logger.info(f"Tokenizer词汇表大小: {len(tokenizer)}")
     
-    # 4. 创建数据集
+    # 7. 创建数据集
     logger.info("创建数据集...")
     train_data, valid_data, test_data = create_datasets(config, tokenizer)
     logger.info(f"训练集大小: {len(train_data)}")
     logger.info(f"验证集大小: {len(valid_data)}")
     logger.info(f"测试集大小: {len(test_data)}")
     
-    # 5. 创建数据加载器
+    # 8. 创建数据加载器
     logger.info("创建数据加载器...")
     train_loader, valid_loader, test_loader, train_sampler, valid_sampler, test_sampler = create_data_loaders(
         train_data, valid_data, test_data, config, device_manager
     )
     
-    # 6. 使用工厂创建训练器
+    # 9. 使用工厂创建训练器
     logger.info(f"创建训练器 (阶段: {config.PHASE})...")
     try:
         trainer = TrainerFactory.create_trainer(
@@ -217,7 +226,7 @@ def main():
         logger.info(f"支持的训练阶段: {TrainerFactory.list_supported_phases()}")
         return
     
-    # 7. 设置数据加载器
+    # 10. 设置数据加载器
     trainer.train_loader = train_loader
     trainer.valid_loader = valid_loader
     trainer.test_loader = test_loader
@@ -225,7 +234,7 @@ def main():
     trainer.valid_sampler = valid_sampler
     trainer.test_sampler = test_sampler
     
-    # 8. 运行训练
+    # 11. 运行训练
     logger.info("开始训练...")
     trainer.run()
     

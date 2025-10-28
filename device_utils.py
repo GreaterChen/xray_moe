@@ -75,10 +75,20 @@ class DeviceManager:
     def _setup_distributed(self):
         """设置分布式训练"""
         try:
-            # 从环境变量或配置中获取分布式参数
-            self.world_size = int(os.environ.get('WORLD_SIZE', torch.cuda.device_count()))
-            self.rank = int(os.environ.get('RANK', 0))
-            self.local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            # 从环境变量获取分布式参数
+            # torchrun 会自动设置这些环境变量
+            self.local_rank = int(os.environ.get('LOCAL_RANK', -1))
+            self.rank = int(os.environ.get('RANK', -1))
+            self.world_size = int(os.environ.get('WORLD_SIZE', -1))
+            
+            # 如果环境变量未设置，说明没有使用 torchrun 启动
+            if self.local_rank == -1:
+                print("⚠️  警告：未检测到分布式环境变量（RANK, LOCAL_RANK, WORLD_SIZE）")
+                print("   请使用 torchrun 启动：torchrun --nproc_per_node=4 train.py")
+                print("   回退到 DataParallel 模式")
+                self.distributed = False
+                self.device = torch.device("cuda:0")
+                return
             
             # 初始化分布式进程组
             if not dist.is_initialized():
@@ -94,12 +104,13 @@ class DeviceManager:
             self.device = torch.device(f"cuda:{self.local_rank}")
             self.distributed = True
             
-            print(f"分布式训练初始化成功 - Rank: {self.rank}, Local Rank: {self.local_rank}, World Size: {self.world_size}")
+            print(f"✅ 分布式训练初始化成功 - Rank: {self.rank}/{self.world_size}, Local Rank: {self.local_rank}, Device: {self.device}")
             
         except Exception as e:
-            print(f"分布式训练初始化失败: {e}")
-            print("回退到DataParallel模式")
+            print(f"❌ 分布式训练初始化失败: {e}")
+            print("   回退到DataParallel模式")
             self.distributed = False
+            self.device = torch.device("cuda:0")
     
     def wrap_model(self, model):
         """为模型添加并行包装"""
@@ -107,8 +118,16 @@ class DeviceManager:
         
         if self.distributed:
             # 使用DistributedDataParallel
-            model = DDP(model, device_ids=[self.local_rank], find_unused_parameters=True)
-            print("模型已包装为DistributedDataParallel")
+            # 设置 find_unused_parameters=True 并静态图模式减少开销
+            import warnings
+            warnings.filterwarnings("ignore", message=".*find_unused_parameters.*")
+            model = DDP(
+                model, 
+                device_ids=[self.local_rank], 
+                find_unused_parameters=True,
+                # broadcast_buffers=False  # 如果不需要同步buffer可以关闭以提升性能
+            )
+            print("✅ 模型已包装为DistributedDataParallel")
         elif self.multi_gpu:
             # 使用DataParallel
             if torch.cuda.device_count() > 1:
