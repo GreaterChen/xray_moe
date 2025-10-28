@@ -131,7 +131,9 @@ def create_data_loaders(train_data, valid_data, test_data, config, device_manage
         sampler=train_sampler,
         shuffle=(train_sampler is None),
         num_workers=config.NUM_WORKERS,
-        pin_memory=True if device_manager.device.type == 'cuda' else False,
+        pin_memory=getattr(config, 'PIN_MEMORY', True if device_manager.device.type == 'cuda' else False),
+        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 2),
+        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', False) if config.NUM_WORKERS > 0 else False,
         collate_fn=mimic_collate_fn
     )
     
@@ -142,7 +144,9 @@ def create_data_loaders(train_data, valid_data, test_data, config, device_manage
         sampler=valid_sampler,
         shuffle=False,
         num_workers=config.NUM_WORKERS,
-        pin_memory=True if device_manager.device.type == 'cuda' else False,
+        pin_memory=getattr(config, 'PIN_MEMORY', True if device_manager.device.type == 'cuda' else False),
+        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 2),
+        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', False) if config.NUM_WORKERS > 0 else False,
         collate_fn=mimic_collate_fn
     )
     
@@ -153,7 +157,9 @@ def create_data_loaders(train_data, valid_data, test_data, config, device_manage
         sampler=test_sampler,
         shuffle=False,
         num_workers=config.NUM_WORKERS,
-        pin_memory=True if device_manager.device.type == 'cuda' else False,
+        pin_memory=getattr(config, 'PIN_MEMORY', True if device_manager.device.type == 'cuda' else False),
+        prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 2),
+        persistent_workers=getattr(config, 'PERSISTENT_WORKERS', False) if config.NUM_WORKERS > 0 else False,
         collate_fn=mimic_collate_fn
     )
     

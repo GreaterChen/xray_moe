@@ -355,29 +355,34 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         img = self.transform(img)
 
         # 处理bbox
-        if "bbox_targets" in info:
+        if "bbox_targets" in info and info["bbox_targets"] is not None:
             bbox_data = info["bbox_targets"]
-            boxes = torch.tensor(bbox_data["boxes"], dtype=torch.float32)
-            labels = torch.tensor(bbox_data["labels"], dtype=torch.int64)  # 标签已经是从1开始的
+            # 确保bbox_data是字典且包含必要的键
+            if isinstance(bbox_data, dict) and "boxes" in bbox_data and "labels" in bbox_data:
+                boxes = torch.tensor(bbox_data["boxes"], dtype=torch.float32)
+                labels = torch.tensor(bbox_data["labels"], dtype=torch.int64)  # 标签已经是从1开始的
 
-            # 验证并过滤边界框
-            valid_boxes = []
-            valid_labels = []
-            for box, label in zip(boxes, labels):
-                # 检查边界框的宽度和高度是否大于0
-                width = box[2] - box[0]
-                height = box[3] - box[1]
-                if width > 0 and height > 0:
-                    valid_boxes.append(box)
-                    valid_labels.append(label)
+                # 验证并过滤边界框
+                valid_boxes = []
+                valid_labels = []
+                for box, label in zip(boxes, labels):
+                    # 检查边界框的宽度和高度是否大于0
+                    width = box[2] - box[0]
+                    height = box[3] - box[1]
+                    if width > 0 and height > 0:
+                        valid_boxes.append(box)
+                        valid_labels.append(label)
 
-            # 如果没有有效的边界框，返回一个空的目标
-            if not valid_boxes:
+                # 如果没有有效的边界框，返回一个空的目标
+                if not valid_boxes:
+                    boxes = torch.zeros((0, 4), dtype=torch.float32)
+                    labels = torch.zeros((0,), dtype=torch.int64)
+                else:
+                    boxes = torch.stack(valid_boxes)
+                    labels = torch.stack(valid_labels)
+            else:
                 boxes = torch.zeros((0, 4), dtype=torch.float32)
                 labels = torch.zeros((0,), dtype=torch.int64)
-            else:
-                boxes = torch.stack(valid_boxes)
-                labels = torch.stack(valid_labels)
         else:
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros((0,), dtype=torch.int64)
