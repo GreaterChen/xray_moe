@@ -124,7 +124,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             cls._shared_data["anatomical_embeddings"] = {}
 
     @classmethod
-    def load_shared_data(cls, directory, ann_dir, mode, extra_ann_dir=None, binary_mode=True):
+    def load_shared_data(cls, directory, ann_dir, mode, binary_mode=True, split_csv_path=None):
         """预处理优化版本，加载MIMIC数据集注释"""
         if cls._shared_data["loaded"]:
             return
@@ -138,37 +138,113 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             annotation_data = json.loads(mm.read().decode("utf-8"))
             mm.close()
 
-        # 并行处理数据拆分
-        import concurrent.futures
-
-        new_annotation = {}
-
-        def process_split(mode_split):
-            mode, data_split = mode_split
-            result = []
-            for key, value in data_split.items():
-                if value["findings"].strip() != "":
-                    value["image_id"] = key
-                    # 预处理文本，减少__getitem__中的处理时间
-                    value["findings"] = cls._clean_report(value["findings"])
-                    value["history"] = cls._clean_report(value["history"])
-                    result.append(value)
-            return mode, result
-
-        # 并行处理各个拆分
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            for mode, result in executor.map(process_split, annotation_data.items()):
-                new_annotation[mode] = result
-
-        if extra_ann_dir:
-            with open(extra_ann_dir, 'r') as f:
-                extra_ann = json.load(f)
+        # 检测数据格式并适配
+        if isinstance(annotation_data, list):
+            # 新格式：列表格式，需要转换并划分train/test
+            print(f"📋 检测到列表格式的注释数据，共 {len(annotation_data)} 条记录")
             
-            for id, item in extra_ann.items():
-                item['image_id'] = id
-                item['findings'] = cls._clean_report(item['findings'])
-                item['history'] = cls._clean_report(item['history'])
-                new_annotation['train'].append(item)
+            # 如果提供了split CSV文件，使用CSV来划分数据
+            split_map = {}
+            if split_csv_path and os.path.exists(split_csv_path):
+                print(f"📄 使用CSV文件进行数据划分: {split_csv_path}")
+                import pandas as pd
+                split_df = pd.read_csv(split_csv_path)
+                # 创建dicom_id到split的映射
+                split_map = dict(zip(split_df['dicom_id'], split_df['split']))
+                print(f"✅ 加载了 {len(split_map)} 条划分信息")
+            
+            # 过滤并处理数据
+            processed_data = {"train": [], "test": [], "valid": []}
+            
+            for item in annotation_data:
+                # 获取字段
+                findings = item.get("findings", "").strip()
+                impression = item.get("impression", "").strip()
+                history = item.get("history", "").strip()
+                
+                # 至少要有 findings 或 impression 之一不为空
+                # 这样可以支持 generation_target="all" 时使用 impression
+                if findings != "" or impression != "":
+                    # 字段映射和预处理
+                    processed_item = {
+                        "image_id": item.get("id", ""),
+                        "path": item.get("path", ""),
+                        "study": item.get("study", ""),
+                        "impression": cls._clean_report(impression) if impression else "",
+                        "findings": cls._clean_report(findings) if findings else "",
+                        "last_paragraph": item.get("last_paragraph", ""),
+                        "comparison": item.get("comparison", ""),
+                        "ViewPosition": item.get("ViewPosition", ""),
+                        "StudyDate": item.get("StudyDate", ""),
+                        "StudyTime": item.get("StudyTime", ""),
+                        "history": cls._clean_report(history),
+                        "labels": item.get("labels", [0.0] * 14),  # 疾病标签
+                        "bbox_targets": item.get("bbox_targets", {"boxes": [], "labels": []}),  # 边界框标注
+                        "image_path": [item.get("path", "")],  # 用于兼容旧代码
+                    }
+                    
+                    # 确定该样本属于哪个split
+                    dicom_id = item.get("id", "")
+                    if split_map and dicom_id in split_map:
+                        split_name = split_map[dicom_id]
+                        processed_data[split_name].append(processed_item)
+                    else:
+                        # 如果没有CSV或找不到对应的split，默认放入train
+                        processed_data["train"].append(processed_item)
+            
+            # 如果没有使用CSV划分，则使用随机划分
+            if not split_map:
+                print(f"⚠️  未提供有效的CSV文件，使用随机划分 (70/15/15)")
+                all_data = processed_data["train"]
+                import random
+                random.seed(42)
+                random.shuffle(all_data)
+                
+                train_idx = int(len(all_data) * 0.7)
+                valid_idx = int(len(all_data) * 0.85)
+                new_annotation = {
+                    "train": all_data[:train_idx],
+                    "valid": all_data[train_idx:valid_idx],
+                    "test": all_data[valid_idx:]
+                }
+            else:
+                # 使用CSV划分的结果（保留三个划分）
+                new_annotation = {
+                    "train": processed_data["train"],
+                    "valid": processed_data["valid"],
+                    "test": processed_data["test"]
+                }
+            
+            print(f"✅ 数据划分完成: 训练集 {len(new_annotation['train'])} 条, "
+                  f"验证集 {len(new_annotation['valid'])} 条, "
+                  f"测试集 {len(new_annotation['test'])} 条")
+            
+        elif isinstance(annotation_data, dict):
+            # 旧格式：字典格式，保持原有逻辑
+            print(f"📋 检测到字典格式的注释数据")
+            import concurrent.futures
+
+            new_annotation = {}
+
+            def process_split(mode_split):
+                mode, data_split = mode_split
+                result = []
+                for key, value in data_split.items():
+                    if value["findings"].strip() != "":
+                        value["image_id"] = key
+                        # 预处理文本，减少__getitem__中的处理时间
+                        value["findings"] = cls._clean_report(value["findings"])
+                        value["history"] = cls._clean_report(value["history"])
+                        result.append(value)
+                return mode, result
+
+            # 并行处理各个拆分
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                for mode, result in executor.map(process_split, annotation_data.items()):
+                    new_annotation[mode] = result
+                    
+        else:
+            raise ValueError(f"不支持的注释数据格式: {type(annotation_data)}")
                 
         cls._shared_data["annotation"] = new_annotation
         cls._shared_data["loaded"] = True
@@ -179,15 +255,16 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         self,
         directory,
         ann_dir,
-        extra_ann_dir=None,
+        images_dir=None,
         input_size=(224, 224),
         random_transform=True,
         tokenizer=None,
         mode="train",
         subset_size=None,
+        generation_target="findings",
     ):
 
-        self.load_shared_data(directory, ann_dir, mode, extra_ann_dir)
+        self.load_shared_data(directory, ann_dir, mode)
 
         self.tokenizer = tokenizer
         self.bos_token_id = self.tokenizer.bos_token_id
@@ -196,8 +273,12 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         self.sources = ["image", "findings", "history", "bbox_targets"]
         self.targets = ["findings", "label"]
+        
+        # 生成目标设置
+        self.generation_target = generation_target  # "findings" 或 "all"
 
         self.dir = directory
+        self.images_dir = images_dir if images_dir else os.path.join(directory, "images_224")
         self.input_size = input_size
         self.random_transform = random_transform
         self.mode = mode
@@ -235,14 +316,36 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         info = self.data[idx]
 
         findings = info["findings"]
+        impression = info.get("impression", "")
         history = info["history"]
         disease_label = np.array(info["labels"], dtype=np.float16)
         image_id = info['image_id']
         
+        # 根据配置决定生成目标
+        if self.generation_target == "all":
+            # 拼接 findings 和 impression
+            if impression and findings:
+                target_text = findings + " " + impression
+            elif impression:
+                target_text = impression
+            elif findings:
+                target_text = findings
+            else:
+                target_text = ""  # 理论上不应该出现，因为过滤时已经检查过
+        else:
+            # 默认只使用 findings
+            # 如果 findings 为空但 impression 不为空，也使用 impression（容错处理）
+            if findings:
+                target_text = findings
+            elif impression:
+                target_text = impression
+            else:
+                target_text = ""
+        
         # 获取图像路径
         image_base_path = "/".join(info["image_path"][0].split("/")[:-1])
         img_path = os.path.join(
-            self.dir, "images_224", image_base_path, info["image_id"] + ".jpg"
+            self.images_dir, image_base_path, info["image_id"] + ".jpg"
         )
 
         # 处理图像
@@ -294,11 +397,13 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             "image": img,
             "image_id": image_id,
             "bbox_targets": target,
-            "findings": findings,
+            "findings": target_text,  # 使用处理后的目标文本
             "history": history,
             "label": disease_label,
             "image_path": img_path,
             "anatomical_embeddings": anatomical_embeddings,  # 新增：该图像的解剖区域嵌入
+            "impression": impression,  # 保留原始 impression 字段以供需要时使用
+            "original_findings": findings,  # 保留原始 findings 字段
         }
 
         return output

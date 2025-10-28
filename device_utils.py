@@ -25,14 +25,22 @@ class DeviceManager:
     
     def _setup_device(self):
         """设置设备配置"""
-        # 检查可用GPU
+        # 检查配置中是否强制使用CPU
+        use_cuda = getattr(self.config, 'USE_CUDA', True)
+        
+        if not use_cuda:
+            self.device = torch.device("cpu")
+            print("⚠️  配置设置为不使用GPU，强制使用CPU")
+            return
+        
+        # 检查CUDA是否可用
         if not torch.cuda.is_available():
             self.device = torch.device("cpu")
-            print("CUDA不可用，使用CPU")
+            print("❌ CUDA不可用，使用CPU")
             return
         
         # 解析CUDA_VISIBLE_DEVICES
-        visible_devices = self.config.CUDA_VISIBLE_DEVICES
+        visible_devices = getattr(self.config, 'CUDA_VISIBLE_DEVICES', "0")
         if isinstance(visible_devices, str):
             if ',' in visible_devices:
                 gpu_ids = [int(x.strip()) for x in visible_devices.split(',')]
@@ -42,18 +50,17 @@ class DeviceManager:
             gpu_ids = [visible_devices] if isinstance(visible_devices, int) else visible_devices
         
         # 设置环境变量
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(self.config.CUDA_VISIBLE_DEVICES)
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(visible_devices)
         
         # 获取实际可用的GPU数量
         num_gpus = torch.cuda.device_count()
-        print(f"检测到 {num_gpus} 个可用GPU")
         
         if num_gpus == 0:
             self.device = torch.device("cpu")
-            print("没有可用的GPU，使用CPU")
+            print("❌ 没有可用的GPU，使用CPU")
         elif num_gpus == 1:
             self.device = torch.device("cuda:0")
-            print(f"使用单GPU: {self.device}")
+            print(f"✅ 使用单GPU: {self.device}")
         else:
             # 多GPU情况
             self.multi_gpu = True
@@ -63,7 +70,7 @@ class DeviceManager:
             if getattr(self.config, 'USE_DISTRIBUTED', False):
                 self._setup_distributed()
             else:
-                print(f"使用DataParallel进行多GPU训练，GPU数量: {num_gpus}")
+                print(f"✅ 使用DataParallel进行多GPU训练，GPU数量: {num_gpus}")
     
     def _setup_distributed(self):
         """设置分布式训练"""
@@ -170,15 +177,18 @@ class DeviceManager:
         """打印设备信息"""
         if self.is_main_process():
             print("\n=== 设备配置信息 ===")
+            print(f"USE_CUDA配置: {getattr(self.config, 'USE_CUDA', True)}")
             print(f"设备: {self.device}")
-            print(f"多GPU: {self.multi_gpu}")
-            print(f"分布式: {self.distributed}")
-            if self.distributed:
-                print(f"World Size: {self.world_size}")
-                print(f"Rank: {self.rank}")
-                print(f"Local Rank: {self.local_rank}")
-            elif self.multi_gpu:
-                print(f"GPU数量: {torch.cuda.device_count()}")
+            if self.device.type == 'cuda':
+                print(f"CUDA_VISIBLE_DEVICES: {getattr(self.config, 'CUDA_VISIBLE_DEVICES', '0')}")
+                print(f"多GPU: {self.multi_gpu}")
+                print(f"分布式: {self.distributed}")
+                if self.distributed:
+                    print(f"World Size: {self.world_size}")
+                    print(f"Rank: {self.rank}")
+                    print(f"Local Rank: {self.local_rank}")
+                elif self.multi_gpu:
+                    print(f"GPU数量: {torch.cuda.device_count()}")
             print("==================\n")
 
 

@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from datetime import datetime
-from utils.data_utils import prepare_batch_data, args_to_kwargs, data_distributor
+from utils.data_utils import prepare_batch_data, args_to_kwargs
 from utils.logging_utils import clean_report_mimic_cxr
 import metrics
 
@@ -74,8 +74,8 @@ def save_generations(
             image_ids = [os.path.basename(path).split('.')[0] for path in batch["image_path"]]
             source["image_ids"] = image_ids
 
-            # 模型推理
-            output = data_distributor(model, source)
+            # 模型推理（直接使用**kwargs传递）
+            output = model(**source)
             output = args_to_kwargs(output, kw_out)
 
             # 收集预测结果
@@ -178,8 +178,8 @@ def test(
             source["phase"] = config.PHASE
             source["mode"] = mode
 
-            # 模型推理
-            output = data_distributor(model, source)
+            # 模型推理（直接使用**kwargs传递）
+            output = model(**source)
             output = args_to_kwargs(output, kw_out)
 
             # 收集预测结果
@@ -603,7 +603,8 @@ def test_vit(
             source["mode"] = "test"
             source["use_consistent_eval"] = use_consistent_eval  # 传递一致性评估参数
 
-            outputs = data_distributor(model, source)
+            # 模型推理（直接使用**kwargs传递）
+            outputs = model(**source)
             outputs = args_to_kwargs(outputs)
 
             # 获取最后一层的疾病预测结果和损失
@@ -919,8 +920,8 @@ def test_llm(
             image_ids = [os.path.basename(path).split('.')[0] for path in batch["image_path"]]
             source["image_ids"] = image_ids
 
-            # 使用数据分发器执行模型推理
-            outputs = data_distributor(model, source)
+            # 模型推理（直接使用**kwargs传递）
+            outputs = model(**source)
 
             # 获取批次大小
             batch_size = (

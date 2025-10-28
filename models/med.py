@@ -38,7 +38,6 @@ from transformers.modeling_outputs import (
 )
 from transformers.modeling_utils import (
     PreTrainedModel,
-    apply_chunking_to_forward,
     find_pruneable_heads_and_indices,
     prune_linear_layer,
 )
@@ -47,6 +46,46 @@ from transformers.models.bert.configuration_bert import BertConfig
 
 
 logger = logging.get_logger(__name__)
+
+
+def apply_chunking_to_forward(forward_fn, chunk_size, chunk_dim, *input_tensors):
+    """
+    将输入张量分块并应用前向函数，用于节省内存。
+    这个函数在新版transformers中被移除，所以在这里重新实现。
+    """
+    assert len(input_tensors) > 0, "input_tensors不能为空"
+    
+    # 如果chunk_size <= 0，直接调用forward_fn
+    if chunk_size <= 0:
+        return forward_fn(*input_tensors)
+    
+    # 获取输入张量的形状
+    tensor_shape = input_tensors[0].shape[chunk_dim]
+    
+    # 如果张量大小小于等于chunk_size，直接调用forward_fn
+    if tensor_shape <= chunk_size:
+        return forward_fn(*input_tensors)
+    
+    # 分块处理
+    num_chunks = (tensor_shape + chunk_size - 1) // chunk_size
+    output_chunks = []
+    
+    for i in range(num_chunks):
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, tensor_shape)
+        
+        # 对每个输入张量进行切片
+        chunk_inputs = [
+            tensor.narrow(chunk_dim, start_idx, end_idx - start_idx)
+            for tensor in input_tensors
+        ]
+        
+        # 应用前向函数
+        chunk_output = forward_fn(*chunk_inputs)
+        output_chunks.append(chunk_output)
+    
+    # 拼接所有输出块
+    return torch.cat(output_chunks, dim=chunk_dim)
 
 
 class BertEmbeddings(nn.Module):

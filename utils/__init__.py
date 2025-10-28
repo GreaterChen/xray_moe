@@ -4,7 +4,6 @@
 from utils.data_utils import (
     data_to_device,
     data_concatenate,
-    data_distributor,
     args_to_kwargs,
     prepare_batch_data
 )
@@ -59,7 +58,6 @@ __all__ = [
     # 数据处理
     'data_to_device',
     'data_concatenate',
-    'data_distributor',
     'args_to_kwargs',
     'prepare_batch_data',
     

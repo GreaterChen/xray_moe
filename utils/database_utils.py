@@ -3,7 +3,7 @@ import os
 import torch
 import pickle
 from tqdm import tqdm
-from utils.data_utils import prepare_batch_data, args_to_kwargs, data_distributor
+from utils.data_utils import prepare_batch_data, args_to_kwargs
 
 
 def build_anatomical_database(
@@ -111,8 +111,8 @@ def build_anatomical_database(
             # 获取图像ID
             image_ids = batch["image_id"]
             
-            # 模型推理
-            outputs = data_distributor(model, source)
+            # 模型推理（直接使用**kwargs传递）
+            outputs = model(**source)
             
             # 提取特征
             region_features = outputs["region_features"]  # [B, 29, 768]

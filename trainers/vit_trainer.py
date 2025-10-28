@@ -4,7 +4,7 @@ from trainers.base_trainer import BaseTrainer
 from models.moe_model import MOE
 from models.fast_rcnn_classifier import DetectionOnlyFastRCNN, EnhancedFastRCNN
 from models.vit import MedicalVisionTransformer
-from models.mrgn_model import CXR_BERT_FeatureExtractor
+from models.cxr_bert import CXR_BERT_FeatureExtractor
 from utils import load, train, test_vit
 from datasets import MIMIC
 

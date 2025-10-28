@@ -62,27 +62,6 @@ def data_concatenate(iterable_data, dim=0):
         raise TypeError("Unsupported Datatype! Must be a Tensor/List/Tuple/Dict.")
 
 
-def data_distributor(model, source):
-    """
-    根据source类型分发数据到模型
-    
-    Args:
-        model: PyTorch模型
-        source: 输入数据
-        
-    Returns:
-        模型输出
-    """
-    if isinstance(source, torch.Tensor):
-        return model(source)
-    elif isinstance(source, (tuple, list)):
-        return model(*source)
-    elif isinstance(source, dict):
-        return model(**source)
-    else:
-        raise TypeError("Unsupported DataType! Try List/Tuple/Dict!")
-
-
 def args_to_kwargs(args, kwargs_list=None):
     """
     将参数转换为关键字参数

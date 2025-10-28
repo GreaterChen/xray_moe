@@ -50,7 +50,7 @@ def create_datasets(config, tokenizer):
         tokenizer: 分词器
         
     Returns:
-        train_data, test_data
+        train_data, valid_data, test_data
     """
     input_size = (config.IMAGE_SIZE, config.IMAGE_SIZE)
     
@@ -59,50 +59,69 @@ def create_datasets(config, tokenizer):
         directory=config.DATA_DIR,
         ann_dir=config.ANN_DIR,
         mode=config.MODE,
-        extra_ann_dir=getattr(config, 'EXTRA_ANN_DIR', None),
-        binary_mode=True
+        binary_mode=True,
+        split_csv_path=config.SPLIT_CSV_PATH
     )
     
     # 创建训练数据集
     train_data = MIMIC(
         directory=config.DATA_DIR,
         ann_dir=config.ANN_DIR,
+        images_dir=config.IMAGES_DIR,
         input_size=input_size,
         random_transform=True,
         tokenizer=tokenizer,
         mode="train",
-        subset_size=100 if config.DEBUG else None
+        subset_size=100 if config.DEBUG else None,
+        generation_target=config.GENERATION_TARGET
+    )
+    
+    # 创建验证数据集 
+    valid_data = MIMIC(
+        directory=config.DATA_DIR,
+        ann_dir=config.ANN_DIR,
+        images_dir=config.IMAGES_DIR,
+        input_size=input_size,
+        random_transform=False,
+        tokenizer=tokenizer,
+        mode="valid",
+        subset_size=50 if config.DEBUG else None,
+        generation_target=config.GENERATION_TARGET
     )
     
     # 创建测试数据集
     test_data = MIMIC(
         directory=config.DATA_DIR,
         ann_dir=config.ANN_DIR,
+        images_dir=config.IMAGES_DIR,
         input_size=input_size,
         random_transform=False,
         tokenizer=tokenizer,
         mode="test",
-        subset_size=100 if config.DEBUG else None
+        subset_size=50 if config.DEBUG else None,
+        generation_target=config.GENERATION_TARGET
     )
     
-    return train_data, test_data
+    return train_data, valid_data, test_data
 
 
-def create_data_loaders(train_data, test_data, config, device_manager):
+def create_data_loaders(train_data, valid_data, test_data, config, device_manager):
     """
     创建数据加载器
     
     Args:
         train_data: 训练数据集
+        valid_data: 验证数据集
         test_data: 测试数据集
         config: 配置对象
         device_manager: 设备管理器
         
     Returns:
-        train_loader, test_loader, train_sampler, test_sampler
+        train_loader, valid_loader, test_loader, train_sampler, valid_sampler, test_sampler
     """
     # 获取分布式采样器
     train_sampler = device_manager.get_sampler(train_data, shuffle=True)
+    valid_sampler = device_manager.get_sampler(valid_data, shuffle=False)
     test_sampler = device_manager.get_sampler(test_data, shuffle=False)
     
     # 创建训练数据加载器
@@ -111,6 +130,17 @@ def create_data_loaders(train_data, test_data, config, device_manager):
         batch_size=config.TRAIN_BATCH_SIZE,
         sampler=train_sampler,
         shuffle=(train_sampler is None),
+        num_workers=config.NUM_WORKERS,
+        pin_memory=True if device_manager.device.type == 'cuda' else False,
+        collate_fn=mimic_collate_fn
+    )
+    
+    # 创建验证数据加载器
+    valid_loader = data.DataLoader(
+        valid_data,
+        batch_size=config.VAL_BATCH_SIZE,
+        sampler=valid_sampler,
+        shuffle=False,
         num_workers=config.NUM_WORKERS,
         pin_memory=True if device_manager.device.type == 'cuda' else False,
         collate_fn=mimic_collate_fn
@@ -127,7 +157,7 @@ def create_data_loaders(train_data, test_data, config, device_manager):
         collate_fn=mimic_collate_fn
     )
     
-    return train_loader, test_loader, train_sampler, test_sampler
+    return train_loader, valid_loader, test_loader, train_sampler, valid_sampler, test_sampler
 
 
 def main():
@@ -156,14 +186,15 @@ def main():
     
     # 4. 创建数据集
     logger.info("创建数据集...")
-    train_data, test_data = create_datasets(config, tokenizer)
+    train_data, valid_data, test_data = create_datasets(config, tokenizer)
     logger.info(f"训练集大小: {len(train_data)}")
+    logger.info(f"验证集大小: {len(valid_data)}")
     logger.info(f"测试集大小: {len(test_data)}")
     
     # 5. 创建数据加载器
     logger.info("创建数据加载器...")
-    train_loader, test_loader, train_sampler, test_sampler = create_data_loaders(
-        train_data, test_data, config, device_manager
+    train_loader, valid_loader, test_loader, train_sampler, valid_sampler, test_sampler = create_data_loaders(
+        train_data, valid_data, test_data, config, device_manager
     )
     
     # 6. 使用工厂创建训练器
@@ -182,8 +213,10 @@ def main():
     
     # 7. 设置数据加载器
     trainer.train_loader = train_loader
+    trainer.valid_loader = valid_loader
     trainer.test_loader = test_loader
     trainer.train_sampler = train_sampler
+    trainer.valid_sampler = valid_sampler
     trainer.test_sampler = test_sampler
     
     # 8. 运行训练

@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 from torch.profiler import profile, record_function, ProfilerActivity
 from contextlib import nullcontext
-from utils.data_utils import prepare_batch_data, args_to_kwargs, data_distributor
+from utils.data_utils import prepare_batch_data, args_to_kwargs
 from utils.memory_utils import analyze_gpu_memory
 
 
@@ -112,7 +112,13 @@ def train(
         # 前向传播和损失计算
         with torch.amp.autocast("cuda", enabled=scaler is not None):
             with record_function("model_forward") if enable_profile else nullcontext():
-                output = data_distributor(model, source)
+                # 根据训练阶段选择不同的forward方式
+                if config.PHASE == "TRAIN_DETECTION":
+                    # 目标检测：model(images, targets)
+                    output = model(source["image"], source["bbox_targets"])
+                else:
+                    # 其他阶段：使用字典传递参数
+                    output = model(**source)
             
             loss = _compute_loss(config, output)
         

@@ -1,6 +1,7 @@
 """训练器工厂类"""
 from trainers.vit_trainer import ViTPretrainTrainer
 from trainers.bert_trainer import BertFinetuneTrainer
+from trainers.detection_trainer import DetectionTrainer
 
 
 class TrainerFactory:
@@ -9,6 +10,7 @@ class TrainerFactory:
     _trainers = {
         "PRETRAIN_VIT": ViTPretrainTrainer,
         "FINETUNE_BERT": BertFinetuneTrainer,
+        "TRAIN_DETECTION": DetectionTrainer,
     }
     
     @classmethod
