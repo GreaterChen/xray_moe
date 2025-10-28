@@ -154,7 +154,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                 print(f"✅ 加载了 {len(split_map)} 条划分信息")
             
             # 过滤并处理数据
-            processed_data = {"train": [], "test": [], "valid": []}
+            processed_data = {"train": [], "test": [], "valid": [], "validate": []}
             
             for item in annotation_data:
                 # 获取字段
@@ -204,19 +204,21 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                 valid_idx = int(len(all_data) * 0.85)
                 new_annotation = {
                     "train": all_data[:train_idx],
-                    "valid": all_data[train_idx:valid_idx],
+                    "validate": all_data[train_idx:valid_idx],
                     "test": all_data[valid_idx:]
                 }
             else:
-                # 使用CSV划分的结果（保留三个划分）
+                # 使用CSV划分的结果，统一使用 validate 命名
+                # CSV文件可能使用 'valid' 或 'validate'
+                validate_data = processed_data.get("validate", []) + processed_data.get("valid", [])
                 new_annotation = {
                     "train": processed_data["train"],
-                    "valid": processed_data["valid"],
+                    "validate": validate_data,
                     "test": processed_data["test"]
                 }
             
             print(f"✅ 数据划分完成: 训练集 {len(new_annotation['train'])} 条, "
-                  f"验证集 {len(new_annotation['valid'])} 条, "
+                  f"验证集 {len(new_annotation['validate'])} 条, "
                   f"测试集 {len(new_annotation['test'])} 条")
             
         elif isinstance(annotation_data, dict):

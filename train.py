@@ -84,7 +84,7 @@ def create_datasets(config, tokenizer):
         input_size=input_size,
         random_transform=False,
         tokenizer=tokenizer,
-        mode="valid",
+        mode="validate",
         subset_size=50 if config.DEBUG else None,
         generation_target=config.GENERATION_TARGET
     )

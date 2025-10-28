@@ -48,23 +48,25 @@ class DetectionTrainer(BaseTrainer):
         return train_loss
     
     def evaluate(self, data_loader, mode='test', epoch=None):
-        """评估模型"""
+        """评估模型 - 全面的评估系统"""
+        confidence_threshold = getattr(self.config, 'DETECTION_CONFIDENCE_THRESHOLD', 0.5)
         test_loss, result = test_detection(
             config=self.config,
             model=self.model,
             data_loader=data_loader,
             logger=self.logger,
             mode=mode,
+            confidence_threshold=confidence_threshold,
+            device=self.device_manager.device,
             epoch=epoch if epoch is not None else self.current_epoch,
-            writer=self.writer,
-            device=self.device_manager.device
+            writer=self.writer
         )
         return test_loss, result
     
     def get_main_metric(self, result):
         """获取主要评估指标"""
-        # 目标检测通常使用 mAP 作为主要指标
-        return result.get("mAP", result.get("detection_acc", 0.0))
+        # 使用mAP@0.5作为主要指标
+        return result.get("mAP@0.5", result.get("mAP", 0.0))
     
     def get_save_filename(self, epoch, result, is_best=False):
         """获取保存文件名"""
@@ -73,6 +75,7 @@ class DetectionTrainer(BaseTrainer):
         else:
             prefix = f"epoch_{epoch}_"
         
-        main_metric = self.get_main_metric(result)
-        return f"{prefix}detection_metric_{main_metric:.4f}.pth"
+        mAP_05 = result.get("mAP@0.5", 0.0)
+        mAP_all = result.get("mAP", 0.0)
+        return f"{prefix}mAP05_{mAP_05:.4f}_mAP_{mAP_all:.4f}.pth"
 

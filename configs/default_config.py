@@ -33,6 +33,10 @@ class DefaultConfig:
     
     # 生成目标设置
     GENERATION_TARGET = "all"  # 可选值: "findings" 或 "all" (findings + impression)
+    
+    # 目标检测评估设置
+    DETECTION_CONFIDENCE_THRESHOLD = 0.5  # 检测置信度阈值
+    DETECTION_IOU_THRESHOLDS = [0.3, 0.5, 0.75, 0.9]  # 用于评估的IoU阈值列表
 
     # 区域级别对比学习设置
     ANATOMICAL_DATABASE_PATH = None  # 解剖区域知识库路径，需要在local_config中设置
