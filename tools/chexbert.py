@@ -1,17 +1,19 @@
 from collections import OrderedDict
 from transformers import BertConfig, BertModel, BertTokenizer
 import os
+import re
 import torch
 import torch.nn as nn
 
 class CheXbert(nn.Module):
-    def __init__(self, checkpoint_path, device, strict=True, p=0.1):
+    def __init__(self, checkpoint_path, device, strict=True, p=0.1, bert_pretrained_path='bert-base-uncased'):
         super(CheXbert, self).__init__()
 
         self.device = device
 
-        self.tokenizer = BertTokenizer.from_pretrained('/home/chenlb/.cache/huggingface/hub/models--bert-base-uncased/snapshots/86b5e0934494bd15c9632b12f734a8a67f723594')
-        config = BertConfig().from_pretrained('/home/chenlb/.cache/huggingface/hub/models--bert-base-uncased/snapshots/86b5e0934494bd15c9632b12f734a8a67f723594')
+        # 从指定路径加载 tokenizer 和 config（支持 Hugging Face 模型名或本地路径）
+        self.tokenizer = BertTokenizer.from_pretrained(bert_pretrained_path)
+        config = BertConfig().from_pretrained(bert_pretrained_path)
 
         with torch.no_grad():
 
@@ -27,7 +29,8 @@ class CheXbert(nn.Module):
             self.linear_heads.append(nn.Linear(hidden_size, 2, bias=True))
 
             # Load CheXbert checkpoint
-            state_dict = torch.load(checkpoint_path, map_location=device)['model_state_dict']
+            # weights_only=False 因为我们需要加载完整的模型state_dict（可信来源）
+            state_dict = torch.load(checkpoint_path, map_location=device, weights_only=False)['model_state_dict']
 
             new_state_dict = OrderedDict()
             new_state_dict["bert.embeddings.position_ids"] = torch.arange(config.max_position_embeddings).expand((1, -1))
@@ -47,8 +50,10 @@ class CheXbert(nn.Module):
         for i in range(len(reports)):
             reports[i] = reports[i].strip()
             reports[i] = reports[i].replace("\n", " ")
-            reports[i] = reports[i].replace("\s+", " ")
-            reports[i] = reports[i].replace("\s+(?=[\.,])", "")
+            # 使用正则表达式替换多个空白字符为单个空格
+            reports[i] = re.sub(r"\s+", " ", reports[i])
+            # 删除标点符号前的空白字符
+            reports[i] = re.sub(r"\s+(?=[.,])", "", reports[i])
             reports[i] = reports[i].strip()
 
         with torch.no_grad():

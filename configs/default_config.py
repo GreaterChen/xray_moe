@@ -87,6 +87,7 @@ class DefaultConfig:
     
     # CheXbert路径
     CHEXBERT_CHECKPOINT_PATH = None  # CheXbert模型路径，需要在local_config中设置
+    BERT_PRETRAINED_PATH = "bert-base-uncased"  # BERT预训练模型路径（用于CheXbert tokenizer和config），可以是Hugging Face模型名或本地路径
     
     # RGAT (Relational Graph Attention Network) 配置
     AA_ADJ_PATH = None  # Anatomy-Anatomy邻接矩阵路径 (需要在local_config中设置)

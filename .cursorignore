@@ -8,3 +8,5 @@ tools/chexbert.pth
 __pycache__/
 .vscode/
 
+.ipynb_checkpoints/
+*.ipynb_checkpoints

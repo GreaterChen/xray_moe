@@ -37,6 +37,15 @@ class BaseTrainer(ABC):
         self.best_metric = -1e9
         self.last_epoch = -1
     
+    def get_raw_model(self):
+        """
+        获取原始模型（处理DDP/DataParallel包装）
+        
+        Returns:
+            原始模型对象
+        """
+        return self.model.module if hasattr(self.model, 'module') else self.model
+    
     @abstractmethod
     def build_model(self):
         """构建模型 - 子类必须实现"""
@@ -126,17 +135,135 @@ class BaseTrainer(ABC):
         self.logger.info(f"检查点已保存: {save_path}")
     
     def log_model_info(self):
-        """记录模型信息"""
-        total_params = sum(p.numel() for p in self.model.parameters())
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        """记录模型信息 - 详细的组件级别统计"""
+        self.logger.info("=" * 80)
+        self.logger.info("模型组件参数统计:")
+        self.logger.info("-" * 80)
+        
+        total_params = 0
+        trainable_params = 0
+        
+        # 获取原始模型（处理DDP包装）
+        model = self.get_raw_model()
+        
+        # 统计各个组件
+        components = []
+        
+        # 1. 目标检测器
+        if hasattr(model, 'object_detector') and model.object_detector is not None:
+            detector_total = sum(p.numel() for p in model.object_detector.parameters())
+            detector_trainable = sum(p.numel() for p in model.object_detector.parameters() if p.requires_grad)
+            components.append(("目标检测器 (Object Detector)", detector_total, detector_trainable))
+            
+            # 检测器子组件
+            if hasattr(model.object_detector, 'detector'):
+                det_total = sum(p.numel() for p in model.object_detector.detector.parameters())
+                det_trainable = sum(p.numel() for p in model.object_detector.detector.parameters() if p.requires_grad)
+                components.append(("  └─ Faster R-CNN", det_total, det_trainable))
+            
+            if hasattr(model.object_detector, 'feature_projector'):
+                fp_total = sum(p.numel() for p in model.object_detector.feature_projector.parameters())
+                fp_trainable = sum(p.numel() for p in model.object_detector.feature_projector.parameters() if p.requires_grad)
+                components.append(("  └─ 特征投影层", fp_total, fp_trainable))
+            
+            if hasattr(model.object_detector, 'missing_region_tokens'):
+                mrt_total = model.object_detector.missing_region_tokens.numel()
+                mrt_trainable = mrt_total if model.object_detector.missing_region_tokens.requires_grad else 0
+                components.append(("  └─ 缺失区域Token", mrt_total, mrt_trainable))
+        
+        # 2. 图像编码器 (ViT)
+        if hasattr(model, 'image_encoder') and model.image_encoder is not None:
+            vit_total = sum(p.numel() for p in model.image_encoder.parameters())
+            vit_trainable = sum(p.numel() for p in model.image_encoder.parameters() if p.requires_grad)
+            components.append(("图像编码器 (ViT)", vit_total, vit_trainable))
+        
+        # 3. 解码器
+        if hasattr(model, 'findings_decoder') and model.findings_decoder is not None:
+            decoder_total = sum(p.numel() for p in model.findings_decoder.parameters())
+            decoder_trainable = sum(p.numel() for p in model.findings_decoder.parameters() if p.requires_grad)
+            components.append(("报告解码器 (Decoder)", decoder_total, decoder_trainable))
+        
+        # 4. RGAT模块
+        if hasattr(model, 'rgat') and model.rgat is not None:
+            rgat_total = sum(p.numel() for p in model.rgat.parameters())
+            rgat_trainable = sum(p.numel() for p in model.rgat.parameters() if p.requires_grad)
+            components.append(("RGAT图推理模块", rgat_total, rgat_trainable))
+            
+            # RGAT子组件
+            if hasattr(model.rgat, 'disease_embeddings'):
+                de_total = model.rgat.disease_embeddings.numel()
+                de_trainable = de_total if model.rgat.disease_embeddings.requires_grad else 0
+                components.append(("  └─ 疾病嵌入", de_total, de_trainable))
+            
+            if hasattr(model.rgat, 'stage1_aa'):
+                s1_total = sum(p.numel() for p in model.rgat.stage1_aa.parameters())
+                s1_trainable = sum(p.numel() for p in model.rgat.stage1_aa.parameters() if p.requires_grad)
+                components.append(("  └─ 阶段1 (A→A)", s1_total, s1_trainable))
+            
+            if hasattr(model.rgat, 'stage2_ad'):
+                s2_total = sum(p.numel() for p in model.rgat.stage2_ad.parameters())
+                s2_trainable = sum(p.numel() for p in model.rgat.stage2_ad.parameters() if p.requires_grad)
+                components.append(("  └─ 阶段2 (A→D)", s2_total, s2_trainable))
+            
+            if hasattr(model.rgat, 'stage3_dd'):
+                s3_total = sum(p.numel() for p in model.rgat.stage3_dd.parameters())
+                s3_trainable = sum(p.numel() for p in model.rgat.stage3_dd.parameters() if p.requires_grad)
+                components.append(("  └─ 阶段3 (D→D)", s3_total, s3_trainable))
+            
+            if hasattr(model.rgat, 'disease_classifier'):
+                dc_total = sum(p.numel() for p in model.rgat.disease_classifier.parameters())
+                dc_trainable = sum(p.numel() for p in model.rgat.disease_classifier.parameters() if p.requires_grad)
+                components.append(("  └─ 疾病分类器", dc_total, dc_trainable))
+        
+        # 5. CXR-BERT (如果存在)
+        if hasattr(model, 'cxr_bert') and model.cxr_bert is not None:
+            cxr_total = sum(p.numel() for p in model.cxr_bert.parameters())
+            cxr_trainable = sum(p.numel() for p in model.cxr_bert.parameters() if p.requires_grad)
+            components.append(("CXR-BERT", cxr_total, cxr_trainable))
+        
+        # 6. 投影层
+        projection_layers = []
+        if hasattr(model, 'visual_projection'):
+            projection_layers.append(('visual_projection', model.visual_projection))
+        if hasattr(model, 'text_projection'):
+            projection_layers.append(('text_projection', model.text_projection))
+        if hasattr(model, 'region_visual_projection'):
+            projection_layers.append(('region_visual_projection', model.region_visual_projection))
+        if hasattr(model, 'region_text_projection'):
+            projection_layers.append(('region_text_projection', model.region_text_projection))
+        
+        if projection_layers:
+            proj_total = sum(sum(p.numel() for p in layer.parameters()) for _, layer in projection_layers)
+            proj_trainable = sum(sum(p.numel() for p in layer.parameters() if p.requires_grad) for _, layer in projection_layers)
+            components.append(("投影层", proj_total, proj_trainable))
+            
+            for name, layer in projection_layers:
+                layer_total = sum(p.numel() for p in layer.parameters())
+                layer_trainable = sum(p.numel() for p in layer.parameters() if p.requires_grad)
+                components.append((f"  └─ {name}", layer_total, layer_trainable))
+        
+        # 打印组件统计
+        for name, total, trainable in components:
+            frozen = total - trainable
+            trainable_pct = (trainable / total * 100) if total > 0 else 0
+            if trainable == total:
+                status = "✓ 全部可训练"
+            elif trainable == 0:
+                status = "✗ 全部冻结"
+            else:
+                status = f"◐ {trainable_pct:.1f}% 可训练"
+            
+            self.logger.info(f"{name:40s} | 总参数: {total:>12,} | 可训练: {trainable:>12,} | {status}")
+        
+        # 总计
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         frozen_params = total_params - trainable_params
         
-        self.logger.info("=" * 60)
-        self.logger.info("模型参数统计:")
-        self.logger.info(f"  总参数: {total_params:,}")
-        self.logger.info(f"  可训练参数: {trainable_params:,}")
-        self.logger.info(f"  冻结参数: {frozen_params:,}")
-        self.logger.info("=" * 60)
+        self.logger.info("-" * 80)
+        self.logger.info(f"{'总计':40s} | 总参数: {total_params:>12,} | 可训练: {trainable_params:>12,} | 冻结: {frozen_params:>12,}")
+        self.logger.info(f"{'可训练比例':40s} | {trainable_params / total_params * 100:.2f}%")
+        self.logger.info("=" * 80)
     
     @abstractmethod
     def train_epoch(self, epoch):

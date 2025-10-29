@@ -27,11 +27,17 @@ CONDITIONS = [
 ]
 
 class CheXbertMetrics():
-    def __init__(self, checkpoint_path, mbatch_size, device):
+    def __init__(self, checkpoint_path, mbatch_size, device, bert_pretrained_path='bert-base-uncased'):
         self.checkpoint_path = checkpoint_path
         self.mbatch_size = mbatch_size
         self.device = device
-        self.chexbert = CheXbert(self.checkpoint_path, self.device, strict=False).to(self.device)
+        self.bert_pretrained_path = bert_pretrained_path
+        self.chexbert = CheXbert(
+            self.checkpoint_path, 
+            self.device, 
+            strict=False, 
+            bert_pretrained_path=self.bert_pretrained_path
+        ).to(self.device)
 
     def mini_batch(self, gts, res, mbatch_size=16):
         length = len(gts)

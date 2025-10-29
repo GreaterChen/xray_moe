@@ -48,26 +48,46 @@ class BertFinetuneTrainer(BaseTrainer):
             findings_decoder=bert_model
         )
         
-        # 5. 冻结检测器参数
-        freeze_model_parameters(
-            self.model.object_detector,
-            self.logger,
-            "目标检测器"
-        )
+        # 5. 冻结策略：
+        # - 检测器的检测部分已在 EnhancedFastRCNN 初始化时冻结
+        # - 特征提取部分（feature_projector, missing_region_tokens）保持可训练
+        # - ViT 保持可训练
+        # 因此不需要额外的冻结操作
         
-        self.logger.info("✅ BERT微调模型构建完成")
+        # 统计可训练参数
+        detector_trainable = sum(p.numel() for p in self.model.object_detector.parameters() if p.requires_grad)
+        vit_trainable = sum(p.numel() for p in self.model.image_encoder.parameters() if p.requires_grad)
+        decoder_trainable = sum(p.numel() for p in self.model.findings_decoder.parameters() if p.requires_grad)
+        
+        self.logger.info(f"✅ BERT微调模型构建完成")
+        self.logger.info(f"  - 检测器可训练参数: {detector_trainable:,} (仅特征提取层)")
+        self.logger.info(f"  - ViT可训练参数: {vit_trainable:,}")
+        self.logger.info(f"  - 解码器可训练参数: {decoder_trainable:,}")
     
     def build_optimizer(self):
-        """构建优化器 - 只优化特定参数"""
+        """构建优化器 - 优化解码器、ViT、检测器特征提取层、RGAT和投影层"""
+        # 获取原始模型（处理DDP包装）
+        model = self.get_raw_model()
+        
         trainable_params = []
-        # 添加解码器的所有可训练参数
-        trainable_params.extend([
-            p for p in self.model.findings_decoder.parameters() if p.requires_grad
-        ])
-        # 添加ViT中可训练的参数（LoRA等）
-        trainable_params.extend([
-            p for p in self.model.image_encoder.parameters() if p.requires_grad
-        ])
+        
+        # 1. 添加检测器的特征提取层参数（feature_projector 和 missing_region_tokens）
+        detector_params = [p for p in model.object_detector.parameters() if p.requires_grad]
+        trainable_params.extend(detector_params)
+        
+        # 2. 添加ViT的所有可训练参数
+        vit_params = [p for p in model.image_encoder.parameters() if p.requires_grad]
+        trainable_params.extend(vit_params)
+        
+        # 3. 添加解码器的所有可训练参数
+        decoder_params = [p for p in model.findings_decoder.parameters() if p.requires_grad]
+        trainable_params.extend(decoder_params)
+        
+        # 4. 添加RGAT模块的所有可训练参数
+        rgat_params = []
+        if hasattr(model, 'rgat') and model.rgat is not None:
+            rgat_params = [p for p in model.rgat.parameters() if p.requires_grad]
+            trainable_params.extend(rgat_params)
         
         adjusted_lr = self.device_manager.adjust_learning_rate(
             self.config.LEARNING_RATE
@@ -79,9 +99,21 @@ class BertFinetuneTrainer(BaseTrainer):
             weight_decay=self.config.WEIGHT_DECAY
         )
         
-        trainable_count = sum(p.numel() for p in trainable_params)
-        self.logger.info(f"优化器已创建 - LR: {adjusted_lr}, 可训练参数: {trainable_count:,}")
-    
+        # 详细统计
+        detector_count = sum(p.numel() for p in detector_params)
+        vit_count = sum(p.numel() for p in vit_params)
+        decoder_count = sum(p.numel() for p in decoder_params)
+        rgat_count = sum(p.numel() for p in rgat_params)
+        total_count = detector_count + vit_count + decoder_count + rgat_count
+        
+        self.logger.info(f"优化器已创建 - LR: {adjusted_lr}")
+        self.logger.info(f"  - 检测器特征提取层: {detector_count:,} 参数")
+        self.logger.info(f"  - ViT: {vit_count:,} 参数")
+        self.logger.info(f"  - 解码器: {decoder_count:,} 参数")
+        self.logger.info(f"  - RGAT: {rgat_count:,} 参数")
+        self.logger.info(f"  - 总计: {total_count:,} 可训练参数")
+        self.logger.info(f"  ⚠️  注意: 投影层(2.36M)未加入优化器（FINETUNE阶段不使用）")
+        
     def build_criterion(self):
         """构建损失函数和评估器"""
         self.criterion = None
@@ -92,7 +124,8 @@ class BertFinetuneTrainer(BaseTrainer):
             self.chexbert_metrics = CheXbertMetrics(
                 checkpoint_path=self.config.CHEXBERT_CHECKPOINT_PATH,
                 mbatch_size=self.config.VAL_BATCH_SIZE,
-                device=str(self.device_manager.device)
+                device=str(self.device_manager.device),
+                bert_pretrained_path=getattr(self.config, 'BERT_PRETRAINED_PATH', 'bert-base-uncased')
             )
             self.logger.info("✅ CheXbert评估器初始化成功")
         except Exception as e:
@@ -104,9 +137,11 @@ class BertFinetuneTrainer(BaseTrainer):
         # 如果有专门的decoder checkpoint路径
         if hasattr(self.config, 'DECODER_CHECKPOINT_PATH_FROM') and \
            self.config.DECODER_CHECKPOINT_PATH_FROM:
+            # 获取原始模型（处理DDP包装）
+            model = self.get_raw_model()
             _, _ = load(
                 self.config.DECODER_CHECKPOINT_PATH_FROM,
-                self.model.findings_decoder.decoder,
+                model.findings_decoder.decoder,
                 self.optimizer,
                 self.scheduler,
                 load_model="decoder",

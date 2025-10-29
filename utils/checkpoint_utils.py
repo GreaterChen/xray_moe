@@ -156,6 +156,14 @@ def _adapt_module_prefix(checkpoint_state_dict, model):
     if len(checkpoint_state_dict) == 0:
         return checkpoint_state_dict
     
+    # 检查是否在分布式环境中（通过环境变量）
+    import os
+    is_distributed = (
+        int(os.environ.get('WORLD_SIZE', -1)) > 1 or
+        int(os.environ.get('RANK', -1)) >= 0 or
+        int(os.environ.get('LOCAL_RANK', -1)) >= 0
+    )
+    
     # 检查检查点的键名是否有 'module.' 前缀
     checkpoint_has_module = any(key.startswith('module.') for key in checkpoint_state_dict.keys())
     
@@ -163,9 +171,15 @@ def _adapt_module_prefix(checkpoint_state_dict, model):
     model_state_dict = model.state_dict()
     model_has_module = any(key.startswith('module.') for key in model_state_dict.keys())
     
-    # 情况1: 检查点有module前缀，但模型没有 → 去除前缀
+    # 情况1: 检查点有module前缀，但模型没有
     if checkpoint_has_module and not model_has_module:
-        print("检测到检查点使用了DataParallel/DDP保存，正在适配单卡加载...")
+        # 无论是单卡还是多卡环境，都需要去除module前缀来匹配当前模型
+        # 在分布式环境中，模型稍后会被DDP包装，自动加上module前缀
+        if is_distributed:
+            print("检测到检查点使用了DDP保存，当前处于分布式环境（模型将被DDP包装），正在适配权重加载...")
+        else:
+            print("检测到检查点使用了DataParallel/DDP保存，正在适配单卡加载...")
+        
         new_state_dict = {}
         for key, value in checkpoint_state_dict.items():
             if key.startswith('module.'):
@@ -186,6 +200,8 @@ def _adapt_module_prefix(checkpoint_state_dict, model):
     
     # 情况3: 两者匹配，不需要修改
     else:
+        if checkpoint_has_module and model_has_module:
+            print("检测到DDP环境，权重格式匹配...")
         return checkpoint_state_dict
 
 

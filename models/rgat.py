@@ -176,21 +176,32 @@ class HeterogeneousGraphAttentionLayer(nn.Module):
 
 class DiseaseClassifierHead(nn.Module):
     """
-    疾病分类头 - 为每个疾病节点添加二分类器
+    疾病分类头 - 共享编码器 + 轻量个性化头
+    
+    设计理念：
+    - 所有疾病共享一个特征编码器（提取通用判别特征）
+    - 每个疾病有独立的轻量分类头（保留专业化能力）
+    - 参数量适中（~200K），既不会过度截留梯度，也有足够判别力
     """
-    def __init__(self, disease_dim, dropout=0.3):
+    def __init__(self, disease_dim, hidden_dim=256, dropout=0.3):
         super(DiseaseClassifierHead, self).__init__()
         
-        self.classifiers = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(disease_dim, disease_dim // 2),
-                nn.LayerNorm(disease_dim // 2),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(disease_dim // 2, 1),
-            )
-            for _ in range(14)  # 14个疾病
+        # 共享特征编码器 - 所有疾病共享
+        # 768 → 256: 提取通用的判别性特征
+        self.shared_encoder = nn.Sequential(
+            nn.Linear(disease_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        
+        # 14个疾病独立的轻量分类头
+        # 256 → 1: 每个疾病的最终决策层
+        self.disease_heads = nn.ModuleList([
+            nn.Linear(hidden_dim, 1) for _ in range(14)
         ])
+        
+        # 参数量统计：768×256 + 256×2 + 256×14 = ~200K
     
     def forward(self, disease_features):
         """
@@ -200,12 +211,14 @@ class DiseaseClassifierHead(nn.Module):
         Returns:
             disease_preds: [batch_size, 14] - 14个疾病的预测结果
         """
-        batch_size = disease_features.shape[0]
-        device = disease_features.device
+        # 共享编码器处理所有疾病节点
+        # [B, 14, 768] → [B, 14, 256]
+        shared_features = self.shared_encoder(disease_features)
         
+        # 每个疾病用自己的头进行最终分类
         preds = []
         for i in range(14):
-            pred = self.classifiers[i](disease_features[:, i, :])  # [B, 1]
+            pred = self.disease_heads[i](shared_features[:, i, :])  # [B, 1]
             preds.append(pred)
         
         disease_preds = torch.cat(preds, dim=1)  # [B, 14]
