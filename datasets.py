@@ -34,6 +34,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         "loaded": False,
         "annotation": None,
         "anatomical_embeddings": None,  # 新增：存储解剖区域嵌入数据
+        "anatomical_nlp_status": None,  # 新增：存储解剖区域NLP状态（normal/abnormal）
     }
 
     # 使用统一的解剖区域顺序定义（从configs.constants导入）
@@ -63,14 +64,17 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             
             if 'image_region_embeddings' in data:
                 raw_embeddings = data['image_region_embeddings']
+                raw_nlp_status = data.get('image_region_nlp_status', {})  # 新增：获取NLP状态
                 metadata = data.get('metadata', {})
                 dataset_logger.info(f"✅ 成功加载解剖区域数据库:")
                 dataset_logger.info(f"   - 总条目数: {metadata.get('total_keys', len(raw_embeddings))}")
                 dataset_logger.info(f"   - 向量维度: {metadata.get('embedding_dim', 'Unknown')}")
                 dataset_logger.info(f"   - 模型名称: {metadata.get('model_name', 'Unknown')}")
+                dataset_logger.info(f"   - NLP状态数: {len(raw_nlp_status)}")
                 
                 # 重新组织数据结构: image_id -> {region_index: tensor}
                 organized_embeddings = defaultdict(dict)
+                organized_nlp_status = defaultdict(dict)  # 新增：组织NLP状态
                 
                 for key, embedding in tqdm(raw_embeddings.items(), desc="组织解剖区域数据"):
                     try:
@@ -82,15 +86,22 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                             
                             embedding_tensor = torch.tensor(embedding, dtype=torch.float32)
                             organized_embeddings[image_id][region_index] = embedding_tensor  # 直接赋值，不append
+                            
+                            # 新增：同时组织NLP状态数据
+                            if key in raw_nlp_status:
+                                organized_nlp_status[image_id][region_index] = raw_nlp_status[key]
                     except (ValueError, IndexError):
                         continue  # 忽略格式不正确的键
                 
                 cls._shared_data["anatomical_embeddings"] = dict(organized_embeddings)
+                cls._shared_data["anatomical_nlp_status"] = dict(organized_nlp_status)  # 新增：保存NLP状态
                 dataset_logger.info(f"📊 组织数据完成，覆盖 {len(organized_embeddings)} 个图像")
+                dataset_logger.info(f"📊 NLP状态覆盖 {len(organized_nlp_status)} 个图像")
                 
             else:
                 dataset_logger.error(f"❌ 数据库格式不正确，缺少 'image_region_embeddings' 字段")
                 cls._shared_data["anatomical_embeddings"] = {}
+                cls._shared_data["anatomical_nlp_status"] = {}  # 新增
                 
         except Exception as e:
             dataset_logger.error(f"❌ 加载解剖区域数据库失败: {e}", exc_info=True)
@@ -372,6 +383,11 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         anatomical_embeddings = {}
         if self._shared_data["anatomical_embeddings"] and image_id in self._shared_data["anatomical_embeddings"]:
             anatomical_embeddings = self._shared_data["anatomical_embeddings"][image_id]
+        
+        # 获取该图像的解剖区域NLP状态（如果有的话）
+        anatomical_nlp_status = {}
+        if self._shared_data["anatomical_nlp_status"] and image_id in self._shared_data["anatomical_nlp_status"]:
+            anatomical_nlp_status = self._shared_data["anatomical_nlp_status"][image_id]
 
         output = {
             "image": img,
@@ -382,6 +398,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             "label": disease_label,
             "image_path": img_path,
             "anatomical_embeddings": anatomical_embeddings,  # 新增：该图像的解剖区域嵌入
+            "anatomical_nlp_status": anatomical_nlp_status,  # 新增：该图像的解剖区域NLP状态
             "impression": impression,  # 保留原始 impression 字段以供需要时使用
             "original_findings": findings,  # 保留原始 findings 字段
         }
@@ -460,6 +477,7 @@ def mimic_collate_fn(batch):
     image_paths = [None] * batch_size
     image_ids = [None] * batch_size
     anatomical_embeddings = [None] * batch_size  # 新增：解剖区域嵌入
+    anatomical_nlp_status = [None] * batch_size  # 新增：解剖区域NLP状态
 
     # 填充预分配的数组
     for i, item in enumerate(batch):
@@ -471,6 +489,7 @@ def mimic_collate_fn(batch):
         image_paths[i] = item["image_path"]
         image_ids[i] = item["image_id"]
         anatomical_embeddings[i] = item["anatomical_embeddings"]  # 新增
+        anatomical_nlp_status[i] = item["anatomical_nlp_status"]  # 新增
 
     # 转换标签
     label_tensor = torch.from_numpy(labels)
@@ -484,6 +503,7 @@ def mimic_collate_fn(batch):
         "image_path": image_paths,
         "image_id": image_ids,
         "anatomical_embeddings": anatomical_embeddings,  # 新增：解剖区域嵌入
+        "anatomical_nlp_status": anatomical_nlp_status,  # 新增：解剖区域NLP状态
         "gts": (findings, [""]*len(findings)),  # 添加gts字段保持兼容性
         "split": ["train"]*len(findings),  # 添加split字段保持兼容性
     }

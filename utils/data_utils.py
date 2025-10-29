@@ -174,5 +174,9 @@ def prepare_batch_data(
     if "anatomical_embeddings" in batch:
         source["anatomical_embeddings_batch"] = batch["anatomical_embeddings"]
     
+    # 处理解剖区域NLP状态
+    if "anatomical_nlp_status" in batch:
+        source["anatomical_nlp_status_batch"] = batch["anatomical_nlp_status"]
+    
     return source, target, None
 

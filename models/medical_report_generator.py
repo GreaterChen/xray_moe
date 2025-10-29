@@ -83,6 +83,7 @@ class MedicalReportGenerator(nn.Module):
         image_ids=None,  # 添加image_ids参数用于文本增强
         use_consistent_eval=False,  # 新增参数：是否在测试时保持训练模式以确保一致性
         anatomical_embeddings_batch=None,  # 新增：批次中每个样本的解剖区域嵌入
+        anatomical_nlp_status_batch=None,  # 新增：批次中每个样本的解剖区域NLP状态
         **kwargs
     ):
         # 在这里实现前向传播逻辑
@@ -108,7 +109,8 @@ class MedicalReportGenerator(nn.Module):
                 region_itc_loss = None
                 if getattr(self.config, 'ENABLE_REGION_ITC', True):
                     region_itc_loss = self.compute_region_itc_loss(
-                        visual_features, region_detected, anatomical_embeddings_batch, image_ids
+                        visual_features, region_detected, anatomical_embeddings_batch, 
+                        anatomical_nlp_status_batch, image_ids
                     )
 
                 # 返回结果(不再包含LTC损失和疾病分类损失)
@@ -125,7 +127,8 @@ class MedicalReportGenerator(nn.Module):
                     region_itc_loss = None
                     if getattr(self.config, 'ENABLE_REGION_ITC', True):
                         region_itc_loss = self.compute_region_itc_loss(
-                            visual_features, region_detected, anatomical_embeddings_batch, image_ids
+                            visual_features, region_detected, anatomical_embeddings_batch, 
+                            anatomical_nlp_status_batch, image_ids
                         )
 
                 # 返回简化的结果
@@ -289,14 +292,16 @@ class MedicalReportGenerator(nn.Module):
                 }
 
 
-    def compute_region_itc_loss(self, visual_features, region_detected, anatomical_embeddings_batch, image_ids=None):
+    def compute_region_itc_loss(self, visual_features, region_detected, anatomical_embeddings_batch, 
+                                anatomical_nlp_status_batch=None, image_ids=None):
         """
-        计算区域级别的图像-文本对比损失(ITC) - 内存优化版本
+        计算区域级别的图像-文本对比损失(ITC) - 内存优化版本，支持NLP状态
         
         参数:
             visual_features: ViT输出的视觉特征 [B, 1+num_regions, hidden_size]
             region_detected: 区域检测掩码 [B, num_regions]
             anatomical_embeddings_batch: 批次中每个样本的解剖区域嵌入
+            anatomical_nlp_status_batch: 批次中每个样本的解剖区域NLP状态 (normal/abnormal)
             image_ids: 图像ID列表（可选，用于调试）
             
         返回:
@@ -315,6 +320,7 @@ class MedicalReportGenerator(nn.Module):
             # 高效数据收集：避免重复列表操作
             valid_pairs = []
             text_embeds_list = []
+            nlp_status_list = []  # 新增：收集NLP状态
             
             # 预计算所有检测mask，减少GPU查询次数
             detected_masks = region_detected > 0.5  # [B, 29]
@@ -325,6 +331,11 @@ class MedicalReportGenerator(nn.Module):
                 anatomical_embeddings = anatomical_embeddings_batch[batch_idx]
                 if not anatomical_embeddings:
                     continue
+                
+                # 获取该样本的NLP状态字典
+                anatomical_nlp_status = {}
+                if anatomical_nlp_status_batch and batch_idx < len(anatomical_nlp_status_batch):
+                    anatomical_nlp_status = anatomical_nlp_status_batch[batch_idx] or {}
                 
                 batch_mask = detected_masks[batch_idx]  # [29]
                 
@@ -338,6 +349,10 @@ class MedicalReportGenerator(nn.Module):
                         
                         valid_pairs.append((batch_idx, region_idx - 1))
                         text_embeds_list.append(text_embed)
+                        
+                        # 新增：收集NLP状态，如果没有则默认为None
+                        status = anatomical_nlp_status.get(region_idx, None)
+                        nlp_status_list.append(status)
             
             # 检查样本数量
             total_valid = len(valid_pairs)
@@ -349,24 +364,27 @@ class MedicalReportGenerator(nn.Module):
                 indices = torch.randperm(total_valid)[:max_samples]
                 valid_pairs = [valid_pairs[i] for i in indices]
                 text_embeds_list = [text_embeds_list[i] for i in indices]
+                nlp_status_list = [nlp_status_list[i] for i in indices]  # 新增：同步采样NLP状态
                 total_valid = max_samples
             
             # 一次性计算所有特征
             return self._compute_region_itc_direct(
-                visual_features, valid_pairs, text_embeds_list, device
+                visual_features, valid_pairs, text_embeds_list, nlp_status_list, device
             )
                 
         except Exception as e:
             model_logger.warning(f"⚠️  区域ITC损失计算出错: {e}")
             return None
 
-    def _compute_region_itc_direct(self, visual_features, valid_pairs, text_embeds_list, device):
+    def _compute_region_itc_direct(self, visual_features, valid_pairs, text_embeds_list, nlp_status_list, device):
         """
         直接计算区域ITC损失，内存优化版本
         
-        正负样本定义:
-        - 正样本: 同一解剖区域的所有样本（无论来自哪个图像）
-        - 负样本: 不同解剖区域 且 不同样本
+        正负样本定义（基于NLP状态）:
+        - 正样本: 同一解剖区域 且 相同NLP状态（都是normal或都是abnormal）
+        - 负样本: 
+          1. 同一解剖区域 但 不同NLP状态（一个normal一个abnormal）
+          2. 不同解剖区域 且 不同样本
         - 忽略: 同一样本的不同区域（不作为负样本）
         """
         N = len(valid_pairs)
@@ -404,18 +422,46 @@ class MedicalReportGenerator(nn.Module):
         # 数值稳定性：限制logits范围
         logits = torch.clamp(logits, min=-10.0, max=10.0)
         
-        # ========== 构建正负样本掩码 ==========
-        # 正样本掩码: 相同解剖区域 (i和j的region_idx相同)
-        positive_mask = (region_indices.unsqueeze(1) == region_indices.unsqueeze(0))  # [N, N]
+        # ========== 构建基于NLP状态的正负样本掩码 ==========
+        # 1. 基本掩码：相同/不同解剖区域
+        same_region_mask = (region_indices.unsqueeze(1) == region_indices.unsqueeze(0))  # [N, N]
+        diff_region_mask = (region_indices.unsqueeze(1) != region_indices.unsqueeze(0))  # [N, N]
+        diff_sample_mask = (batch_indices.unsqueeze(1) != batch_indices.unsqueeze(0))  # [N, N]
         
-        # 负样本掩码: 不同解剖区域 且 不同样本
-        diff_region_mask = (region_indices.unsqueeze(1) != region_indices.unsqueeze(0))  # 不同区域
-        diff_sample_mask = (batch_indices.unsqueeze(1) != batch_indices.unsqueeze(0))  # 不同样本
-        negative_mask = diff_region_mask & diff_sample_mask  # [N, N]
+        # 2. 构建NLP状态掩码
+        # 将状态列表转换为数值编码：normal=0, abnormal=1, None=-1
+        status_codes = []
+        for status in nlp_status_list:
+            if status == "normal":
+                status_codes.append(0)
+            elif status == "abnormal":
+                status_codes.append(1)
+            else:
+                status_codes.append(-1)  # 未知状态
         
-        # 移除对角线（自己不和自己对比）
+        status_tensor = torch.tensor(status_codes, device=device)  # [N]
+        
+        # 3. 相同/不同状态掩码
+        same_status_mask = (status_tensor.unsqueeze(1) == status_tensor.unsqueeze(0))  # [N, N]
+        diff_status_mask = (status_tensor.unsqueeze(1) != status_tensor.unsqueeze(0))  # [N, N]
+        
+        # 4. 有效状态掩码（排除None状态的样本）
+        valid_status_mask = (status_tensor >= 0)  # [N]
+        valid_pair_mask = valid_status_mask.unsqueeze(1) & valid_status_mask.unsqueeze(0)  # [N, N]
+        
+        # 5. 正样本掩码：同一解剖区域 且 相同NLP状态
+        positive_mask = same_region_mask & same_status_mask & valid_pair_mask  # [N, N]
+        
+        # 6. 负样本掩码：
+        #    a) 同一解剖区域 但 不同NLP状态
+        #    b) 不同解剖区域 且 不同样本
+        negative_mask_same_region_diff_status = same_region_mask & diff_status_mask & valid_pair_mask
+        negative_mask_diff_region = diff_region_mask & diff_sample_mask
+        negative_mask = negative_mask_same_region_diff_status | negative_mask_diff_region  # [N, N]
+        
+        # 7. 移除对角线（自己不和自己对比）
         eye_mask = torch.eye(N, device=device, dtype=torch.bool)
-        positive_mask = positive_mask & (~eye_mask)  # 移除对角线
+        positive_mask = positive_mask & (~eye_mask)
         
         # 计算监督对比损失 (Supervised Contrastive Loss)
         loss = self._supervised_contrastive_loss(
