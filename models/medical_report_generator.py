@@ -357,7 +357,14 @@ class MedicalReportGenerator(nn.Module):
             return None
 
     def _compute_region_itc_direct(self, visual_features, valid_pairs, text_embeds_list, device):
-        """直接计算区域ITC损失，内存优化版本"""
+        """
+        直接计算区域ITC损失，内存优化版本
+        
+        正负样本定义:
+        - 正样本: 同一解剖区域的所有样本（无论来自哪个图像）
+        - 负样本: 不同解剖区域 且 不同样本
+        - 忽略: 同一样本的不同区域（不作为负样本）
+        """
         N = len(valid_pairs)
         
         # 批量构建索引
@@ -393,19 +400,94 @@ class MedicalReportGenerator(nn.Module):
         # 数值稳定性：限制logits范围
         logits = torch.clamp(logits, min=-10.0, max=10.0)
         
-        # 构建标签
-        labels = torch.arange(N, device=device, dtype=torch.long)
+        # ========== 构建正负样本掩码 ==========
+        # 正样本掩码: 相同解剖区域 (i和j的region_idx相同)
+        positive_mask = (region_indices.unsqueeze(1) == region_indices.unsqueeze(0))  # [N, N]
         
-        # 计算双向损失
-        loss_v2t = F.cross_entropy(logits, labels)
-        loss_t2v = F.cross_entropy(logits.t(), labels)
+        # 负样本掩码: 不同解剖区域 且 不同样本
+        diff_region_mask = (region_indices.unsqueeze(1) != region_indices.unsqueeze(0))  # 不同区域
+        diff_sample_mask = (batch_indices.unsqueeze(1) != batch_indices.unsqueeze(0))  # 不同样本
+        negative_mask = diff_region_mask & diff_sample_mask  # [N, N]
         
-        loss = (loss_v2t + loss_t2v) / 2
+        # 移除对角线（自己不和自己对比）
+        eye_mask = torch.eye(N, device=device, dtype=torch.bool)
+        positive_mask = positive_mask & (~eye_mask)  # 移除对角线
+        
+        # 计算监督对比损失 (Supervised Contrastive Loss)
+        loss = self._supervised_contrastive_loss(
+            logits, positive_mask, negative_mask, device
+        )
         
         # 最终检查
         if torch.isnan(loss) or torch.isinf(loss):
             print("⚠️  区域ITC损失计算出现NaN/Inf，返回零损失")
             return torch.tensor(0.0, device=device, requires_grad=True)
+        
+        return loss
+    
+    def _supervised_contrastive_loss(self, logits, positive_mask, negative_mask, device):
+        """
+        监督对比学习损失
+        
+        参数:
+            logits: 相似度矩阵 [N, N]
+            positive_mask: 正样本掩码 [N, N]
+            negative_mask: 负样本掩码 [N, N]
+            device: 设备
+            
+        返回:
+            loss: 对比损失标量
+        """
+        N = logits.size(0)
+        
+        # 检查每个样本是否有正样本
+        num_positives = positive_mask.sum(dim=1)  # [N]
+        has_positive = num_positives > 0  # [N]
+        
+        if not has_positive.any():
+            # 如果没有任何样本有正样本，返回零损失
+            return torch.tensor(0.0, device=device, requires_grad=True)
+        
+        # 只对有正样本的样本计算损失
+        valid_indices = torch.where(has_positive)[0]
+        
+        # 对每个有效样本计算损失
+        losses = []
+        for i in valid_indices:
+            # 获取第i个样本的正样本和负样本
+            pos_mask_i = positive_mask[i]  # [N]
+            neg_mask_i = negative_mask[i]  # [N]
+            
+            num_pos = pos_mask_i.sum()
+            num_neg = neg_mask_i.sum()
+            
+            if num_pos == 0 or num_neg == 0:
+                continue
+            
+            # 提取正样本和负样本的logits
+            pos_logits = logits[i][pos_mask_i]  # [num_pos]
+            neg_logits = logits[i][neg_mask_i]  # [num_neg]
+            
+            # 计算InfoNCE损失: -log(sum(exp(pos)) / (sum(exp(pos)) + sum(exp(neg))))
+            # 数值稳定版本
+            pos_exp = torch.exp(pos_logits)
+            neg_exp = torch.exp(neg_logits)
+            
+            pos_sum = pos_exp.sum()
+            neg_sum = neg_exp.sum()
+            
+            # 避免除零
+            denominator = pos_sum + neg_sum + 1e-8
+            
+            # 损失: -log(pos_sum / denominator)
+            loss_i = -torch.log(pos_sum / denominator + 1e-8)
+            losses.append(loss_i)
+        
+        if len(losses) == 0:
+            return torch.tensor(0.0, device=device, requires_grad=True)
+        
+        # 平均所有样本的损失
+        loss = torch.stack(losses).mean()
         
         return loss
 

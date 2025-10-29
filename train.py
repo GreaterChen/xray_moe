@@ -172,75 +172,107 @@ def create_data_loaders(train_data, valid_data, test_data, config, device_manage
 
 def main():
     """主函数"""
-    # 1. 初始化设备管理器（必须最先执行，以便正确设置分布式环境）
-    device_manager = DeviceManager(config)
-    
-    # 2. 设置分布式打印（只有主进程打印，避免重复输出）
-    setup_for_distributed(device_manager.is_main_process())
-    
-    # 3. 初始化日志（只有主进程输出到控制台）
-    logger = setup_logger(log_dir="logs", is_main_process=device_manager.is_main_process())
-    logger.info("=" * 80)
-    logger.info("开始训练流程")
-    logger.info("=" * 80)
-    
-    # 4. 打印设备信息
-    logger.info("设备配置信息:")
-    device_manager.print_info()
-    
-    # 5. 设置随机种子
-    torch.manual_seed(config.SEED)
-    if device_manager.distributed:
-        torch.manual_seed(config.SEED + device_manager.rank)
-    logger.info(f"随机种子已设置: {config.SEED}")
-    
-    # 6. 创建tokenizer
-    logger.info("创建tokenizer...")
-    tokenizer = setup_tokenizer(config)
-    logger.info(f"Tokenizer词汇表大小: {len(tokenizer)}")
-    
-    # 7. 创建数据集
-    logger.info("创建数据集...")
-    train_data, valid_data, test_data = create_datasets(config, tokenizer)
-    logger.info(f"训练集大小: {len(train_data)}")
-    logger.info(f"验证集大小: {len(valid_data)}")
-    logger.info(f"测试集大小: {len(test_data)}")
-    
-    # 8. 创建数据加载器
-    logger.info("创建数据加载器...")
-    train_loader, valid_loader, test_loader, train_sampler, valid_sampler, test_sampler = create_data_loaders(
-        train_data, valid_data, test_data, config, device_manager
-    )
-    
-    # 9. 使用工厂创建训练器
-    logger.info(f"创建训练器 (阶段: {config.PHASE})...")
     try:
-        trainer = TrainerFactory.create_trainer(
-            config=config,
-            device_manager=device_manager,
-            logger=logger,
-            tokenizer=tokenizer
+        # 1. 初始化设备管理器（必须最先执行，以便正确设置分布式环境）
+        device_manager = DeviceManager(config)
+        
+        # 2. 设置分布式打印（只有主进程打印，避免重复输出）
+        setup_for_distributed(device_manager.is_main_process())
+        
+        # 3. 初始化日志（只有主进程输出到控制台，所有信息都保存到文件）
+        logger, log_file = setup_logger(
+            log_dir="logs", 
+            is_main_process=device_manager.is_main_process(),
+            redirect_stdout=True  # 重定向stdout/stderr到日志文件
         )
-    except ValueError as e:
-        logger.error(f"训练器创建失败: {e}")
-        logger.info(f"支持的训练阶段: {TrainerFactory.list_supported_phases()}")
-        return
-    
-    # 10. 设置数据加载器
-    trainer.train_loader = train_loader
-    trainer.valid_loader = valid_loader
-    trainer.test_loader = test_loader
-    trainer.train_sampler = train_sampler
-    trainer.valid_sampler = valid_sampler
-    trainer.test_sampler = test_sampler
-    
-    # 11. 运行训练
-    logger.info("开始训练...")
-    trainer.run()
-    
-    logger.info("=" * 80)
-    logger.info("训练流程完成!")
-    logger.info("=" * 80)
+        logger.info("=" * 80)
+        logger.info("开始训练流程")
+        logger.info("=" * 80)
+        logger.info(f"日志保存位置: {log_file}")
+        
+        # 4. 打印设备信息
+        logger.info("设备配置信息:")
+        device_manager.print_info()
+        
+        # 5. 设置随机种子
+        torch.manual_seed(config.SEED)
+        if device_manager.distributed:
+            torch.manual_seed(config.SEED + device_manager.rank)
+        logger.info(f"随机种子已设置: {config.SEED}")
+        
+        # 6. 创建tokenizer
+        logger.info("创建tokenizer...")
+        tokenizer = setup_tokenizer(config)
+        logger.info(f"Tokenizer词汇表大小: {len(tokenizer)}")
+        
+        # 7. 创建数据集
+        logger.info("创建数据集...")
+        train_data, valid_data, test_data = create_datasets(config, tokenizer)
+        logger.info(f"训练集大小: {len(train_data)}")
+        logger.info(f"验证集大小: {len(valid_data)}")
+        logger.info(f"测试集大小: {len(test_data)}")
+        
+        # 8. 创建数据加载器
+        logger.info("创建数据加载器...")
+        train_loader, valid_loader, test_loader, train_sampler, valid_sampler, test_sampler = create_data_loaders(
+            train_data, valid_data, test_data, config, device_manager
+        )
+        
+        # 9. 使用工厂创建训练器
+        logger.info(f"创建训练器 (阶段: {config.PHASE})...")
+        try:
+            trainer = TrainerFactory.create_trainer(
+                config=config,
+                device_manager=device_manager,
+                logger=logger,
+                tokenizer=tokenizer
+            )
+        except ValueError as e:
+            logger.error(f"训练器创建失败: {e}")
+            logger.info(f"支持的训练阶段: {TrainerFactory.list_supported_phases()}")
+            return
+        
+        # 10. 设置数据加载器
+        trainer.train_loader = train_loader
+        trainer.valid_loader = valid_loader
+        trainer.test_loader = test_loader
+        trainer.train_sampler = train_sampler
+        trainer.valid_sampler = valid_sampler
+        trainer.test_sampler = test_sampler
+        
+        # 11. 运行训练
+        logger.info("开始训练...")
+        trainer.run()
+        
+        logger.info("=" * 80)
+        logger.info("训练流程完成!")
+        logger.info("=" * 80)
+        
+    except KeyboardInterrupt:
+        if 'logger' in locals():
+            logger.warning("训练被用户中断 (Ctrl+C)")
+        print("训练被用户中断 (Ctrl+C)")
+        raise
+    except Exception as e:
+        if 'logger' in locals():
+            logger.critical("训练过程发生致命错误:", exc_info=True)
+            logger.critical(f"错误类型: {type(e).__name__}")
+            logger.critical(f"错误信息: {str(e)}")
+        else:
+            print(f"训练过程发生致命错误: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        raise
+    finally:
+        # 确保清理资源
+        if 'logger' in locals():
+            logger.info("清理资源...")
+        if 'device_manager' in locals() and device_manager.distributed:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                dist.destroy_process_group()
+                if 'logger' in locals():
+                    logger.info("分布式进程组已清理")
 
 
 if __name__ == "__main__":

@@ -1,21 +1,40 @@
 """日志和可视化工具"""
 import os
 import re
+import sys
 import logging
 import matplotlib.pyplot as plt
 from datetime import datetime
 
 
-def setup_logger(log_dir="logs", is_main_process=True):
+class StreamToLogger:
     """
-    设置logger，同时输出到控制台和文件
+    将stdout/stderr重定向到logger的类
+    """
+    def __init__(self, logger, log_level=logging.INFO):
+        self.logger = logger
+        self.log_level = log_level
+        self.linebuf = ''
+
+    def write(self, buf):
+        for line in buf.rstrip().splitlines():
+            self.logger.log(self.log_level, line.rstrip())
+
+    def flush(self):
+        pass
+
+
+def setup_logger(log_dir="logs", is_main_process=True, redirect_stdout=True):
+    """
+    设置logger，同时输出到控制台和文件，并捕获所有错误信息
     
     Args:
         log_dir: 日志文件存储目录
         is_main_process: 是否为主进程（分布式训练中只有主进程输出到控制台）
+        redirect_stdout: 是否重定向stdout/stderr到日志文件
         
     Returns:
-        logger对象
+        logger对象, log_file路径
     """
     # 创建日志目录
     if not os.path.exists(log_dir):
@@ -27,17 +46,20 @@ def setup_logger(log_dir="logs", is_main_process=True):
     
     # 创建logger
     logger = logging.getLogger("train_logger")
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)  # 设置为DEBUG级别以捕获所有信息
     
     # 清除已存在的处理器（避免重复）
     logger.handlers.clear()
     
-    # 文件处理器（所有进程都写入，但文件名包含进程信息）
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
+    # 文件处理器（记录所有级别的日志）
+    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
     
-    # 设置格式
-    formatter = logging.Formatter("%(asctime)s - %(message)s")
+    # 设置详细格式（包含日志级别）
+    formatter = logging.Formatter(
+        "%(asctime)s - [%(levelname)s] - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
     file_handler.setFormatter(formatter)
     
     # 添加文件处理器
@@ -45,12 +67,56 @@ def setup_logger(log_dir="logs", is_main_process=True):
     
     # 控制台处理器（只有主进程输出到控制台）
     if is_main_process:
-        console_handler = logging.StreamHandler()
+        console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(formatter)
+        console_formatter = logging.Formatter(
+            "%(asctime)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
     
-    return logger
+    # 重定向stdout和stderr到日志文件（可选）
+    if redirect_stdout and is_main_process:
+        # 保存原始的stdout和stderr
+        sys.stdout = TeeStream(sys.stdout, StreamToLogger(logger, logging.INFO))
+        sys.stderr = TeeStream(sys.stderr, StreamToLogger(logger, logging.ERROR))
+        
+        logger.info(f"日志文件: {log_file}")
+        logger.info("已启用stdout/stderr重定向到日志文件")
+    
+    # 设置未捕获异常的处理器
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        """处理未捕获的异常"""
+        if issubclass(exc_type, KeyboardInterrupt):
+            # 允许KeyboardInterrupt正常终止程序
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        # 记录异常到日志文件
+        logger.critical("未捕获的异常:", exc_info=(exc_type, exc_value, exc_traceback))
+    
+    sys.excepthook = handle_exception
+    
+    return logger, log_file
+
+
+class TeeStream:
+    """
+    同时写入两个流的类（既输出到终端，也输出到日志）
+    """
+    def __init__(self, stream1, stream2):
+        self.stream1 = stream1
+        self.stream2 = stream2
+
+    def write(self, data):
+        self.stream1.write(data)
+        self.stream2.write(data)
+
+    def flush(self):
+        self.stream1.flush()
+        if hasattr(self.stream2, 'flush'):
+            self.stream2.flush()
 
 
 def log_metrics(logger, epoch, train_loss, test_loss, result):
