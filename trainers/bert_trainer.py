@@ -112,7 +112,6 @@ class BertFinetuneTrainer(BaseTrainer):
         self.logger.info(f"  - 解码器: {decoder_count:,} 参数")
         self.logger.info(f"  - RGAT: {rgat_count:,} 参数")
         self.logger.info(f"  - 总计: {total_count:,} 可训练参数")
-        self.logger.info(f"  ⚠️  注意: 投影层(2.36M)未加入优化器（FINETUNE阶段不使用）")
         
     def build_criterion(self):
         """构建损失函数和评估器"""

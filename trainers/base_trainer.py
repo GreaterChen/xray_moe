@@ -329,6 +329,12 @@ class BaseTrainer(ABC):
             train_loss = self.train_epoch(epoch)
             self.logger.info(f"训练损失: {train_loss:.4f}")
             
+            # 【修复】训练后立即清理内存
+            import gc
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            
             # 评估
             if self.should_evaluate(epoch):
                 test_loss, result = self.evaluate(self.test_loader, mode='test', epoch=epoch)
@@ -346,13 +352,18 @@ class BaseTrainer(ABC):
                 
                 filename = self.get_save_filename(epoch, result, is_best)
                 self.save_checkpoint(epoch, (test_loss, result), filename)
+                
+                # 【修复】评估后也清理内存
+                del test_loss, result
             else:
                 # 定期保存（不评估的epoch）
                 filename = f"epoch_{epoch}.pth"
                 self.save_checkpoint(epoch, None, filename)
             
-            # 清理内存
-            torch.cuda.empty_cache()
+            # 【修复】每个epoch结束后彻底清理内存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
         
         # 关闭TensorBoard
         if self.writer:

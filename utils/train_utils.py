@@ -153,13 +153,16 @@ def train(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
         
-        # 记录到TensorBoard
+        # 记录到TensorBoard (在删除变量之前)
         if writer is not None and i % log_freq == 0:
             _log_training_metrics(writer, config, loss, output, current_epoch, i, len(data_loader))
         
-        # 定期内存清理
+        # 每个batch结束后立即清理，防止内存累积
+        # 删除不再需要的变量并detach
+        del loss, output, source, target
+        
+        # 定期深度内存清理
         if i % 50 == 0 and i > 0:
-            del loss, output
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
@@ -224,7 +227,15 @@ def _compute_loss(config, output):
     output = args_to_kwargs(output)
     
     if phase == "TRAIN_DETECTION":
-        return sum(loss for loss in output.values())
+        # 修复：避免保留整个output字典的计算图
+        # 将损失相加并立即释放中间变量
+        total_loss = None
+        for loss_value in output.values():
+            if total_loss is None:
+                total_loss = loss_value
+            else:
+                total_loss = total_loss + loss_value
+        return total_loss
     
     elif phase == "PRETRAIN_VIT":
         # 预训练阶段：只有区域级别ITC损失(patch-sentence对齐)

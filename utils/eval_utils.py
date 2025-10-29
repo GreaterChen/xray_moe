@@ -56,7 +56,7 @@ def save_generations(
 
     with torch.no_grad():
         prog_bar = tqdm(data_loader)
-        for batch in prog_bar:
+        for batch_idx, batch in enumerate(prog_bar):
             # 收集元数据
             image_paths_list.extend(batch["image_path"])
             splits_list.extend(batch["split"])
@@ -86,6 +86,15 @@ def save_generations(
 
             # 收集预测结果
             findings_preds_list.extend([re for re in output["findings_text"]])
+            
+            # 【修复】及时清理batch数据
+            del source, target, output, batch
+            
+            # 定期深度清理
+            if batch_idx % 50 == 0 and batch_idx > 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
 
     # 创建保存目录
     os.makedirs(save_dir, exist_ok=True)
@@ -196,6 +205,14 @@ def test(
                 loss = torch.tensor(0.0)
                 running_loss += loss.item()
             prog_bar.set_description("Loss: {}".format(running_loss / (i + 1)))
+            
+            del source, target, output, batch
+            
+            # 定期深度清理
+            if i % 50 == 0 and i > 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
 
         # 创建结果数据字典
         results_data = {
@@ -329,9 +346,15 @@ def test_detection(
                     model.eval()  # 切回评估模式
                     
                     if isinstance(loss_dict, dict):
-                        batch_loss = sum(loss for loss in loss_dict.values() if isinstance(loss, torch.Tensor))
-                        running_loss += batch_loss.item()
+                        # 【修复】立即计算并释放loss_dict，避免保留计算图
+                        batch_loss = 0.0
+                        for loss_value in loss_dict.values():
+                            if isinstance(loss_value, torch.Tensor):
+                                batch_loss += loss_value.item()
+                        running_loss += batch_loss
                         num_batches += 1
+                        # 立即删除loss_dict
+                        del loss_dict, batch_loss
                 except Exception as e:
                     logger.warning(f"损失计算异常: {e}")
             
@@ -342,9 +365,10 @@ def test_detection(
             for detection, target in zip(detections, targets):
                 # 应用置信度阈值
                 keep = detection["scores"] > confidence_threshold
-                pred_boxes = detection["boxes"][keep].cpu()
-                pred_labels = detection["labels"][keep].cpu()
-                pred_scores = detection["scores"][keep].cpu()
+                # 【修复】立即detach并转为numpy，减少内存占用
+                pred_boxes = detection["boxes"][keep].detach().cpu()
+                pred_labels = detection["labels"][keep].detach().cpu()
+                pred_scores = detection["scores"][keep].detach().cpu()
                 
                 # 存储预测结果
                 all_predictions.append({
@@ -356,10 +380,13 @@ def test_detection(
                 
                 # 存储真值
                 all_ground_truths.append({
-                    "boxes": target["boxes"].cpu(),
-                    "labels": target["labels"].cpu(),
+                    "boxes": target["boxes"].detach().cpu(),
+                    "labels": target["labels"].detach().cpu(),
                     "image_id": len(all_ground_truths)
                 })
+            
+            # 【修复】及时清理batch数据
+            del images, targets, detections
             
             # 更新进度条
             if num_batches > 0:
@@ -511,6 +538,9 @@ def test_vit(
                 running_loss += loss_val
                 running_region_itc_loss += loss_val
                 num_batches += 1
+            
+            # 【修复】及时清理batch数据
+            del source, target, outputs, batch
 
     # 计算平均损失
     avg_loss = running_loss / num_batches if num_batches > 0 else 0.0
@@ -701,6 +731,15 @@ def test_llm(
 
             # 更新进度条
             prog_bar.set_description(f"Loss: {running_loss/(batch_idx+1):.4f}")
+            
+            # 【修复】及时清理batch数据，防止内存累积
+            del source, target, outputs, batch, generated_texts, target_texts
+            
+            # 定期深度清理
+            if batch_idx % 50 == 0 and batch_idx > 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
 
     # 计算平均损失
     avg_loss = running_loss / max(total_samples, 1)

@@ -35,9 +35,6 @@ class MedicalReportGenerator(nn.Module):
         self.use_detection_cache = False
         self.detection_cache = {}
         
-        self.visual_projection = nn.Linear(768, 768)
-        self.text_projection = nn.Linear(768, 768)
-        
         # 为区域级别对比学习添加独立的投影层
         self.region_visual_projection = nn.Linear(768, 768)
         self.region_text_projection = nn.Linear(768, 768)
