@@ -2,6 +2,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import heapq
+import logging
+
+# 获取logger
+negative_pool_logger = logging.getLogger("train_logger")
 
 
 class NegativeSamplePool:
@@ -32,7 +36,7 @@ class NegativeSamplePool:
 
         # 检查是否可以使用CUDA
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"使用设备: {self.device}")
+        negative_pool_logger.info(f"使用设备: {self.device}")
 
     def _label_to_key(self, label):
         """
@@ -117,53 +121,53 @@ class NegativeSamplePool:
             # 每添加1000个样本打印一次进度
             if self.sample_count % 1000 == 0:
                 duplicate_percentage = (self.duplicate_count / self.sample_count) * 100
-                print(
+                negative_pool_logger.info(
                     f"已处理 {self.sample_count} 个样本，去重 {self.duplicate_count} 个 ({duplicate_percentage:.2f}%)"
                 )
-
+        
         # 每批次结束打印本批次的去重信息
         if batch_duplicates > 0:
-            print(f"当前批次: 处理 {batch_size} 个样本，去重 {batch_duplicates} 个")
+            negative_pool_logger.info(f"当前批次: 处理 {batch_size} 个样本，去重 {batch_duplicates} 个")
 
     def save(self, save_path):
         """
         保存负样本池到本地
-
+        
         Args:
             save_path: 保存路径
         """
-        print("保存负样本池到本地...")
-
+        negative_pool_logger.info("保存负样本池到本地...")
+        
         # 处理池数据并保存
         save_data = {"pool": {}, "label_vectors": {}}
-
+        
         # 将tensor转换为numpy数组
         for label_key, tokens in self.pool.items():
             save_data["pool"][label_key] = tokens.cpu().numpy()
-
+        
         for label_key, label_vector in self.label_vectors.items():
             save_data["label_vectors"][label_key] = label_vector.cpu().numpy()
-
+        
         # 使用numpy保存
         np.save(save_path, save_data)
-
-        print(f"负样本池已保存至 {save_path}")
-        print("池统计信息:")
+        
+        negative_pool_logger.info(f"负样本池已保存至 {save_path}")
+        negative_pool_logger.info("池统计信息:")
         total_samples = 0
         for label_key, tokens in save_data["pool"].items():
             num_samples = tokens.shape[0]
-            print(f"标签组合 {label_key}: {num_samples} 个样本")
+            negative_pool_logger.info(f"标签组合 {label_key}: {num_samples} 个样本")
             total_samples += num_samples
-        print(f"总计: {total_samples} 个样本")
+        negative_pool_logger.info(f"总计: {total_samples} 个样本")
 
     def load(self, load_path):
         """
         从本地加载负样本池，并转换为tensor放在GPU上
-
+        
         Args:
             load_path: 加载路径
         """
-        print(f"从 {load_path} 加载负样本池...")
+        negative_pool_logger.info(f"从 {load_path} 加载负样本池...")
 
         # 加载数据
         loaded_data = np.load(load_path, allow_pickle=True).item()
@@ -208,9 +212,9 @@ class NegativeSamplePool:
         self.vectors_tensor = torch.stack(
             [self.label_vectors[key] for key in self.keys], dim=0
         )
-
-        print(f"总计: {total_samples} 个样本")
-        print(f"总键数: {len(self.pool)}")
+        
+        negative_pool_logger.info(f"总计: {total_samples} 个样本")
+        negative_pool_logger.info(f"总键数: {len(self.pool)}")
 
         # 按样本数量排序
         key_sizes.sort(key=lambda x: x[1], reverse=True)

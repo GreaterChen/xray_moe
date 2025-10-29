@@ -3,6 +3,7 @@ import os
 import json
 import pickle
 import re
+import logging
 import numpy as np
 import pandas as pd
 
@@ -21,6 +22,9 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from collections import defaultdict
 from utils import *
+
+# 创建数据集专用的logger
+dataset_logger = logging.getLogger("train_logger")  # 使用相同的logger名称
 
 
 # --- Datasets ---
@@ -48,22 +52,22 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             return  # 已经加载过了
             
         if anatomical_db_path is None or not os.path.exists(anatomical_db_path):
-            print(f"⚠️  解剖区域数据库文件不存在或未配置: {anatomical_db_path}")
+            dataset_logger.warning(f"⚠️  解剖区域数据库文件不存在或未配置: {anatomical_db_path}")
             cls._shared_data["anatomical_embeddings"] = {}
             return
             
         try:
-            print(f"📚 正在加载解剖区域数据库: {anatomical_db_path}")
+            dataset_logger.info(f"📚 正在加载解剖区域数据库: {anatomical_db_path}")
             with open(anatomical_db_path, 'rb') as f:
                 data = pickle.load(f)
             
             if 'image_region_embeddings' in data:
                 raw_embeddings = data['image_region_embeddings']
                 metadata = data.get('metadata', {})
-                print(f"✅ 成功加载解剖区域数据库:")
-                print(f"   - 总条目数: {metadata.get('total_keys', len(raw_embeddings))}")
-                print(f"   - 向量维度: {metadata.get('embedding_dim', 'Unknown')}")
-                print(f"   - 模型名称: {metadata.get('model_name', 'Unknown')}")
+                dataset_logger.info(f"✅ 成功加载解剖区域数据库:")
+                dataset_logger.info(f"   - 总条目数: {metadata.get('total_keys', len(raw_embeddings))}")
+                dataset_logger.info(f"   - 向量维度: {metadata.get('embedding_dim', 'Unknown')}")
+                dataset_logger.info(f"   - 模型名称: {metadata.get('model_name', 'Unknown')}")
                 
                 # 重新组织数据结构: image_id -> {region_index: tensor}
                 organized_embeddings = defaultdict(dict)
@@ -82,16 +86,14 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                         continue  # 忽略格式不正确的键
                 
                 cls._shared_data["anatomical_embeddings"] = dict(organized_embeddings)
-                print(f"📊 组织数据完成，覆盖 {len(organized_embeddings)} 个图像")
+                dataset_logger.info(f"📊 组织数据完成，覆盖 {len(organized_embeddings)} 个图像")
                 
             else:
-                print(f"❌ 数据库格式不正确，缺少 'image_region_embeddings' 字段")
+                dataset_logger.error(f"❌ 数据库格式不正确，缺少 'image_region_embeddings' 字段")
                 cls._shared_data["anatomical_embeddings"] = {}
                 
         except Exception as e:
-            print(f"❌ 加载解剖区域数据库失败: {e}")
-            import traceback
-            traceback.print_exc()
+            dataset_logger.error(f"❌ 加载解剖区域数据库失败: {e}", exc_info=True)
             cls._shared_data["anatomical_embeddings"] = {}
 
     @classmethod
@@ -112,17 +114,17 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         # 检测数据格式并适配
         if isinstance(annotation_data, list):
             # 新格式：列表格式，需要转换并划分train/test
-            print(f"📋 检测到列表格式的注释数据，共 {len(annotation_data)} 条记录")
+            dataset_logger.info(f"📋 检测到列表格式的注释数据，共 {len(annotation_data)} 条记录")
             
             # 如果提供了split CSV文件，使用CSV来划分数据
             split_map = {}
             if split_csv_path and os.path.exists(split_csv_path):
-                print(f"📄 使用CSV文件进行数据划分: {split_csv_path}")
+                dataset_logger.info(f"📄 使用CSV文件进行数据划分: {split_csv_path}")
                 import pandas as pd
                 split_df = pd.read_csv(split_csv_path)
                 # 创建dicom_id到split的映射
                 split_map = dict(zip(split_df['dicom_id'], split_df['split']))
-                print(f"✅ 加载了 {len(split_map)} 条划分信息")
+                dataset_logger.info(f"✅ 加载了 {len(split_map)} 条划分信息")
             
             # 过滤并处理数据
             processed_data = {"train": [], "test": [], "valid": [], "validate": []}
@@ -165,7 +167,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             
             # 如果没有使用CSV划分，则使用随机划分
             if not split_map:
-                print(f"⚠️  未提供有效的CSV文件，使用随机划分 (70/15/15)")
+                dataset_logger.warning(f"⚠️  未提供有效的CSV文件，使用随机划分 (70/15/15)")
                 all_data = processed_data["train"]
                 import random
                 random.seed(42)
@@ -188,13 +190,13 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                     "test": processed_data["test"]
                 }
             
-            print(f"✅ 数据划分完成: 训练集 {len(new_annotation['train'])} 条, "
+            dataset_logger.info(f"✅ 数据划分完成: 训练集 {len(new_annotation['train'])} 条, "
                   f"验证集 {len(new_annotation['validate'])} 条, "
                   f"测试集 {len(new_annotation['test'])} 条")
             
         elif isinstance(annotation_data, dict):
             # 旧格式：字典格式，保持原有逻辑
-            print(f"📋 检测到字典格式的注释数据")
+            dataset_logger.info(f"📋 检测到字典格式的注释数据")
             import concurrent.futures
 
             new_annotation = {}

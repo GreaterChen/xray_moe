@@ -1,6 +1,7 @@
 """指标计算工具"""
 import torch
 import numpy as np
+import logging
 from sklearn.metrics import roc_auc_score, average_precision_score
 
 
@@ -25,20 +26,21 @@ def visual_parameters(modules, parameters):
         modules: 模块名称列表
         parameters: 参数数量列表
     """
-    print("\n" + "=" * 70)
-    print("模型参数统计")
-    print("=" * 70)
+    logger = logging.getLogger("train_logger")
+    logger.info("\n" + "=" * 70)
+    logger.info("模型参数统计")
+    logger.info("=" * 70)
     
     total_params = sum(parameters)
     
     for module_name, param_count in zip(modules, parameters):
         percentage = (param_count / total_params * 100) if total_params > 0 else 0
         bar = "█" * int(percentage / 2)  # 每个█代表2%
-        print(f"{module_name:25s} {param_count:12,d} ({percentage:5.1f}%) {bar}")
+        logger.info(f"{module_name:25s} {param_count:12,d} ({percentage:5.1f}%) {bar}")
     
-    print("=" * 70)
-    print(f"{'总参数':25s} {total_params:12,d} (100.0%)")
-    print("=" * 70)
+    logger.info("=" * 70)
+    logger.info(f"{'总参数':25s} {total_params:12,d} (100.0%)")
+    logger.info("=" * 70)
 
 
 def calculate_detection_metrics(predictions, ground_truths, iou_threshold=0.5):
@@ -166,7 +168,8 @@ def calculate_classification_metrics(predictions, targets, num_classes=14):
             auroc_scores.append(auroc)
             auprc_scores.append(auprc)
         except Exception as e:
-            print(f"计算类别 {i} 的指标时出错: {e}")
+            logger = logging.getLogger("train_logger")
+            logger.warning(f"计算类别 {i} 的指标时出错: {e}")
             continue
     
     return {

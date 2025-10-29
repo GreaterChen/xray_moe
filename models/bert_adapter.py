@@ -1,8 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import logging
 
 from models.bert_cross_decoder import BertCrossDecoder
+
+# 获取logger
+bert_adapter_logger = logging.getLogger("train_logger")
 
 class BertAdapter(nn.Module):
     """
@@ -85,7 +89,7 @@ class BertAdapter(nn.Module):
         
         # 如果use_history=True但是prepared_history为None，则强制设置use_history=False
         if use_history and prepared_history is None:
-            print("警告: use_history=True但history为None，自动设置use_history=False")
+            bert_adapter_logger.warning("警告: use_history=True但history为None，自动设置use_history=False")
             use_history = False
         
         # 调用BERT交叉解码器
@@ -149,12 +153,12 @@ class BertAdapter(nn.Module):
         # 验证历史文本编码格式
         if use_history and prepared_history is not None:
             if not hasattr(prepared_history, 'input_ids') and not (isinstance(prepared_history, dict) and 'input_ids' in prepared_history):
-                print(f"警告: 历史文本编码格式不正确，类型: {type(prepared_history)}")
+                bert_adapter_logger.warning(f"警告: 历史文本编码格式不正确，类型: {type(prepared_history)}")
                 prepared_history = None
                 use_history = False
         elif use_history and prepared_history is None:
             # 如果use_history=True但是history为None，则强制设置use_history=False
-            print("警告: use_history=True但history为None，自动设置use_history=False")
+            bert_adapter_logger.warning("警告: use_history=True但history为None，自动设置use_history=False")
             use_history = False
             
         # 调用BERT交叉解码器生成文本，传递所有生成参数

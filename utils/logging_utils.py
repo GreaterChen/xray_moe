@@ -7,31 +7,13 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 
-class StreamToLogger:
-    """
-    将stdout/stderr重定向到logger的类
-    """
-    def __init__(self, logger, log_level=logging.INFO):
-        self.logger = logger
-        self.log_level = log_level
-        self.linebuf = ''
-
-    def write(self, buf):
-        for line in buf.rstrip().splitlines():
-            self.logger.log(self.log_level, line.rstrip())
-
-    def flush(self):
-        pass
-
-
-def setup_logger(log_dir="logs", is_main_process=True, redirect_stdout=True):
+def setup_logger(log_dir="logs", is_main_process=True):
     """
     设置logger，同时输出到控制台和文件，并捕获所有错误信息
     
     Args:
         log_dir: 日志文件存储目录
         is_main_process: 是否为主进程（分布式训练中只有主进程输出到控制台）
-        redirect_stdout: 是否重定向stdout/stderr到日志文件
         
     Returns:
         logger对象, log_file路径
@@ -51,7 +33,7 @@ def setup_logger(log_dir="logs", is_main_process=True, redirect_stdout=True):
     # 清除已存在的处理器（避免重复）
     logger.handlers.clear()
     
-    # 文件处理器（记录所有级别的日志）
+    # 文件处理器（所有进程都写入日志文件）
     file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
     
@@ -75,15 +57,8 @@ def setup_logger(log_dir="logs", is_main_process=True, redirect_stdout=True):
         )
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
-    
-    # 重定向stdout和stderr到日志文件（可选）
-    if redirect_stdout and is_main_process:
-        # 保存原始的stdout和stderr
-        sys.stdout = TeeStream(sys.stdout, StreamToLogger(logger, logging.INFO))
-        sys.stderr = TeeStream(sys.stderr, StreamToLogger(logger, logging.ERROR))
         
         logger.info(f"日志文件: {log_file}")
-        logger.info("已启用stdout/stderr重定向到日志文件")
     
     # 设置未捕获异常的处理器
     def handle_exception(exc_type, exc_value, exc_traceback):
@@ -99,24 +74,6 @@ def setup_logger(log_dir="logs", is_main_process=True, redirect_stdout=True):
     sys.excepthook = handle_exception
     
     return logger, log_file
-
-
-class TeeStream:
-    """
-    同时写入两个流的类（既输出到终端，也输出到日志）
-    """
-    def __init__(self, stream1, stream2):
-        self.stream1 = stream1
-        self.stream2 = stream2
-
-    def write(self, data):
-        self.stream1.write(data)
-        self.stream2.write(data)
-
-    def flush(self):
-        self.stream1.flush()
-        if hasattr(self.stream2, 'flush'):
-            self.stream2.flush()
 
 
 def log_metrics(logger, epoch, train_loss, test_loss, result):
@@ -250,16 +207,17 @@ def visual_parameters(modules, parameters):
         modules: 模块列表
         parameters: 参数列表
     """
-    print("\n模型参数统计:")
-    print("=" * 60)
+    logger = logging.getLogger("train_logger")
+    logger.info("\n模型参数统计:")
+    logger.info("=" * 60)
     
     total_params = sum(parameters)
     
     for module, params in zip(modules, parameters):
         percentage = (params / total_params) * 100 if total_params > 0 else 0
-        print(f"{module:30s}: {params:12,d} ({percentage:5.2f}%)")
+        logger.info(f"{module:30s}: {params:12,d} ({percentage:5.2f}%)")
     
-    print("=" * 60)
-    print(f"{'总参数':30s}: {total_params:12,d}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info(f"{'总参数':30s}: {total_params:12,d}")
+    logger.info("=" * 60)
 

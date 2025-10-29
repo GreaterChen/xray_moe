@@ -7,8 +7,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pandas as pd
 import numpy as np
+import logging
 
 from configs.constants import ANATOMY_ORDER, DISEASE_ORDER
+
+# 获取logger
+rgat_logger = logging.getLogger("train_logger")
 
 
 class RelationalGraphAttentionLayer(nn.Module):
@@ -289,12 +293,12 @@ class ThreeStageRGAT(nn.Module):
         self.register_buffer("dd_weights", self._load_adjacency_matrix(dd_adj_path, (num_disease, num_disease), as_weights=True))
         self.register_buffer("ad_adj", self._load_adjacency_matrix(da_adj_path, (num_anatomy, num_disease)))
         
-        print(f"✅ RGAT模块初始化完成")
-        print(f"   - 解剖区域节点数: {num_anatomy}")
-        print(f"   - 疾病节点数: {num_disease}")
-        print(f"   - A→A边数: {self.aa_adj.sum().item():.0f}")
-        print(f"   - A→D边数: {self.ad_adj.sum().item():.0f}")
-        print(f"   - D→D边数: {self.dd_adj.sum().item():.0f}")
+        rgat_logger.info(f"✅ RGAT模块初始化完成")
+        rgat_logger.info(f"   - 解剖区域节点数: {num_anatomy}")
+        rgat_logger.info(f"   - 疾病节点数: {num_disease}")
+        rgat_logger.info(f"   - A→A边数: {self.aa_adj.sum().item():.0f}")
+        rgat_logger.info(f"   - A→D边数: {self.ad_adj.sum().item():.0f}")
+        rgat_logger.info(f"   - D→D边数: {self.dd_adj.sum().item():.0f}")
     
     def _load_adjacency_matrix(self, path, shape, as_weights=False):
         """
@@ -309,7 +313,7 @@ class ThreeStageRGAT(nn.Module):
             adj_matrix: torch.Tensor [num_rows, num_cols]
         """
         if path is None or not isinstance(path, str):
-            print(f"⚠️ 邻接矩阵路径无效: {path}, 使用全连接图")
+            rgat_logger.warning(f"⚠️ 邻接矩阵路径无效: {path}, 使用全连接图")
             return torch.ones(shape)
         
         try:
@@ -321,19 +325,19 @@ class ThreeStageRGAT(nn.Module):
             if shape == (29, 29):
                 # AA矩阵
                 if list(df.columns) != ANATOMY_ORDER or list(df.index) != ANATOMY_ORDER:
-                    print(f"⚠️ AA矩阵顺序与代码定义不一致!")
+                    rgat_logger.warning(f"⚠️ AA矩阵顺序与代码定义不一致!")
             elif shape == (14, 14):
                 # DD矩阵
                 if list(df.columns) != DISEASE_ORDER or list(df.index) != DISEASE_ORDER:
-                    print(f"⚠️ DD矩阵顺序与代码定义不一致!")
+                    rgat_logger.warning(f"⚠️ DD矩阵顺序与代码定义不一致!")
             elif shape == (29, 14):
                 # DA矩阵
                 if list(df.index) != ANATOMY_ORDER or list(df.columns) != DISEASE_ORDER:
-                    print(f"⚠️ DA矩阵顺序与代码定义不一致!")
+                    rgat_logger.warning(f"⚠️ DA矩阵顺序与代码定义不一致!")
             
             # 检查形状
             if matrix.shape != shape:
-                print(f"⚠️ 邻接矩阵形状不匹配: 期望{shape}, 实际{matrix.shape}")
+                rgat_logger.warning(f"⚠️ 邻接矩阵形状不匹配: 期望{shape}, 实际{matrix.shape}")
                 # 尝试调整
                 if matrix.shape[0] > shape[0]:
                     matrix = matrix[:shape[0], :]
@@ -352,19 +356,17 @@ class ThreeStageRGAT(nn.Module):
             if not as_weights:
                 adj_tensor = (adj_tensor > 0).float()
             
-            print(f"✅ 成功加载邻接矩阵: {path.split('/')[-1]}")
-            print(f"   - 形状: {adj_tensor.shape}")
-            print(f"   - 边数/非零元素: {(adj_tensor > 0).sum().item():.0f}")
+            rgat_logger.info(f"✅ 成功加载邻接矩阵: {path.split('/')[-1]}")
+            rgat_logger.info(f"   - 形状: {adj_tensor.shape}")
+            rgat_logger.info(f"   - 边数/非零元素: {(adj_tensor > 0).sum().item():.0f}")
             if as_weights:
-                print(f"   - 权重范围: [{adj_tensor.min().item():.4f}, {adj_tensor.max().item():.4f}]")
+                rgat_logger.info(f"   - 权重范围: [{adj_tensor.min().item():.4f}, {adj_tensor.max().item():.4f}]")
             
             return adj_tensor
             
         except Exception as e:
-            print(f"❌ 加载邻接矩阵失败 {path}: {e}")
-            import traceback
-            traceback.print_exc()
-            print(f"   使用全连接图替代")
+            rgat_logger.error(f"❌ 加载邻接矩阵失败 {path}: {e}", exc_info=True)
+            rgat_logger.warning(f"   使用全连接图替代")
             return torch.ones(shape)
     
     def forward(self, anatomy_features, return_attention=False):
@@ -426,11 +428,11 @@ class ThreeStageRGAT(nn.Module):
         """
         # 数值稳定性检查
         if torch.isnan(disease_preds).any() or torch.isinf(disease_preds).any():
-            print("⚠️ disease_preds包含NaN或Inf值")
+            rgat_logger.warning("⚠️ disease_preds包含NaN或Inf值")
             disease_preds = torch.nan_to_num(disease_preds, nan=0.0, posinf=10.0, neginf=-10.0)
         
         if torch.isnan(labels).any() or torch.isinf(labels).any():
-            print("⚠️ labels包含NaN或Inf值")
+            rgat_logger.warning("⚠️ labels包含NaN或Inf值")
             labels = torch.nan_to_num(labels, nan=0.0, posinf=1.0, neginf=0.0)
         
         # 限制预测值范围
@@ -441,7 +443,7 @@ class ThreeStageRGAT(nn.Module):
         
         # 最终检查
         if torch.isnan(loss) or torch.isinf(loss):
-            print("⚠️ RGAT分类损失出现NaN/Inf，返回零损失")
+            rgat_logger.warning("⚠️ RGAT分类损失出现NaN/Inf，返回零损失")
             return torch.tensor(0.0, device=disease_preds.device, requires_grad=True)
         
         return loss

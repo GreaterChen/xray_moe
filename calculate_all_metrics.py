@@ -35,7 +35,7 @@ class MetricsCalculator:
             device: 计算设备
         """
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.logger = setup_logger()
+        self.logger, _ = setup_logger(log_dir="logs", is_main_process=True)
         
         # 初始化CheXbert评估器
         self.chexbert_metrics = None
@@ -249,28 +249,28 @@ class MetricsCalculator:
         Args:
             metrics: 指标字典
         """
-        print("\n" + "="*60)
-        print("评估指标计算结果")
-        print("="*60)
-        print(f"文件: {metrics['csv_file']}")
-        print(f"样本数: {metrics['num_samples']}")
-        print(f"时间: {metrics['timestamp']}")
+        self.logger.info("\n" + "="*60)
+        self.logger.info("评估指标计算结果")
+        self.logger.info("="*60)
+        self.logger.info(f"文件: {metrics['csv_file']}")
+        self.logger.info(f"样本数: {metrics['num_samples']}")
+        self.logger.info(f"时间: {metrics['timestamp']}")
         
         # 打印NLG指标
         if metrics['nlg_metrics']:
-            print("\nNLG指标:")
-            print("-" * 30)
+            self.logger.info("\nNLG指标:")
+            self.logger.info("-" * 30)
             for metric_name, value in metrics['nlg_metrics'].items():
-                print(f"{metric_name:12}: {value:.4f}")
+                self.logger.info(f"{metric_name:12}: {value:.4f}")
         
         # 打印CE指标
         if metrics['ce_metrics']:
-            print("\nCE指标 (CheXbert临床评估):")
-            print("-" * 30)
+            self.logger.info("\nCE指标 (CheXbert临床评估):")
+            self.logger.info("-" * 30)
             for metric_name, value in metrics['ce_metrics'].items():
-                print(f"{metric_name:12}: {value:.4f}")
+                self.logger.info(f"{metric_name:12}: {value:.4f}")
         
-        print("="*60)
+        self.logger.info("="*60)
 
 
 def main():
@@ -283,9 +283,13 @@ def main():
     
     args = parser.parse_args()
     
+    # 初始化logger
+    logger, log_file = setup_logger(log_dir="logs", is_main_process=True)
+    logger.info(f"日志文件: {log_file}")
+    
     # 检查输入文件
     if not os.path.exists(args.csv_path):
-        print(f"错误: CSV文件不存在: {args.csv_path}")
+        logger.error(f"CSV文件不存在: {args.csv_path}")
         sys.exit(1)
     
     try:
@@ -302,7 +306,7 @@ def main():
         calculator.print_results(metrics)
         
     except Exception as e:
-        print(f"计算指标时出错: {e}")
+        logger.error(f"计算指标时出错: {e}", exc_info=True)
         sys.exit(1)
 
 

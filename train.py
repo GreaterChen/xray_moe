@@ -182,8 +182,7 @@ def main():
         # 3. 初始化日志（只有主进程输出到控制台，所有信息都保存到文件）
         logger, log_file = setup_logger(
             log_dir="logs", 
-            is_main_process=device_manager.is_main_process(),
-            redirect_stdout=True  # 重定向stdout/stderr到日志文件
+            is_main_process=device_manager.is_main_process()
         )
         logger.info("=" * 80)
         logger.info("开始训练流程")
@@ -251,7 +250,10 @@ def main():
     except KeyboardInterrupt:
         if 'logger' in locals():
             logger.warning("训练被用户中断 (Ctrl+C)")
-        print("训练被用户中断 (Ctrl+C)")
+        else:
+            import logging
+            logging.basicConfig(level=logging.INFO)
+            logging.getLogger().warning("训练被用户中断 (Ctrl+C)")
         raise
     except Exception as e:
         if 'logger' in locals():
@@ -259,9 +261,11 @@ def main():
             logger.critical(f"错误类型: {type(e).__name__}")
             logger.critical(f"错误信息: {str(e)}")
         else:
-            print(f"训练过程发生致命错误: {type(e).__name__}: {str(e)}")
+            import logging
             import traceback
-            traceback.print_exc()
+            logging.basicConfig(level=logging.CRITICAL)
+            logging.getLogger().critical(f"训练过程发生致命错误: {type(e).__name__}: {str(e)}")
+            logging.getLogger().critical(traceback.format_exc())
         raise
     finally:
         # 确保清理资源

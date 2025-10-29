@@ -1,12 +1,16 @@
 """训练相关工具函数"""
 import os
 import gc
+import logging
 import torch
 from tqdm import tqdm
 from torch.profiler import profile, record_function, ProfilerActivity
 from contextlib import nullcontext
 from utils.data_utils import prepare_batch_data, args_to_kwargs
 from utils.memory_utils import analyze_gpu_memory
+
+# 获取logger
+train_utils_logger = logging.getLogger("train_logger")
 
 
 def train(
@@ -83,9 +87,9 @@ def train(
     for i, batch in enumerate(prog_bar):
         # 内存分析
         if i % 100 == 0 and enable_profile:
-            print(f"\nBatch {i} - GPU内存使用:")
-            print(f"已分配: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print(f"已缓存: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+            train_utils_logger.info(f"\nBatch {i} - GPU内存使用:")
+            train_utils_logger.info(f"已分配: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            train_utils_logger.info(f"已缓存: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
             analyze_gpu_memory()
         
         if enable_profile and i == 4:
@@ -174,7 +178,7 @@ def train(
     # 停止性能分析
     if enable_profile and profiler is not None:
         profiler.stop()
-        print(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+        train_utils_logger.info(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=20))
         profiler.export_chrome_trace("trace_training.json")
     
     # 记录epoch平均损失
@@ -245,7 +249,7 @@ def _compute_loss(config, output):
             return loss
         else:
             # 如果没有region_itc_loss,返回零损失
-            print("⚠️ PRETRAIN_VIT阶段未检测到region_itc_loss")
+            train_utils_logger.warning("⚠️ PRETRAIN_VIT阶段未检测到region_itc_loss")
             return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
     
     else:

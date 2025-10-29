@@ -6,6 +6,7 @@ from torchvision.ops import box_iou
 import matplotlib.pyplot as plt
 import os
 import json
+import logging
 from sklearn.metrics import precision_recall_curve, average_precision_score
 
 from models.fast_rcnn_classifier import DetectionOnlyFastRCNN
@@ -46,7 +47,8 @@ def evaluate_detection_model(
     class_predictions = defaultdict(list)
     class_ground_truths = defaultdict(list)
 
-    print("开始评估目标检测模型...")
+    logger = logging.getLogger("train_logger")
+    logger.info("开始评估目标检测模型...")
     with torch.no_grad():
         for batch_idx, data in enumerate(tqdm(test_loader, desc="评估进度")):
             images, targets = data
@@ -129,7 +131,7 @@ def evaluate_detection_model(
                     )
 
     # 计算总体评价指标
-    print("计算评价指标...")
+    logger.info("计算评价指标...")
     overall_metrics = compute_map(all_predictions, all_ground_truths, iou_threshold)
 
     # 计算每个类别的评价指标
@@ -166,14 +168,14 @@ def evaluate_detection_model(
     visualize_class_metrics(class_metrics, output_dir)
 
     # 打印总体指标
-    print(f"mAP@{iou_threshold}: {average_precision:.4f}")
-    print(f"Mean Recall: {average_recall:.4f}")
-    print(f"Mean F1 Score: {average_f1:.4f}")
+    logger.info(f"mAP@{iou_threshold}: {average_precision:.4f}")
+    logger.info(f"Mean Recall: {average_recall:.4f}")
+    logger.info(f"Mean F1 Score: {average_f1:.4f}")
 
     # 打印每个类别的AP
-    print("\n每个解剖区域的AP值:")
+    logger.info("\n每个解剖区域的AP值:")
     for class_id, metrics in sorted(class_metrics.items()):
-        print(
+        logger.info(
             f"区域 {class_id}: AP = {metrics['AP']:.4f}, Precision = {metrics['precision']:.4f}, Recall = {metrics['recall']:.4f}"
         )
 
@@ -555,7 +557,8 @@ def test_detection_model(model, test_loader, device, output_dir="./test_results"
     # 获取类别名称映射
     class_names = {i + 1: f"Region_{i+1}" for i in range(29)}  # 可替换为实际的区域名称
 
-    print("开始测试目标检测模型...")
+    logger = logging.getLogger("train_logger")
+    logger.info("开始测试目标检测模型...")
 
     # 评估模型
     evaluation_results = evaluate_detection_model(
@@ -568,10 +571,10 @@ def test_detection_model(model, test_loader, device, output_dir="./test_results"
     )
 
     # 打印总体性能
-    print(f"\n总体性能指标:")
-    print(f"mAP@0.5: {evaluation_results['mAP']:.4f}")
-    print(f"Mean Recall: {evaluation_results['mRecall']:.4f}")
-    print(f"Mean F1 Score: {evaluation_results['mF1']:.4f}")
+    logger.info(f"\n总体性能指标:")
+    logger.info(f"mAP@0.5: {evaluation_results['mAP']:.4f}")
+    logger.info(f"Mean Recall: {evaluation_results['mRecall']:.4f}")
+    logger.info(f"Mean F1 Score: {evaluation_results['mF1']:.4f}")
 
     # 打印表现最好和最差的区域
     per_class_metrics = evaluation_results["per_class"]
@@ -580,17 +583,17 @@ def test_detection_model(model, test_loader, device, output_dir="./test_results"
     ]
     class_aps.sort(key=lambda x: x[1], reverse=True)
 
-    print("\n表现最好的5个区域:")
+    logger.info("\n表现最好的5个区域:")
     for class_id, ap in class_aps[:5]:
         metrics = per_class_metrics[class_id]
-        print(
+        logger.info(
             f"区域 {class_id}: AP={ap:.4f}, Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}, F1={metrics['f1_score']:.4f}"
         )
 
-    print("\n表现最差的5个区域:")
+    logger.info("\n表现最差的5个区域:")
     for class_id, ap in class_aps[-5:]:
         metrics = per_class_metrics[class_id]
-        print(
+        logger.info(
             f"区域 {class_id}: AP={ap:.4f}, Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}, F1={metrics['f1_score']:.4f}"
         )
 

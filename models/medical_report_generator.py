@@ -4,10 +4,14 @@ import torch.nn.functional as F
 import gc
 import pickle
 import os
+import logging
 from models.fast_rcnn_classifier import DetectionOnlyFastRCNN
 from models.vit import MedicalVisionTransformer
 from models.rgat import ThreeStageRGAT
 from utils import analyze_gpu_memory
+
+# 获取logger
+model_logger = logging.getLogger("train_logger")
 
 
 class MedicalReportGenerator(nn.Module):
@@ -60,7 +64,7 @@ class MedicalReportGenerator(nn.Module):
                 dd_adj_path=dd_adj_path,
                 da_adj_path=da_adj_path,
             )
-            print("✅ RGAT模块已在微调阶段初始化")
+            model_logger.info("✅ RGAT模块已在微调阶段初始化")
 
 
 
@@ -353,7 +357,7 @@ class MedicalReportGenerator(nn.Module):
             )
                 
         except Exception as e:
-            print(f"⚠️  区域ITC损失计算出错: {e}")
+            model_logger.warning(f"⚠️  区域ITC损失计算出错: {e}")
             return None
 
     def _compute_region_itc_direct(self, visual_features, valid_pairs, text_embeds_list, device):
@@ -377,7 +381,7 @@ class MedicalReportGenerator(nn.Module):
         
         # 数值稳定性检查
         if torch.isnan(visual_feats).any() or torch.isinf(visual_feats).any():
-            print("⚠️  区域视觉特征包含NaN或Inf值")
+            model_logger.warning("⚠️  区域视觉特征包含NaN或Inf值")
             visual_feats = torch.nan_to_num(visual_feats, nan=0.0, posinf=1.0, neginf=-1.0)
         
         # 批量转换文本特征
@@ -385,7 +389,7 @@ class MedicalReportGenerator(nn.Module):
         
         # 数值稳定性检查
         if torch.isnan(text_embeds).any() or torch.isinf(text_embeds).any():
-            print("⚠️  区域文本特征包含NaN或Inf值")
+            model_logger.warning("⚠️  区域文本特征包含NaN或Inf值")
             text_embeds = torch.nan_to_num(text_embeds, nan=0.0, posinf=1.0, neginf=-1.0)
         
         # 投影和归一化 - 合并操作减少内存分配
@@ -420,7 +424,7 @@ class MedicalReportGenerator(nn.Module):
         
         # 最终检查
         if torch.isnan(loss) or torch.isinf(loss):
-            print("⚠️  区域ITC损失计算出现NaN/Inf，返回零损失")
+            model_logger.warning("⚠️  区域ITC损失计算出现NaN/Inf，返回零损失")
             return torch.tensor(0.0, device=device, requires_grad=True)
         
         return loss

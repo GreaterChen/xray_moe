@@ -1,6 +1,10 @@
 """检查点管理工具"""
 import os
+import logging
 import torch
+
+# 获取logger
+checkpoint_logger = logging.getLogger("train_logger")
 
 
 def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
@@ -25,7 +29,7 @@ def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
         try:
             scheduler_state = scheduler.state_dict()
         except AttributeError:
-            print("警告: scheduler没有state_dict方法，无法保存scheduler状态")
+            checkpoint_logger.warning("警告: scheduler没有state_dict方法，无法保存scheduler状态")
     
     # 保存检查点
     torch.save(
@@ -67,7 +71,7 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
     stats = checkpoint.get("stats", None)
     
     if "model_state_dict" not in checkpoint:
-        print("检查点中没有找到模型状态字典！")
+        checkpoint_logger.error("检查点中没有找到模型状态字典！")
         return epoch, stats
     
     checkpoint_state_dict = checkpoint["model_state_dict"]
@@ -89,7 +93,7 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
         try:
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         except Exception as e:
-            print(f"无法加载优化器: {e}")
+            checkpoint_logger.error(f"无法加载优化器: {e}")
     
     # 加载scheduler
     if scheduler is not None:
@@ -102,25 +106,25 @@ def _filter_state_dict(checkpoint_state_dict, load_model):
     """根据load_model参数过滤state_dict"""
     
     if load_model == "object_detector":
-        print("加载目标检测器参数...")
+        checkpoint_logger.info("加载目标检测器参数...")
         return _extract_prefix(checkpoint_state_dict, "detector.")
         
     elif load_model == "vit":
-        print("加载ViT图像编码器参数...")
+        checkpoint_logger.info("加载ViT图像编码器参数...")
         return _extract_prefix(checkpoint_state_dict, "image_encoder.")
         
     elif load_model == "decoder":
-        print("加载报告生成解码器参数...")
+        checkpoint_logger.info("加载报告生成解码器参数...")
         # 尝试两种前缀
         filtered = _extract_prefix(checkpoint_state_dict, "findings_decoder.decoder.")
         if not filtered:
             filtered = _extract_prefix(checkpoint_state_dict, "findings_decoder.")
         if not filtered:
-            print("警告：在检查点中未找到解码器权重！")
+            checkpoint_logger.warning("警告：在检查点中未找到解码器权重！")
         return filtered
         
     elif load_model == "full":
-        print("加载完整模型参数...")
+        checkpoint_logger.info("加载完整模型参数...")
         return checkpoint_state_dict
         
     else:
@@ -176,9 +180,9 @@ def _adapt_module_prefix(checkpoint_state_dict, model):
         # 无论是单卡还是多卡环境，都需要去除module前缀来匹配当前模型
         # 在分布式环境中，模型稍后会被DDP包装，自动加上module前缀
         if is_distributed:
-            print("检测到检查点使用了DDP保存，当前处于分布式环境（模型将被DDP包装），正在适配权重加载...")
+            checkpoint_logger.info("检测到检查点使用了DDP保存，当前处于分布式环境（模型将被DDP包装），正在适配权重加载...")
         else:
-            print("检测到检查点使用了DataParallel/DDP保存，正在适配单卡加载...")
+            checkpoint_logger.info("检测到检查点使用了DataParallel/DDP保存，正在适配单卡加载...")
         
         new_state_dict = {}
         for key, value in checkpoint_state_dict.items():
@@ -191,7 +195,7 @@ def _adapt_module_prefix(checkpoint_state_dict, model):
     
     # 情况2: 检查点没有module前缀，但模型有 → 添加前缀
     elif not checkpoint_has_module and model_has_module:
-        print("检测到检查点为单卡保存，正在适配DDP加载...")
+        checkpoint_logger.info("检测到检查点为单卡保存，正在适配DDP加载...")
         new_state_dict = {}
         for key, value in checkpoint_state_dict.items():
             new_key = f'module.{key}'
@@ -201,27 +205,27 @@ def _adapt_module_prefix(checkpoint_state_dict, model):
     # 情况3: 两者匹配，不需要修改
     else:
         if checkpoint_has_module and model_has_module:
-            print("检测到DDP环境，权重格式匹配...")
+            checkpoint_logger.info("检测到DDP环境，权重格式匹配...")
         return checkpoint_state_dict
 
 
 def _print_load_info(missing_keys, unexpected_keys, model):
     """打印加载信息"""
     if len(missing_keys) > 0:
-        print(f"Missing keys ({len(missing_keys)}): {missing_keys[:5]}...")
+        checkpoint_logger.warning(f"Missing keys ({len(missing_keys)}): {missing_keys[:5]}...")
         if len(missing_keys) > 5:
-            print(f"... 以及其他 {len(missing_keys) - 5} 个缺失的键")
+            checkpoint_logger.warning(f"... 以及其他 {len(missing_keys) - 5} 个缺失的键")
     
     if len(unexpected_keys) > 0:
-        print(f"Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:5]}...")
+        checkpoint_logger.warning(f"Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:5]}...")
         if len(unexpected_keys) > 5:
-            print(f"... 以及其他 {len(unexpected_keys) - 5} 个意外的键")
+            checkpoint_logger.warning(f"... 以及其他 {len(unexpected_keys) - 5} 个意外的键")
     
     # 计算加载成功率
     total_params = len(model.state_dict())
     loaded_params = total_params - len(missing_keys)
     load_success_rate = loaded_params / total_params * 100 if total_params > 0 else 0
-    print(f"权重加载成功率: {load_success_rate:.2f}% ({loaded_params}/{total_params})")
+    checkpoint_logger.info(f"权重加载成功率: {load_success_rate:.2f}% ({loaded_params}/{total_params})")
 
 
 def _load_scheduler(scheduler, checkpoint, epoch):
@@ -230,11 +234,11 @@ def _load_scheduler(scheduler, checkpoint, epoch):
         if "scheduler_state_dict" in checkpoint and checkpoint["scheduler_state_dict"] is not None:
             if hasattr(scheduler, 'load_state_dict'):
                 scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-                print("成功加载scheduler状态")
+                checkpoint_logger.info("成功加载scheduler状态")
             else:
-                print("scheduler不支持state_dict，将跳过加载")
+                checkpoint_logger.warning("scheduler不支持state_dict，将跳过加载")
         else:
-            print("检查点中没有scheduler状态")
+            checkpoint_logger.warning("检查点中没有scheduler状态")
     except Exception as e:
-        print(f"恢复scheduler状态失败: {e}")
+        checkpoint_logger.error(f"恢复scheduler状态失败: {e}")
 

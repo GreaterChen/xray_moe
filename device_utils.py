@@ -3,10 +3,14 @@
 """
 
 import os
+import logging
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn import DataParallel as DP
+
+# 获取logger
+device_logger = logging.getLogger("train_logger")
 
 
 class DeviceManager:
@@ -30,13 +34,13 @@ class DeviceManager:
         
         if not use_cuda:
             self.device = torch.device("cpu")
-            print("⚠️  配置设置为不使用GPU，强制使用CPU")
+            device_logger.warning("⚠️  配置设置为不使用GPU，强制使用CPU")
             return
         
         # 检查CUDA是否可用
         if not torch.cuda.is_available():
             self.device = torch.device("cpu")
-            print("❌ CUDA不可用，使用CPU")
+            device_logger.error("❌ CUDA不可用，使用CPU")
             return
         
         # 解析CUDA_VISIBLE_DEVICES
@@ -57,10 +61,10 @@ class DeviceManager:
         
         if num_gpus == 0:
             self.device = torch.device("cpu")
-            print("❌ 没有可用的GPU，使用CPU")
+            device_logger.error("❌ 没有可用的GPU，使用CPU")
         elif num_gpus == 1:
             self.device = torch.device("cuda:0")
-            print(f"✅ 使用单GPU: {self.device}")
+            device_logger.info(f"✅ 使用单GPU: {self.device}")
         else:
             # 多GPU情况
             self.multi_gpu = True
@@ -70,7 +74,7 @@ class DeviceManager:
             if getattr(self.config, 'USE_DISTRIBUTED', False):
                 self._setup_distributed()
             else:
-                print(f"✅ 使用DataParallel进行多GPU训练，GPU数量: {num_gpus}")
+                device_logger.info(f"✅ 使用DataParallel进行多GPU训练，GPU数量: {num_gpus}")
     
     def _setup_distributed(self):
         """设置分布式训练"""
@@ -83,9 +87,9 @@ class DeviceManager:
             
             # 如果环境变量未设置，说明没有使用 torchrun 启动
             if self.local_rank == -1:
-                print("⚠️  警告：未检测到分布式环境变量（RANK, LOCAL_RANK, WORLD_SIZE）")
-                print("   请使用 torchrun 启动：torchrun --nproc_per_node=4 train.py")
-                print("   回退到 DataParallel 模式")
+                device_logger.warning("⚠️  警告：未检测到分布式环境变量（RANK, LOCAL_RANK, WORLD_SIZE）")
+                device_logger.warning("   请使用 torchrun 启动：torchrun --nproc_per_node=4 train.py")
+                device_logger.warning("   回退到 DataParallel 模式")
                 self.distributed = False
                 self.device = torch.device("cuda:0")
                 return
@@ -104,11 +108,11 @@ class DeviceManager:
             self.device = torch.device(f"cuda:{self.local_rank}")
             self.distributed = True
             
-            print(f"✅ 分布式训练初始化成功 - Rank: {self.rank}/{self.world_size}, Local Rank: {self.local_rank}, Device: {self.device}")
+            device_logger.info(f"✅ 分布式训练初始化成功 - Rank: {self.rank}/{self.world_size}, Local Rank: {self.local_rank}, Device: {self.device}")
             
         except Exception as e:
-            print(f"❌ 分布式训练初始化失败: {e}")
-            print("   回退到DataParallel模式")
+            device_logger.error(f"❌ 分布式训练初始化失败: {e}")
+            device_logger.warning("   回退到DataParallel模式")
             self.distributed = False
             self.device = torch.device("cuda:0")
     
@@ -127,12 +131,12 @@ class DeviceManager:
                 find_unused_parameters=True,
                 # broadcast_buffers=False  # 如果不需要同步buffer可以关闭以提升性能
             )
-            print("✅ 模型已包装为DistributedDataParallel")
+            device_logger.info("✅ 模型已包装为DistributedDataParallel")
         elif self.multi_gpu:
             # 使用DataParallel
             if torch.cuda.device_count() > 1:
                 model = DP(model)
-                print(f"模型已包装为DataParallel，使用 {torch.cuda.device_count()} 个GPU")
+                device_logger.info(f"模型已包装为DataParallel，使用 {torch.cuda.device_count()} 个GPU")
         
         return model
     
@@ -195,20 +199,20 @@ class DeviceManager:
     def print_info(self):
         """打印设备信息"""
         if self.is_main_process():
-            print("\n=== 设备配置信息 ===")
-            print(f"USE_CUDA配置: {getattr(self.config, 'USE_CUDA', True)}")
-            print(f"设备: {self.device}")
+            device_logger.info("\n=== 设备配置信息 ===")
+            device_logger.info(f"USE_CUDA配置: {getattr(self.config, 'USE_CUDA', True)}")
+            device_logger.info(f"设备: {self.device}")
             if self.device.type == 'cuda':
-                print(f"CUDA_VISIBLE_DEVICES: {getattr(self.config, 'CUDA_VISIBLE_DEVICES', '0')}")
-                print(f"多GPU: {self.multi_gpu}")
-                print(f"分布式: {self.distributed}")
+                device_logger.info(f"CUDA_VISIBLE_DEVICES: {getattr(self.config, 'CUDA_VISIBLE_DEVICES', '0')}")
+                device_logger.info(f"多GPU: {self.multi_gpu}")
+                device_logger.info(f"分布式: {self.distributed}")
                 if self.distributed:
-                    print(f"World Size: {self.world_size}")
-                    print(f"Rank: {self.rank}")
-                    print(f"Local Rank: {self.local_rank}")
+                    device_logger.info(f"World Size: {self.world_size}")
+                    device_logger.info(f"Rank: {self.rank}")
+                    device_logger.info(f"Local Rank: {self.local_rank}")
                 elif self.multi_gpu:
-                    print(f"GPU数量: {torch.cuda.device_count()}")
-            print("==================\n")
+                    device_logger.info(f"GPU数量: {torch.cuda.device_count()}")
+            device_logger.info("==================\n")
 
 
 def to_device(data, device):

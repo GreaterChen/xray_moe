@@ -5,9 +5,13 @@
 
 import torch
 import numpy as np
+import logging
 from collections import defaultdict
 import pandas as pd
 from typing import Dict, List, Tuple
+
+# 获取logger
+detection_metrics_logger = logging.getLogger("train_logger")
 
 
 # 解剖区域名称映射 (label_id -> region_name)
@@ -417,5 +421,5 @@ def save_results_to_csv(results, save_path):
     # 保存为CSV
     df = pd.DataFrame(rows)
     df.to_csv(save_path, index=False)
-    print(f"✅ 评估结果已保存至: {save_path}")
+    detection_metrics_logger.info(f"✅ 评估结果已保存至: {save_path}")
 
