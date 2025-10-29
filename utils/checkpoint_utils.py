@@ -40,7 +40,7 @@ def save(path, model, optimizer=None, scheduler=None, epoch=-1, stats=None):
     )
 
 
-def load(path, model, optimizer=None, scheduler=None, load_model="object_detector"):
+def load(path, model, optimizer=None, scheduler=None, load_model="object_detector", device=None):
     """
     加载模型检查点
     
@@ -54,11 +54,15 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
             - "vit": 只加载ViT
             - "decoder": 只加载解码器
             - "full": 加载完整模型
+        device: 目标设备（可选）。如果不提供，默认使用CPU
             
     Returns:
         (epoch, stats) 元组
     """
-    checkpoint = torch.load(path, weights_only=False)
+    # 如果没有指定设备，默认使用CPU（避免设备不匹配错误）
+    if device is None:
+        device = torch.device('cpu')
+    checkpoint = torch.load(path, weights_only=False, map_location=device)
     epoch = checkpoint.get("epoch", -1)
     stats = checkpoint.get("stats", None)
     
@@ -70,6 +74,9 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
     
     # 根据load_model参数提取相应的权重
     filtered_state_dict = _filter_state_dict(checkpoint_state_dict, load_model)
+    
+    # 智能适配 'module.' 前缀（处理单卡/多卡互相加载的情况）
+    filtered_state_dict = _adapt_module_prefix(filtered_state_dict, model)
     
     # 加载state_dict到模型
     missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
@@ -96,7 +103,7 @@ def _filter_state_dict(checkpoint_state_dict, load_model):
     
     if load_model == "object_detector":
         print("加载目标检测器参数...")
-        return _extract_prefix(checkpoint_state_dict, "object_detector.")
+        return _extract_prefix(checkpoint_state_dict, "detector.")
         
     elif load_model == "vit":
         print("加载ViT图像编码器参数...")
@@ -128,6 +135,58 @@ def _extract_prefix(state_dict, prefix):
             new_key = key[len(prefix):]
             filtered[new_key] = value
     return filtered
+
+
+def _adapt_module_prefix(checkpoint_state_dict, model):
+    """
+    智能适配'module.'前缀，确保检查点和模型的键名匹配
+    
+    处理以下情况：
+    1. 检查点有'module.'前缀，模型没有 → 去除前缀（多卡保存，单卡加载）
+    2. 检查点没有'module.'前缀，模型有 → 添加前缀（单卡保存，多卡加载）
+    3. 两者都有或都没有 → 不变
+    
+    Args:
+        checkpoint_state_dict: 检查点的state_dict
+        model: 当前模型
+        
+    Returns:
+        适配后的state_dict
+    """
+    if len(checkpoint_state_dict) == 0:
+        return checkpoint_state_dict
+    
+    # 检查检查点的键名是否有 'module.' 前缀
+    checkpoint_has_module = any(key.startswith('module.') for key in checkpoint_state_dict.keys())
+    
+    # 检查模型的键名是否有 'module.' 前缀
+    model_state_dict = model.state_dict()
+    model_has_module = any(key.startswith('module.') for key in model_state_dict.keys())
+    
+    # 情况1: 检查点有module前缀，但模型没有 → 去除前缀
+    if checkpoint_has_module and not model_has_module:
+        print("检测到检查点使用了DataParallel/DDP保存，正在适配单卡加载...")
+        new_state_dict = {}
+        for key, value in checkpoint_state_dict.items():
+            if key.startswith('module.'):
+                new_key = key[7:]  # 去掉 'module.'
+                new_state_dict[new_key] = value
+            else:
+                new_state_dict[key] = value
+        return new_state_dict
+    
+    # 情况2: 检查点没有module前缀，但模型有 → 添加前缀
+    elif not checkpoint_has_module and model_has_module:
+        print("检测到检查点为单卡保存，正在适配DDP加载...")
+        new_state_dict = {}
+        for key, value in checkpoint_state_dict.items():
+            new_key = f'module.{key}'
+            new_state_dict[new_key] = value
+        return new_state_dict
+    
+    # 情况3: 两者匹配，不需要修改
+    else:
+        return checkpoint_state_dict
 
 
 def _print_load_info(missing_keys, unexpected_keys, model):

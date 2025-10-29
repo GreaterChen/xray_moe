@@ -209,7 +209,7 @@ class MedicalVisionTransformer(nn.Module):
 
         # 加载预训练ViT配置
         self.config = ViTConfig.from_pretrained(pretrained_vit_name)
-        self.hidden_size = self.config.hidden_size  # 通常是768 for ViT-B
+        self.hidden_size = self.config.hidden_size
 
         # 创建可学习的 [CLS] token（用于对比学习）
         self.cls_token = nn.Parameter(torch.zeros(1, 1, self.hidden_size))

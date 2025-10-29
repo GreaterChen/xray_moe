@@ -23,7 +23,7 @@ class DetectionTrainer(BaseTrainer):
         if hasattr(self.config, 'DETECTION_CHECKPOINT_PATH_FROM') and \
            self.config.DETECTION_CHECKPOINT_PATH_FROM:
             self.logger.info(f"加载预训练检测器: {self.config.DETECTION_CHECKPOINT_PATH_FROM}")
-            _, _ = load(self.config.DETECTION_CHECKPOINT_PATH_FROM, self.model)
+            _, _ = load(self.config.DETECTION_CHECKPOINT_PATH_FROM, self.model, device=self.device_manager.device)
         
         self.logger.info("目标检测模型构建完成")
     

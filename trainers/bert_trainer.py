@@ -21,13 +21,14 @@ class BertFinetuneTrainer(BaseTrainer):
         self.logger.info("构建BERT微调模型...")
         
         # 1. 使用公共函数构建检测器
-        enhanced_rcnn = build_detection_model(self.config, self.logger)
+        enhanced_rcnn = build_detection_model(self.config, self.logger, device=self.device_manager.device)
         
         # 2. 使用公共函数构建ViT
         vit_model = build_vit_model(
             self.config,
             load_pretrained=False,  # BERT微调阶段不预加载ViT权重
-            logger=self.logger
+            logger=self.logger,
+            device=self.device_manager.device
         )
         
         # 3. 创建BERT解码器
@@ -108,7 +109,8 @@ class BertFinetuneTrainer(BaseTrainer):
                 self.model.findings_decoder.decoder,
                 self.optimizer,
                 self.scheduler,
-                load_model="decoder"
+                load_model="decoder",
+                device=self.device_manager.device
             )
             self.logger.info(f"从 {self.config.DECODER_CHECKPOINT_PATH_FROM} 加载解码器权重")
         else:

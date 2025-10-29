@@ -23,7 +23,7 @@ class ViTPretrainTrainer(BaseTrainer):
         # 1. 加载检测器
         self.logger.info("加载目标检测器...")
         detection_model = DetectionOnlyFastRCNN()
-        _, _ = load(self.config.DETECTION_CHECKPOINT_PATH_FROM, detection_model)
+        _, _ = load(self.config.DETECTION_CHECKPOINT_PATH_FROM, detection_model, device=self.device_manager.device, load_model="full")
         
         # 2. 创建增强型FastRCNN
         enhanced_rcnn = EnhancedFastRCNN(

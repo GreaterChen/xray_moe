@@ -5,13 +5,14 @@ from models.vit import MedicalVisionTransformer
 from utils import load
 
 
-def build_detection_model(config, logger=None):
+def build_detection_model(config, logger=None, device=None):
     """
     统一的检测模型构建
     
     Args:
         config: 配置对象
         logger: 日志记录器（可选）
+        device: 目标设备（可选）
         
     Returns:
         EnhancedFastRCNN实例
@@ -24,7 +25,8 @@ def build_detection_model(config, logger=None):
     _, _ = load(
         config.DETECTION_CHECKPOINT_PATH_FROM,
         detection_model,
-        load_model="object_detector"
+        load_model="full",
+        device=device
     )
     
     # 创建增强型FastRCNN
@@ -40,7 +42,7 @@ def build_detection_model(config, logger=None):
     return enhanced_rcnn
 
 
-def build_vit_model(config, load_pretrained=False, logger=None):
+def build_vit_model(config, load_pretrained=False, logger=None, device=None):
     """
     统一的ViT模型构建
     
@@ -48,6 +50,7 @@ def build_vit_model(config, load_pretrained=False, logger=None):
         config: 配置对象
         load_pretrained: 是否加载预训练权重
         logger: 日志记录器（可选）
+        device: 目标设备（可选）
         
     Returns:
         MedicalVisionTransformer实例
@@ -60,7 +63,7 @@ def build_vit_model(config, load_pretrained=False, logger=None):
     # 如果需要加载预训练权重
     if load_pretrained and hasattr(config, 'VIT_CHECKPOINT_PATH_FROM') and \
        config.VIT_CHECKPOINT_PATH_FROM:
-        _, _ = load(config.VIT_CHECKPOINT_PATH_FROM, vit_model, load_model="vit")
+        _, _ = load(config.VIT_CHECKPOINT_PATH_FROM, vit_model, load_model="vit", device=device)
         if logger:
             logger.info("✅ ViT预训练权重已加载")
     
