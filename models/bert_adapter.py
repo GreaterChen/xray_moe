@@ -97,8 +97,19 @@ class BertAdapter(nn.Module):
             use_history=use_history  # 传递use_history参数
         )
         
-        # 构造类似于Llama/Mistral模型输出的格式
-        outputs = type('BertOutputs', (), {})()
+        # 构造支持字典操作和属性访问的输出对象
+        class BertOutputs(dict):
+            """同时支持字典操作和属性访问的输出类"""
+            def __getattr__(self, key):
+                try:
+                    return self[key]
+                except KeyError:
+                    raise AttributeError(f"'BertOutputs' object has no attribute '{key}'")
+            
+            def __setattr__(self, key, value):
+                self[key] = value
+        
+        outputs = BertOutputs()
         outputs.loss = loss
         outputs.logits = logits
         outputs.hidden_states = hidden_states

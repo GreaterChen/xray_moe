@@ -53,11 +53,10 @@ class MedicalVisionTransformer(nn.Module):
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         x = torch.cat((cls_tokens, region_features), dim=1)  # [B, 1+num_regions, 768]
         
-        # 通过Transformer层
-        hidden_states = x
-        for layer_module in self.encoder.layer:
-            layer_outputs = layer_module(hidden_states)
-            hidden_states = layer_outputs[0]
+        # 一次性通过ViT Encoder（不再手动逐层循环）
+        # 兼容不同Transformers版本的返回签名
+        encoder_outputs = self.encoder(x)
+        hidden_states = encoder_outputs.last_hidden_state
         
         # 使用全局LayerNorm处理最终输出
         final_hidden_states = self.layernorm(hidden_states)

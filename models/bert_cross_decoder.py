@@ -98,11 +98,11 @@ class BertCrossDecoder(nn.Module):
             history_attention_mask = torch.ones_like(history_input_ids)
         elif hasattr(history, 'input_ids'):
             # 处理BatchEncoding或类字典类型
-            history_input_ids = history.input_ids
-            history_attention_mask = history.attention_mask
+            history_input_ids = history.input_ids.to(device)
+            history_attention_mask = history.attention_mask.to(device)
         elif isinstance(history, dict) and 'input_ids' in history:
-            history_input_ids = history['input_ids']
-            history_attention_mask = history['attention_mask']
+            history_input_ids = history['input_ids'].to(device)
+            history_attention_mask = history['attention_mask'].to(device)
         elif isinstance(history, list):
             # 编码文本列表
             history_encoding = self.tokenizer(
@@ -121,11 +121,11 @@ class BertCrossDecoder(nn.Module):
             # 处理目标文本
             if hasattr(target_text, 'input_ids'):
                 # 处理BatchEncoding或类字典类型
-                target_input_ids = target_text.input_ids
-                target_attention_mask = target_text.attention_mask
+                target_input_ids = target_text.input_ids.to(device)
+                target_attention_mask = target_text.attention_mask.to(device)
             elif isinstance(target_text, dict) and 'input_ids' in target_text:
-                target_input_ids = target_text['input_ids']
-                target_attention_mask = target_text['attention_mask']
+                target_input_ids = target_text['input_ids'].to(device)
+                target_attention_mask = target_text['attention_mask'].to(device)
             elif isinstance(target_text, list):
                 # 编码目标文本
                 target_encoding = self.tokenizer(

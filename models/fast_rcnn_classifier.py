@@ -159,15 +159,32 @@ class EnhancedFastRCNN(nn.Module):
             nn.LayerNorm(feature_dim),  # 添加最终的LayerNorm确保特征空间一致性
         )
 
-        # 特殊token用于未检测到的区域
-        self.missing_region_token = nn.Parameter(torch.randn(feature_dim))
+        # 为每个解剖区域创建独立的特殊token（用于未检测到的区域）
+        # 形状: [num_regions, feature_dim]，每个区域有自己的missing token
+        self.missing_region_tokens = nn.Parameter(torch.randn(num_regions, feature_dim))
+        nn.init.normal_(self.missing_region_tokens, mean=0, std=0.02)
 
         # 保存区域数量
         self.num_regions = num_regions
 
     def extract_features(self, images, boxes_list, labels_list, scores_list=None):
-        """特征提取方法"""
-
+        """
+        提取29个解剖区域的特征，按照ANATOMY_ORDER顺序排列
+        
+        Args:
+            images: 输入图像 [B, C, H, W]
+            boxes_list: 每个样本的边界框列表
+            labels_list: 每个样本的标签列表 (bbox label: 1-29)
+            scores_list: 每个样本的得分列表（可选）
+        
+        Returns:
+            region_features: [B, 29, feature_dim] - 按ANATOMY_ORDER排列的区域特征
+                - region_features[:, 0, :] = left hemidiaphragm (label=1)
+                - region_features[:, 1, :] = right atrium (label=2)
+                - ...
+                - region_features[:, 28, :] = upper mediastinum (label=29)
+            region_detected: [B, 29] - 布尔掩码，标记哪些区域被检测到
+        """
         batch_size = images.size(0)
         device = images.device
         stacked_images = images
@@ -215,7 +232,8 @@ class EnhancedFastRCNN(nn.Module):
 
             # 找出每个区域的最佳边界框
             if current_scores is not None:
-                # 转换标签从1-indexed到0-indexed
+                # 转换标签: bbox label (1-29) → 列表索引 (0-28)
+                # label 1 → idx 0 (left hemidiaphragm), ..., label 29 → idx 28 (upper mediastinum)
                 region_indices = current_labels.clamp(1, self.num_regions) - 1
 
                 # 为每个区域找到最高分数的边界框
@@ -235,6 +253,7 @@ class EnhancedFastRCNN(nn.Module):
                         region_best_indices[region_idx] = j
             else:
                 # 对于GT框，每个区域最多只有一个框（无重复）
+                # 转换标签: bbox label (1-29) → 列表索引 (0-28)
                 region_indices = current_labels.clamp(1, self.num_regions) - 1
 
                 # 创建一个区域到框索引的映射，默认为-1（表示该区域无框）
@@ -298,10 +317,13 @@ class EnhancedFastRCNN(nn.Module):
             for i, (batch_idx, region_idx) in enumerate(roi_to_region_map):
                 region_features[batch_idx, region_idx] = projected_features[i]
 
-        # 处理未检测区域 - 使用向量化操作
-        missing_regions = ~region_detected
+        # 处理未检测区域 - 每个区域使用独立的missing token（向量化实现）
+        missing_regions = ~region_detected  # [B, 29]
         if missing_regions.any():
-            region_features[missing_regions] = self.missing_region_token
+            # 找到所有未检测的区域位置
+            batch_indices, region_indices = torch.where(missing_regions)
+            # 批量填充对应的missing token
+            region_features[batch_indices, region_indices] = self.missing_region_tokens[region_indices]
 
         return region_features, region_detected
 
