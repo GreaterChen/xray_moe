@@ -1,5 +1,6 @@
 """数据库构建工具函数"""
 import os
+import gc
 import torch
 import pickle
 from tqdm import tqdm
@@ -18,7 +19,7 @@ def build_anatomical_database(
     
     Args:
         config: 配置对象
-        model: MOE模型
+        model: MedicalReportGenerator模型
         data_loader: 数据加载器（通常是训练集）
         logger: 日志记录器
         device: 计算设备

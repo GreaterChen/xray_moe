@@ -1,6 +1,7 @@
 """评估相关工具函数"""
 import os
 import re
+import gc
 import torch
 import pandas as pd
 import numpy as np
@@ -456,12 +457,12 @@ def test_vit(
     use_consistent_eval=False,  # 新增参数：是否使用一致性评估模式
 ):
     """
-    评估PRETRAIN_VIT阶段的模型性能，只保留全局疾病分类性能评估
+    评估PRETRAIN_VIT阶段的模型性能，只评估region-level ITC损失
 
     参数:
         config: 配置参数
         data_loader: 测试数据加载器
-        model: MOE模型实例
+        model: MedicalReportGenerator模型实例
         logger: 日志记录器
         mode: 评估模式 ("val" 或 "test")
         device: 计算设备
@@ -474,30 +475,14 @@ def test_vit(
     """
     model.eval()
     running_loss = 0
-    running_cls_loss = 0
-    running_ltc_loss = 0
-
-    # 获取ViT模型的总层数和实际有分类器的层数
-    total_layers = model.image_encoder.num_layers
-    classifier_layers = total_layers // 2  # 只有偶数层有分类器
-
-    # 初始化存储结构
-    image_paths_list = []
-    labels_list = []
-    all_disease_preds = []
-    all_labels = []
+    running_region_itc_loss = 0
+    num_batches = 0
 
     # 创建进度条
     prog_bar = tqdm(data_loader, desc=f"{mode} ViT Evaluation")
 
     with torch.no_grad():
         for i, batch in enumerate(prog_bar):
-            # 收集图像路径和标签
-            image_paths_list.extend(batch["image_path"])
-            labels = batch["label"].to(device)
-            labels_list.extend(labels.cpu().numpy().tolist())
-            all_labels.append(labels)
-
             source, target, _ = prepare_batch_data(
                 config,
                 batch,
@@ -520,230 +505,35 @@ def test_vit(
             outputs = model(**source)
             outputs = args_to_kwargs(outputs)
 
-            # 获取最后一层的疾病预测结果和损失
-            if outputs["final_disease_preds"] is not None:
-                disease_preds = outputs["final_disease_preds"]  # [B, num_diseases]
-                all_disease_preds.append(disease_preds.detach().cpu())
-
-                # 收集损失信息
-                if "cls_loss" in outputs and outputs["cls_loss"] is not None:
-                    running_loss += outputs["cls_loss"].item()
-                    running_cls_loss += outputs["cls_loss"].item()
-
-                # 如果有ltc_loss，也加到总损失中
-                if "ltc_loss" in outputs and outputs["ltc_loss"] is not None:
-                    running_loss += outputs["ltc_loss"].item()
-                    running_ltc_loss += outputs["ltc_loss"].item()
-
-    # 合并所有批次的预测和标签
-    all_labels = torch.cat(all_labels, dim=0)
-    all_disease_preds = torch.cat(all_disease_preds, dim=0)
-
-    # 计算评估指标
-    logger.info("计算ViT模型疾病分类评估指标...")
-
-    # 创建结果目录
-    results_dir = os.path.join(config.CHECKPOINT_PATH_TO, "vit_results")
-    os.makedirs(results_dir, exist_ok=True)
-
-    # 初始化结果数据
-    metrics_data = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "mode": mode,
-        "epoch": str(epoch) if epoch is not None else "TEST",
-    }
-
-    # 应用sigmoid获取概率
-    disease_probs = torch.sigmoid(all_disease_preds)
-
-    # 使用0.5作为阈值获取二值预测
-    disease_binary = (disease_probs > 0.5).float()
-
-    # 计算全局疾病分类指标 - 手动计算而不是使用sklearn
-
-    # 将张量转换为CPU上的张量进行计算
-    disease_binary = disease_binary.cpu()
-    disease_probs = disease_probs.cpu()
-    all_labels = all_labels.cpu()
-
-    # 计算每个样本的TP, FP, FN
-    tp = (disease_binary == 1) & (all_labels == 1)  # 真阳性：预测有疾病且真实有疾病
-    fp = (disease_binary == 1) & (all_labels == 0)  # 假阳性：预测有疾病但真实无疾病
-    fn = (disease_binary == 0) & (all_labels == 1)  # 假阴性：预测无疾病但真实有疾病
-
-    # 对每个样本的每个疾病求和，得到每个样本的TP, FP, FN总数
-    tp_sum = tp.sum(dim=1).float()  # [N]
-    fp_sum = fp.sum(dim=1).float()  # [N]
-    fn_sum = fn.sum(dim=1).float()  # [N]
-
-    # 计算每个样本的精确率、召回率、F1分数
-    # 注意处理分母为0的情况
-    precision_per_sample = torch.zeros_like(tp_sum)
-    recall_per_sample = torch.zeros_like(tp_sum)
-    f1_per_sample = torch.zeros_like(tp_sum)
-
-    # 只在有预测的样本上计算精确率
-    valid_precision = (tp_sum + fp_sum) > 0
-    precision_per_sample[valid_precision] = tp_sum[valid_precision] / (
-        tp_sum[valid_precision] + fp_sum[valid_precision]
-    )
-
-    # 只在有真实正样本的样本上计算召回率
-    valid_recall = (tp_sum + fn_sum) > 0
-    recall_per_sample[valid_recall] = tp_sum[valid_recall] / (
-        tp_sum[valid_recall] + fn_sum[valid_recall]
-    )
-
-    # 计算F1（注意避免除以0）
-    valid_f1 = (precision_per_sample + recall_per_sample) > 0
-    f1_per_sample[valid_f1] = (
-        2
-        * precision_per_sample[valid_f1]
-        * recall_per_sample[valid_f1]
-        / (precision_per_sample[valid_f1] + recall_per_sample[valid_f1])
-    )
-
-    # 计算平均指标（样本级别）
-    precision = precision_per_sample.mean().item()
-    recall = recall_per_sample.mean().item()
-    f1 = f1_per_sample.mean().item()
-
-    # 计算每个类别的指标（类别级别）
-    tp_per_class = tp.sum(dim=0).float()  # [num_diseases]
-    fp_per_class = fp.sum(dim=0).float()  # [num_diseases]
-    fn_per_class = fn.sum(dim=0).float()  # [num_diseases]
-
-    precision_per_class = torch.zeros_like(tp_per_class)
-    recall_per_class = torch.zeros_like(tp_per_class)
-    f1_per_class = torch.zeros_like(tp_per_class)
-
-    valid_precision_class = (tp_per_class + fp_per_class) > 0
-    precision_per_class[valid_precision_class] = tp_per_class[valid_precision_class] / (
-        tp_per_class[valid_precision_class] + fp_per_class[valid_precision_class]
-    )
-
-    valid_recall_class = (tp_per_class + fn_per_class) > 0
-    recall_per_class[valid_recall_class] = tp_per_class[valid_recall_class] / (
-        tp_per_class[valid_recall_class] + fn_per_class[valid_recall_class]
-    )
-
-    valid_f1_class = (precision_per_class + recall_per_class) > 0
-    f1_per_class[valid_f1_class] = (
-        2
-        * precision_per_class[valid_f1_class]
-        * recall_per_class[valid_f1_class]
-        / (precision_per_class[valid_f1_class] + recall_per_class[valid_f1_class])
-    )
-
-    # 计算类别平均（宏平均）
-    precision_macro = precision_per_class.mean().item()
-    recall_macro = recall_per_class.mean().item()
-    f1_macro = f1_per_class.mean().item()
-
-    # 计算准确率 - 整体准确率
-    correct = (disease_binary == all_labels).float()
-    accuracy = correct.mean().item()
-
-    # 计算每个类别的AUC和AP (如果需要的话)
-    num_diseases = all_disease_preds.size(1)
-    aucs = []
-    aps = []
-
-    # 将张量转换为NumPy数组以便使用sklearn
-    disease_probs_np = disease_probs.numpy()
-    labels_np = all_labels.numpy()
-
-    for i in range(num_diseases):
-        # 只有当类别有正样本和负样本时才计算AUC
-        if len(np.unique(labels_np[:, i])) > 1:
-            try:
-                auc = roc_auc_score(labels_np[:, i], disease_probs_np[:, i])
-                ap = average_precision_score(labels_np[:, i], disease_probs_np[:, i])
-                aucs.append(auc)
-                aps.append(ap)
-            except Exception as e:
-                logger.warning(f"计算类别 {i} 的AUC/AP时出错: {e}")
-
-    # 计算宏平均AUC和AP
-    macro_auc = np.mean(aucs) if aucs else 0
-    macro_ap = np.mean(aps) if aps else 0
-
-    # 将指标保存到结果中
-    disease_metrics = {
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "precision_macro": precision_macro,
-        "recall_macro": recall_macro,
-        "f1_macro": f1_macro,
-        "auc_macro": macro_auc,
-        "ap_macro": macro_ap,
-    }
+            # 收集region_itc_loss
+            if "region_itc_loss" in outputs and outputs["region_itc_loss"] is not None:
+                loss_val = outputs["region_itc_loss"].item()
+                running_loss += loss_val
+                running_region_itc_loss += loss_val
+                num_batches += 1
 
     # 计算平均损失
-    avg_loss = running_loss / len(data_loader) if running_loss > 0 else 0.0
-    avg_cls_loss = running_cls_loss / len(data_loader) if running_cls_loss > 0 else 0.0
-    avg_ltc_loss = running_ltc_loss / len(data_loader) if running_ltc_loss > 0 else 0.0
+    avg_loss = running_loss / num_batches if num_batches > 0 else 0.0
+    avg_region_itc_loss = running_region_itc_loss / num_batches if num_batches > 0 else 0.0
 
-    # 添加到指标数据
-    metrics_data.update(
-        {
-            "disease_classification": disease_metrics,
-            "loss": avg_loss,
-            "cls_loss": avg_cls_loss,
-            "ltc_loss": avg_ltc_loss,
-        }
-    )
-
-    # 记录到wandb或TensorBoard
+    # 记录到TensorBoard
     if writer is not None and epoch is not None:
-        writer.add_scalar(f"{mode}/Disease/Accuracy", accuracy, epoch)
-        writer.add_scalar(f"{mode}/Disease/Precision", precision, epoch)
-        writer.add_scalar(f"{mode}/Disease/Recall", recall, epoch)
-        writer.add_scalar(f"{mode}/Disease/F1", f1, epoch)
-        writer.add_scalar(f"{mode}/Disease/AUC", macro_auc, epoch)
-        writer.add_scalar(f"{mode}/Disease/AP", macro_ap, epoch)
-        # 记录损失
-        writer.add_scalar(f"{mode}/ViT/Loss", avg_loss, epoch)
-        # 分别记录cls_loss和ltc_loss
-        writer.add_scalar(f"{mode}/ViT/CLS_Loss", avg_cls_loss, epoch)
-        writer.add_scalar(f"{mode}/ViT/LTC_Loss", avg_ltc_loss, epoch)
+        writer.add_scalar(f"{mode}/ViT/Region_ITC_Loss", avg_region_itc_loss, epoch)
 
     # 打印评估结果
-    logger.info(f"全局疾病分类性能 (Epoch {epoch}):")
-    logger.info(f"  准确率: {accuracy:.4f}")
-    logger.info(f"  精确率: {precision:.4f}")
-    logger.info(f"  召回率: {recall:.4f}")
-    logger.info(f"  F1分数: {f1:.4f}")
-    logger.info(f"  宏平均AUC: {macro_auc:.4f}")
-    logger.info(f"  宏平均AP: {macro_ap:.4f}")
-    logger.info(f"  平均总损失: {avg_loss:.4f}")
-    logger.info(f"  平均分类损失: {avg_cls_loss:.4f}")
-    logger.info(f"  平均LTC损失: {avg_ltc_loss:.4f}")
-
-    # 保存到文件
-    result_file = os.path.join(results_dir, f"{mode}_epoch_{epoch}_vit_results.json")
-    with open(result_file, "w") as f:
-        json.dump(metrics_data, f, indent=2)
-
-    logger.info(f"评估结果已保存到 {result_file}")
+    logger.info(f"ViT预训练阶段评估 (Epoch {epoch}):")
+    logger.info(f"  平均Region-ITC损失: {avg_region_itc_loss:.4f}")
 
     # 构建返回结果
     result = {
         "overall_metrics": {
-            "ce_accuracy": accuracy,
-            "ce_precision": precision,
-            "ce_recall": recall,
-            "ce_f1": f1,
-            "ce_auc": macro_auc,
-            "ce_ap": macro_ap,
+            "ce_f1": avg_region_itc_loss,  # 使用region_itc_loss作为主要指标(用于保存最佳模型)
         },
-        "metrics_data": metrics_data,
-        "loss": metrics_data["loss"],
+        "loss": avg_loss,
+        "region_itc_loss": avg_region_itc_loss,
     }
 
-    return running_loss / len(data_loader) if running_loss > 0 else 0.0, result
+    return avg_loss, result
 
 def test_llm(
     config,
@@ -757,12 +547,12 @@ def test_llm(
     writer=None,
     chexbert_metrics=None,  # 新增CheXbert评估器参数
 ):
-    """测试语言模型的生成效果（支持MISTRAL/LLAMA/BERT）
+    """测试语言模型的生成效果（BERT微调阶段）
 
     Args:
         config: 配置对象
         data_loader: 数据加载器
-        model: MOE模型
+        model: MedicalReportGenerator模型
         logger: 日志记录器
         mode: 测试模式（val或test）
         metric_ftns: 计算指标的函数
@@ -849,7 +639,7 @@ def test_llm(
 
             # 提取生成的文本
             if isinstance(outputs, dict) and "findings_text" in outputs:
-                # MOE模型的输出格式
+                # 医学报告生成模型的输出格式
                 generated_texts = outputs["findings_text"]
             elif hasattr(outputs, "decoded_texts"):
                 # BERT模型的输出格式

@@ -209,9 +209,16 @@ def _compute_loss(config, output):
     """计算损失"""
     phase = config.PHASE
     
-    if phase in ["FINETUNE_BERT"]:
-        # 微调阶段直接使用output.loss
-        return output.loss
+    if phase == "FINETUNE_BERT":
+        # 微调阶段：生成损失 + RGAT损失
+        loss = output.loss
+        
+        # 添加RGAT疾病分类损失
+        if hasattr(output, 'rgat_loss') and output.rgat_loss is not None:
+            rgat_weight = getattr(config, 'RGAT_LOSS_WEIGHT', 1.0)
+            loss += rgat_weight * output.rgat_loss
+        
+        return loss
     
     # 其他阶段需要组合损失
     output = args_to_kwargs(output)
@@ -220,12 +227,15 @@ def _compute_loss(config, output):
         return sum(loss for loss in output.values())
     
     elif phase == "PRETRAIN_VIT":
-        loss = output["ltc_loss"] + output["cls_loss"]
-        # 添加区域级别ITC损失
+        # 预训练阶段：只有区域级别ITC损失(patch-sentence对齐)
         if "region_itc_loss" in output and output["region_itc_loss"] is not None:
             region_itc_weight = getattr(config, 'REGION_ITC_WEIGHT', 1.0)
-            loss += region_itc_weight * output["region_itc_loss"]
-        return loss
+            loss = region_itc_weight * output["region_itc_loss"]
+            return loss
+        else:
+            # 如果没有region_itc_loss,返回零损失
+            print("⚠️ PRETRAIN_VIT阶段未检测到region_itc_loss")
+            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
     
     else:
         raise ValueError(f"Invalid phase: {phase}")
@@ -251,11 +261,9 @@ def _log_training_metrics(writer, config, loss, output, epoch, step, total_steps
     
     elif phase == "PRETRAIN_VIT":
         output_dict = args_to_kwargs(output)
-        vit_losses = {
-            "Train/ViT/LTC_Loss": output_dict["ltc_loss"].item(),
-            "Train/ViT/CLS_Loss": output_dict["cls_loss"].item(),
-        }
+        vit_losses = {}
         
+        # 只记录region_itc_loss
         if "region_itc_loss" in output_dict and output_dict["region_itc_loss"] is not None:
             vit_losses["Train/ViT/Region_ITC_Loss"] = output_dict["region_itc_loss"].item()
         
@@ -263,4 +271,8 @@ def _log_training_metrics(writer, config, loss, output, epoch, step, total_steps
             writer.add_scalar(tag, value, global_step)
     
     elif phase == "FINETUNE_BERT":
-        writer.add_scalar("Train/BERT/Loss", loss.item(), global_step)
+        writer.add_scalar("Train/Finetune/Generation_Loss", output.loss.item(), global_step)
+        
+        # 记录RGAT损失
+        if hasattr(output, 'rgat_loss') and output.rgat_loss is not None:
+            writer.add_scalar("Train/Finetune/RGAT_Loss", output.rgat_loss.item(), global_step)

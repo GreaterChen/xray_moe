@@ -32,38 +32,9 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         "anatomical_embeddings": None,  # 新增：存储解剖区域嵌入数据
     }
 
-    # 29个解剖区域的标准名称映射（按照检测器输出的顺序，从1开始）
-    ANATOMICAL_REGIONS = [
-        'left hemidiaphragm',      # 1
-        'right atrium',            # 2  
-        'right hilar structures',  # 3
-        'cardiac silhouette',      # 4
-        'abdomen',                 # 5
-        'trachea',                 # 6
-        'right apical zone',       # 7
-        'right lung',              # 8
-        'right upper lung zone',   # 9
-        'right costophrenic angle', # 10
-        'svc',                     # 11
-        'left lung',               # 12
-        'right mid lung zone',     # 13
-        'cavoatrial junction',     # 14
-        'left costophrenic angle', # 15
-        'left hilar structures',   # 16
-        'mediastinum',             # 17
-        'right lower lung zone',   # 18
-        'left mid lung zone',      # 19
-        'spine',                   # 20
-        'left upper lung zone',    # 21
-        'right hemidiaphragm',     # 22
-        'left clavicle',           # 23
-        'aortic arch',             # 24
-        'right clavicle',          # 25
-        'left apical zone',        # 26
-        'left lower lung zone',    # 27
-        'carina',                  # 28
-        'upper mediastinum'        # 29
-    ]
+    # 使用统一的解剖区域顺序定义（从configs.constants导入）
+    from configs.constants import ANATOMY_ORDER, DISEASE_ORDER
+    ANATOMICAL_REGIONS = ANATOMY_ORDER  # 29个解剖区域（索引从0开始）
 
     @classmethod
     def load_anatomical_embeddings(cls, anatomical_db_path):

@@ -1,8 +1,8 @@
 """BERT微调阶段的训练器"""
 import torch
 from trainers.base_trainer import BaseTrainer
-from models.moe_model import MOE
-from models.moe_bert_adapter import MoEBertAdapter
+from models.medical_report_generator import MedicalReportGenerator
+from models.bert_adapter import BertAdapter
 from models.model_builder import build_detection_model, build_vit_model, freeze_model_parameters
 from utils import train, test_llm, load
 from metrics import compute_scores
@@ -33,15 +33,15 @@ class BertFinetuneTrainer(BaseTrainer):
         
         # 3. 创建BERT解码器
         self.logger.info("初始化BERT解码器...")
-        bert_model = MoEBertAdapter(
+        bert_model = BertAdapter(
             config=self.config,
             tokenizer=self.tokenizer,
             hidden_dim=768,
             max_length=100
         )
         
-        # 4. 组装MOE模型
-        self.model = MOE(
+        # 4. 组装医学报告生成模型
+        self.model = MedicalReportGenerator(
             config=self.config,
             object_detector=enhanced_rcnn,
             image_encoder=vit_model,

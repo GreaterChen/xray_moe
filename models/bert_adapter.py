@@ -4,9 +4,9 @@ import torch.nn.functional as F
 
 from models.bert_cross_decoder import BertCrossDecoder
 
-class MoEBertAdapter(nn.Module):
+class BertAdapter(nn.Module):
     """
-    MOE模型的BERT解码器适配器，用于替代原来的LLM解码器
+    BERT解码器适配器，用于医学报告生成
     支持增强的文本输入
     """
     def __init__(
@@ -16,7 +16,7 @@ class MoEBertAdapter(nn.Module):
         hidden_dim=768,
         max_length=196
     ):
-        super(MoEBertAdapter, self).__init__()
+        super(BertAdapter, self).__init__()
         
         # 创建BERT交叉解码器
         self.decoder = BertCrossDecoder(
@@ -70,7 +70,7 @@ class MoEBertAdapter(nn.Module):
         use_history=False,  # 添加use_history参数
     ):
         """
-        适配MOE模型的前向传播接口
+        医学报告生成模型的前向传播接口
         
         Args:
             visual_features: 视觉特征 [batch_size, num_tokens, visual_dim]
@@ -119,7 +119,7 @@ class MoEBertAdapter(nn.Module):
         use_history=False,  # 添加use_history参数
     ):
         """
-        适配MOE模型的生成接口
+        医学报告生成模型的生成接口
         
         Args:
             visual_features: 视觉特征 [batch_size, num_tokens, visual_dim]

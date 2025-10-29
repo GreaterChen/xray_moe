@@ -1,7 +1,7 @@
 """ViT预训练阶段的训练器"""
 import torch
 from trainers.base_trainer import BaseTrainer
-from models.moe_model import MOE
+from models.medical_report_generator import MedicalReportGenerator
 from models.fast_rcnn_classifier import DetectionOnlyFastRCNN, EnhancedFastRCNN
 from models.vit import MedicalVisionTransformer
 from models.cxr_bert import CXR_BERT_FeatureExtractor
@@ -40,8 +40,8 @@ class ViTPretrainTrainer(BaseTrainer):
         self.logger.info("初始化CXR-BERT特征提取器...")
         cxr_bert = CXR_BERT_FeatureExtractor()
         
-        # 5. 组装MOE模型
-        self.model = MOE(
+        # 5. 组装医学报告生成模型
+        self.model = MedicalReportGenerator(
             config=self.config,
             object_detector=enhanced_rcnn,
             image_encoder=vit_model,
