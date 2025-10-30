@@ -36,6 +36,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         "annotation": None,
         "anatomical_embeddings": None,  # 新增：存储解剖区域嵌入数据
         "anatomical_nlp_status": None,  # 新增：存储解剖区域NLP状态（normal/abnormal）
+        "same_text_region_groups": None,  # 新增：存储同文本区域分组
     }
 
     # 使用统一的解剖区域顺序定义（从configs.constants导入）
@@ -402,17 +403,17 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         # 获取该图像的解剖区域文本嵌入（如果有的话）
         anatomical_embeddings = {}
-        if self._shared_data["anatomical_embeddings"] and image_id in self._shared_data["anatomical_embeddings"]:
+        if "anatomical_embeddings" in self._shared_data and self._shared_data["anatomical_embeddings"] and image_id in self._shared_data["anatomical_embeddings"]:
             anatomical_embeddings = self._shared_data["anatomical_embeddings"][image_id]
         
         # 获取该图像的解剖区域NLP状态（如果有的话）
         anatomical_nlp_status = {}
-        if self._shared_data["anatomical_nlp_status"] and image_id in self._shared_data["anatomical_nlp_status"]:
+        if "anatomical_nlp_status" in self._shared_data and self._shared_data["anatomical_nlp_status"] and image_id in self._shared_data["anatomical_nlp_status"]:
             anatomical_nlp_status = self._shared_data["anatomical_nlp_status"][image_id]
         
         # 获取该图像的同文本区域分组（如果有的话）
         same_text_region_groups = []
-        if self._shared_data["same_text_region_groups"] and image_id in self._shared_data["same_text_region_groups"]:
+        if "same_text_region_groups" in self._shared_data and self._shared_data["same_text_region_groups"] and image_id in self._shared_data["same_text_region_groups"]:
             same_text_region_groups = self._shared_data["same_text_region_groups"][image_id]
 
         output = {
