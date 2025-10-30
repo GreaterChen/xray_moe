@@ -43,9 +43,10 @@ class MedicalReportGenerator(nn.Module):
         self.region_visual_projection = nn.Linear(768, 768)
         self.region_text_projection = nn.Linear(768, 768)
         
-        # 在微调阶段初始化RGAT模块
+        # 在微调阶段初始化RGAT模块（根据配置决定是否启用）
         self.rgat = None
-        if config.PHASE == "FINETUNE_BERT":
+        enable_rgat = getattr(config, 'ENABLE_RGAT', True)
+        if config.PHASE == "FINETUNE_BERT" and enable_rgat:
             # 获取图矩阵路径
             aa_adj_path = getattr(config, 'AA_ADJ_PATH', None)
             dd_adj_path = getattr(config, 'DD_ADJ_PATH', None)
@@ -65,6 +66,8 @@ class MedicalReportGenerator(nn.Module):
                 da_adj_path=da_adj_path,
             )
             model_logger.info("✅ RGAT模块已在微调阶段初始化")
+        elif config.PHASE == "FINETUNE_BERT" and not enable_rgat:
+            model_logger.info("ℹ️  RGAT模块已禁用，decoder将直接使用视觉特征")
 
 
 
