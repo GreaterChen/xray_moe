@@ -72,15 +72,16 @@ class CheXbertMetrics():
         fp_eg = fp.sum(1)
         fn_eg = fn.sum(1)
 
-        precision_class = np.nan_to_num(tp_cls / (tp_cls + fp_cls))
-        recall_class = np.nan_to_num(tp_cls / (tp_cls + fn_cls))
-        f1_class = np.nan_to_num(tp_cls / (tp_cls + 0.5 * (fp_cls + fn_cls)))
+        # 使用 np.divide 避免除零警告
+        precision_class = np.divide(tp_cls, tp_cls + fp_cls, out=np.zeros_like(tp_cls), where=(tp_cls + fp_cls) != 0)
+        recall_class = np.divide(tp_cls, tp_cls + fn_cls, out=np.zeros_like(tp_cls), where=(tp_cls + fn_cls) != 0)
+        f1_class = np.divide(tp_cls, tp_cls + 0.5 * (fp_cls + fn_cls), out=np.zeros_like(tp_cls), where=(tp_cls + 0.5 * (fp_cls + fn_cls)) != 0)
 
         scores = {
             # example-based CE metrics
-            'ce_precision': np.nan_to_num(tp_eg / (tp_eg + fp_eg)).mean(),
-            'ce_recall': np.nan_to_num(tp_eg / (tp_eg + fn_eg)).mean(),
-            'ce_f1': np.nan_to_num(tp_eg / (tp_eg + 0.5 * (fp_eg + fn_eg))).mean(),
+            'ce_precision': np.divide(tp_eg, tp_eg + fp_eg, out=np.zeros_like(tp_eg), where=(tp_eg + fp_eg) != 0).mean(),
+            'ce_recall': np.divide(tp_eg, tp_eg + fn_eg, out=np.zeros_like(tp_eg), where=(tp_eg + fn_eg) != 0).mean(),
+            'ce_f1': np.divide(tp_eg, tp_eg + 0.5 * (fp_eg + fn_eg), out=np.zeros_like(tp_eg), where=(tp_eg + 0.5 * (fp_eg + fn_eg)) != 0).mean(),
             'ce_num_examples': float(len(res_chexbert)),
         }
         return scores

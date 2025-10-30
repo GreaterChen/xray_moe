@@ -178,5 +178,9 @@ def prepare_batch_data(
     if "anatomical_nlp_status" in batch:
         source["anatomical_nlp_status_batch"] = batch["anatomical_nlp_status"]
     
+    # 处理同文本区域分组
+    if "same_text_region_groups" in batch:
+        source["same_text_region_groups_batch"] = batch["same_text_region_groups"]
+    
     return source, target, None
 

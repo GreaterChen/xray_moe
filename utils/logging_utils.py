@@ -33,6 +33,9 @@ def setup_logger(log_dir="logs", is_main_process=True):
     # 清除已存在的处理器（避免重复）
     logger.handlers.clear()
     
+    # 关键：禁止向上传播到根logger，避免在分布式/笔记本环境中重复输出
+    logger.propagate = False
+    
     # 文件处理器（所有进程都写入日志文件）
     file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)

@@ -1,4 +1,5 @@
 # --- Base packages ---
+import mmap
 import os
 import json
 import pickle
@@ -65,24 +66,30 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             if 'image_region_embeddings' in data:
                 raw_embeddings = data['image_region_embeddings']
                 raw_nlp_status = data.get('image_region_nlp_status', {})  # 新增：获取NLP状态
+                raw_same_text_groups = data.get('image_same_text_region_groups', {})  # 新增：获取同文本区域分组
                 metadata = data.get('metadata', {})
                 dataset_logger.info(f"✅ 成功加载解剖区域数据库:")
                 dataset_logger.info(f"   - 总条目数: {metadata.get('total_keys', len(raw_embeddings))}")
                 dataset_logger.info(f"   - 向量维度: {metadata.get('embedding_dim', 'Unknown')}")
                 dataset_logger.info(f"   - 模型名称: {metadata.get('model_name', 'Unknown')}")
                 dataset_logger.info(f"   - NLP状态数: {len(raw_nlp_status)}")
+                dataset_logger.info(f"   - 同文本区域分组数: {len(raw_same_text_groups)}")
                 
                 # 重新组织数据结构: image_id -> {region_index: tensor}
                 organized_embeddings = defaultdict(dict)
                 organized_nlp_status = defaultdict(dict)  # 新增：组织NLP状态
-                
+                organized_same_text_groups = {}  # 新增：组织同文本区域分组
+
                 for key, embedding in tqdm(raw_embeddings.items(), desc="组织解剖区域数据"):
                     try:
-                        # 解析键格式: image_id_region_index
-                        parts = key.split('_')
-                        if len(parts) >= 2:
-                            region_index = int(parts[-1])  # 最后一部分是区域索引
-                            image_id = parts[0]  # 前面部分是image_id
+                        # 解析键格式: imageid_SceneGraph_regionid
+                        # 例如: dcf4f4c0-e474c5bb-fa2c8156-5828cabd-30378249_SceneGraph_8
+                        # 从右边分割最后一个下划线，分离出region_index
+                        parts = key.rsplit('_', 1)
+                        if len(parts) == 2:
+                            # 去掉 _SceneGraph 后缀，得到纯净的 image_id
+                            image_id = parts[0][:-11]  # dcf4f4c0-e474c5bb-fa2c8156-5828cabd-30378249
+                            region_index = int(parts[1])  # 8
                             
                             embedding_tensor = torch.tensor(embedding, dtype=torch.float32)
                             organized_embeddings[image_id][region_index] = embedding_tensor  # 直接赋值，不append
@@ -93,28 +100,41 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                     except (ValueError, IndexError):
                         continue  # 忽略格式不正确的键
                 
+                # 重新组织 same_text_region_groups，去掉 key 中的 _SceneGraph 后缀
+                for full_key, groups in raw_same_text_groups.items():
+                    # full_key 格式: dcf4f4c0-e474c5bb-fa2c8156-5828cabd-30378249_SceneGraph
+                    # 去掉 _SceneGraph 后缀
+                    if full_key.endswith('_SceneGraph'):
+                        image_id = full_key[:-11]  # 去掉 _SceneGraph (11个字符)
+                        organized_same_text_groups[image_id] = groups
+                    else:
+                        # 如果没有后缀，直接使用
+                        organized_same_text_groups[full_key] = groups
+                
                 cls._shared_data["anatomical_embeddings"] = dict(organized_embeddings)
                 cls._shared_data["anatomical_nlp_status"] = dict(organized_nlp_status)  # 新增：保存NLP状态
+                cls._shared_data["same_text_region_groups"] = organized_same_text_groups  # 新增：保存同文本区域分组
                 dataset_logger.info(f"📊 组织数据完成，覆盖 {len(organized_embeddings)} 个图像")
                 dataset_logger.info(f"📊 NLP状态覆盖 {len(organized_nlp_status)} 个图像")
+                dataset_logger.info(f"📊 同文本区域分组覆盖 {len(organized_same_text_groups)} 个图像")
                 
             else:
                 dataset_logger.error(f"❌ 数据库格式不正确，缺少 'image_region_embeddings' 字段")
                 cls._shared_data["anatomical_embeddings"] = {}
                 cls._shared_data["anatomical_nlp_status"] = {}  # 新增
+                cls._shared_data["same_text_region_groups"] = {}  # 新增
                 
         except Exception as e:
             dataset_logger.error(f"❌ 加载解剖区域数据库失败: {e}", exc_info=True)
             cls._shared_data["anatomical_embeddings"] = {}
+            cls._shared_data["anatomical_nlp_status"] = {}
+            cls._shared_data["same_text_region_groups"] = {}
 
     @classmethod
     def load_shared_data(cls, directory, ann_dir, mode, binary_mode=True, split_csv_path=None):
         """预处理优化版本，加载MIMIC数据集注释"""
         if cls._shared_data["loaded"]:
             return
-
-        # 使用内存映射读取大型JSON文件
-        import mmap
 
         with open(ann_dir, "r") as f:
             # 对大文件使用内存映射
@@ -388,6 +408,11 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         anatomical_nlp_status = {}
         if self._shared_data["anatomical_nlp_status"] and image_id in self._shared_data["anatomical_nlp_status"]:
             anatomical_nlp_status = self._shared_data["anatomical_nlp_status"][image_id]
+        
+        # 获取该图像的同文本区域分组（如果有的话）
+        same_text_region_groups = []
+        if self._shared_data["same_text_region_groups"] and image_id in self._shared_data["same_text_region_groups"]:
+            same_text_region_groups = self._shared_data["same_text_region_groups"][image_id]
 
         output = {
             "image": img,
@@ -399,6 +424,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             "image_path": img_path,
             "anatomical_embeddings": anatomical_embeddings,  # 新增：该图像的解剖区域嵌入
             "anatomical_nlp_status": anatomical_nlp_status,  # 新增：该图像的解剖区域NLP状态
+            "same_text_region_groups": same_text_region_groups,  # 新增：该图像的同文本区域分组
             "impression": impression,  # 保留原始 impression 字段以供需要时使用
             "original_findings": findings,  # 保留原始 findings 字段
         }
@@ -478,6 +504,7 @@ def mimic_collate_fn(batch):
     image_ids = [None] * batch_size
     anatomical_embeddings = [None] * batch_size  # 新增：解剖区域嵌入
     anatomical_nlp_status = [None] * batch_size  # 新增：解剖区域NLP状态
+    same_text_region_groups = [None] * batch_size  # 新增：同文本区域分组
 
     # 填充预分配的数组
     for i, item in enumerate(batch):
@@ -490,6 +517,7 @@ def mimic_collate_fn(batch):
         image_ids[i] = item["image_id"]
         anatomical_embeddings[i] = item["anatomical_embeddings"]  # 新增
         anatomical_nlp_status[i] = item["anatomical_nlp_status"]  # 新增
+        same_text_region_groups[i] = item["same_text_region_groups"]  # 新增
 
     # 转换标签
     label_tensor = torch.from_numpy(labels)
@@ -504,6 +532,7 @@ def mimic_collate_fn(batch):
         "image_id": image_ids,
         "anatomical_embeddings": anatomical_embeddings,  # 新增：解剖区域嵌入
         "anatomical_nlp_status": anatomical_nlp_status,  # 新增：解剖区域NLP状态
+        "same_text_region_groups": same_text_region_groups,  # 新增：同文本区域分组
         "gts": (findings, [""]*len(findings)),  # 添加gts字段保持兼容性
         "split": ["train"]*len(findings),  # 添加split字段保持兼容性
     }
