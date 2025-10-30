@@ -74,6 +74,23 @@ def print_memory_summary():
     memory_logger.info("\n" + "=" * 60)
     memory_logger.info("GPU内存摘要")
     memory_logger.info("=" * 60)
+
+
+def release_process_memory():
+    """尝试将空闲内存归还给操作系统（glibc malloc_trim）。
+
+    说明:
+        Python/NumPy/Pandas 大量创建/释放对象后，进程可能保留已释放的内存块而不归还给 OS，
+        导致工作集持续走高。调用 malloc_trim(0) 可在 glibc 环境下主动归还空闲内存。
+    """
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+        memory_logger.info("已调用 malloc_trim 归还空闲内存")
+    except Exception:
+        # 兼容非 glibc 或受限环境，忽略错误
+        pass
     
     for i in range(torch.cuda.device_count()):
         props = torch.cuda.get_device_properties(i)

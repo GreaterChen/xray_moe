@@ -45,7 +45,8 @@ from utils.memory_utils import (
     analyze_gpu_memory,
     get_memory_profiler,
     clear_gpu_memory,
-    print_memory_summary
+    print_memory_summary,
+    release_process_memory
 )
 
 # 数据库构建
@@ -93,6 +94,7 @@ __all__ = [
     'get_memory_profiler',
     'clear_gpu_memory',
     'print_memory_summary',
+    'release_process_memory',
     
     # 数据库
     'build_anatomical_database',

@@ -91,8 +91,9 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                             image_id = parts[0][:-11]  # dcf4f4c0-e474c5bb-fa2c8156-5828cabd-30378249
                             region_index = int(parts[1])  # 8
                             
-                            embedding_tensor = torch.tensor(embedding, dtype=torch.float32)
-                            organized_embeddings[image_id][region_index] = embedding_tensor  # 直接赋值，不append
+                            # 使用numpy而非torch，避免DataLoader多进程下对大量小tensor进行mmap共享
+                            embedding_array = np.asarray(embedding, dtype=np.float32)
+                            organized_embeddings[image_id][region_index] = embedding_array
                             
                             # 新增：同时组织NLP状态数据
                             if key in raw_nlp_status:

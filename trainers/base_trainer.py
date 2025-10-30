@@ -4,7 +4,7 @@ import torch
 from abc import ABC, abstractmethod
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
-from utils import load, save, count_parameters
+from utils import load, save, count_parameters, release_process_memory
 
 
 class BaseTrainer(ABC):
@@ -334,6 +334,8 @@ class BaseTrainer(ABC):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
+            # 进一步归还进程空闲内存
+            release_process_memory()
             
             # 评估
             if self.should_evaluate(epoch):
@@ -355,6 +357,7 @@ class BaseTrainer(ABC):
                 
                 # 【修复】评估后也清理内存
                 del test_loss, result
+                release_process_memory()
             else:
                 # 定期保存（不评估的epoch）
                 filename = f"epoch_{epoch}.pth"
@@ -364,6 +367,7 @@ class BaseTrainer(ABC):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
+            release_process_memory()
         
         # 关闭TensorBoard
         if self.writer:

@@ -190,19 +190,8 @@ class BertCrossDecoder(nn.Module):
             logits = outputs.logits  # [batch_size, seq_len, vocab_size]
             hidden_states = outputs.hidden_states[-1]  # [batch_size, seq_len, hidden_dim]
             
-            # 解码预测的文本
-            if use_history:
-                # 只取历史文本之后的部分进行解码
-                history_len = history_input_ids.shape[1]
-                pred_tokens = torch.argmax(logits[:, history_len:, :], dim=-1)
-            else:
-                # 取全部内容解码
-                pred_tokens = torch.argmax(logits, dim=-1)
-                
-            decoded_texts = []
-            for tokens in pred_tokens:
-                text = self.tokenizer.decode(tokens, skip_special_tokens=True)
-                decoded_texts.append(text)
+            # 训练过程中不再解码文本，减少CPU内存与字符串开销
+            decoded_texts = None
                 
             # 获取损失
             loss_lm = outputs.loss  # 这个损失已经只计算了标签不为-100的位置

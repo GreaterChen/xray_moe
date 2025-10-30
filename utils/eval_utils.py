@@ -784,14 +784,15 @@ def test_llm(
     results_dir = os.path.join(config.CHECKPOINT_PATH_TO, "test_results")
     os.makedirs(results_dir, exist_ok=True)
 
-    # 将结果转换为DataFrame并保存
+    # 将结果转换为DataFrame并保存（不在结果中返回DataFrame，避免长时间占用内存）
     results_df = pd.DataFrame(results_data)
-
-    # 保存为CSV文件，添加epoch信息
     epoch_str = str(epoch) if epoch is not None else "TEST"
     csv_filename = f"{mode}_results_epoch_{epoch_str}.csv"
-    results_df.to_csv(os.path.join(results_dir, csv_filename), index=False)
+    results_csv_path = os.path.join(results_dir, csv_filename)
+    results_df.to_csv(results_csv_path, index=False)
     logger.info(f"结果已保存到CSV文件: {csv_filename}")
+    # 释放DataFrame内存，避免跨epoch常驻
+    del results_df
     
     # 计算并保存评估指标
     metrics_data = {
@@ -811,11 +812,13 @@ def test_llm(
         for metric_name, value in ce_metrics.items():
             metrics_data[f"ce_{metric_name}"] = value
 
-    # 保存评估指标，添加epoch信息
+    # 保存评估指标，添加epoch信息（同样不在结果中返回DataFrame）
     metrics_df = pd.DataFrame([metrics_data])
     metrics_filename = f"{mode}_metrics_epoch_{epoch_str}.csv"
-    metrics_df.to_csv(os.path.join(results_dir, metrics_filename), index=False)
+    metrics_csv_path = os.path.join(results_dir, metrics_filename)
+    metrics_df.to_csv(metrics_csv_path, index=False)
     logger.info(f"评估指标已保存到CSV文件: {metrics_filename}")
+    del metrics_df
     
     # 如果有writer和epoch，记录到TensorBoard
     if writer is not None and epoch is not None:
@@ -831,12 +834,13 @@ def test_llm(
         writer.add_scalar(f"{mode}/loss", avg_loss, epoch)
 
     # 汇总结果
+    # 返回轻量级结果，避免将大型DataFrame对象保存在内存/检查点中
     result = {
         "report_generation_metrics": report_metrics,
         "chexbert_metrics": ce_metrics,
         "loss": avg_loss,
-        "results_df": results_df,
-        "metrics_df": metrics_df,
+        "results_csv_path": results_csv_path,
+        "metrics_csv_path": metrics_csv_path,
     }
 
     return avg_loss, result

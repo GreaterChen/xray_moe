@@ -352,7 +352,8 @@ class MedicalReportGenerator(nn.Module):
                 for region_idx, text_embed in anatomical_embeddings.items():
                     if batch_mask[region_idx - 1]:  # 0-based索引
                         valid_pairs.append((batch_idx, region_idx - 1))
-                        text_embeds_list.append(text_embed)
+                        # 统一转换为torch张量，支持上游提供numpy数组/torch张量
+                        text_embeds_list.append(torch.as_tensor(text_embed, dtype=torch.float32))
                         
                         # 新增：收集NLP状态，如果没有则默认为None
                         status = anatomical_nlp_status.get(region_idx, None)

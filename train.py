@@ -5,6 +5,7 @@
 import os
 import warnings
 import torch
+import torch.multiprocessing as mp
 import torch.utils.data as data
 from transformers import BertTokenizer
 from transformers import logging as hf_logging
@@ -16,6 +17,12 @@ warnings.filterwarnings("ignore", message="A decoder-only architecture is being 
 warnings.filterwarnings("ignore", message=".*pretrained.*deprecated.*")
 warnings.filterwarnings("ignore", message=".*Arguments other than.*weights.*deprecated.*")
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
+
+# 避免DataLoader在多进程下创建过多mmap导致的内存映射失败
+try:
+    mp.set_sharing_strategy("file_system")
+except RuntimeError:
+    pass
 
 # 项目模块
 from utils import setup_logger

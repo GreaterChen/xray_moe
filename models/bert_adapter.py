@@ -116,7 +116,8 @@ class BertAdapter(nn.Module):
         outputs = BertOutputs()
         outputs.loss = loss
         outputs.logits = logits
-        outputs.hidden_states = hidden_states
+        # 训练过程中不返回大张量以减少内存占用
+        outputs.hidden_states = None
         outputs.decoded_texts = decoded_texts
         
         return outputs
