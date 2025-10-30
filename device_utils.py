@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn import DataParallel as DP
+from datetime import timedelta
 
 # 获取logger
 device_logger = logging.getLogger("train_logger")
@@ -43,18 +44,28 @@ class DeviceManager:
             device_logger.error("❌ CUDA不可用，使用CPU")
             return
         
-        # 解析CUDA_VISIBLE_DEVICES
+        # 解析CUDA_VISIBLE_DEVICES（在分布式环境下不要覆盖启动器已设置的映射）
+        launcher_set_ddp = (
+            os.environ.get('LOCAL_RANK') is not None or
+            os.environ.get('RANK') is not None or
+            os.environ.get('WORLD_SIZE') is not None or
+            os.environ.get('SLURM_PROCID') is not None
+        )
+
         visible_devices = getattr(self.config, 'CUDA_VISIBLE_DEVICES', "0")
-        if isinstance(visible_devices, str):
-            if ',' in visible_devices:
-                gpu_ids = [int(x.strip()) for x in visible_devices.split(',')]
+        if not launcher_set_ddp:
+            # 仅在非分布式/未通过launcher启动时，根据配置设置可见GPU
+            if isinstance(visible_devices, str):
+                if ',' in visible_devices:
+                    gpu_ids = [int(x.strip()) for x in visible_devices.split(',')]
+                else:
+                    gpu_ids = [int(visible_devices)]
             else:
-                gpu_ids = [int(visible_devices)]
+                gpu_ids = [visible_devices] if isinstance(visible_devices, int) else visible_devices
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(visible_devices)
+            device_logger.info(f"已设置 CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}")
         else:
-            gpu_ids = [visible_devices] if isinstance(visible_devices, int) else visible_devices
-        
-        # 设置环境变量
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(visible_devices)
+            device_logger.info("检测到分布式启动器环境变量（torchrun/SLURM），跳过覆盖 CUDA_VISIBLE_DEVICES")
         
         # 获取实际可用的GPU数量
         num_gpus = torch.cuda.device_count()
@@ -96,11 +107,19 @@ class DeviceManager:
             
             # 初始化分布式进程组
             if not dist.is_initialized():
+                # 允许通过环境变量调整超时，默认30分钟，避免在网络异常时无限等待
+                timeout_seconds = int(os.environ.get('DIST_TIMEOUT', '1800'))
+                device_logger.info(
+                    f"初始化进程组: backend=nccl, world_size={self.world_size}, rank={self.rank}, "
+                    f"master_addr={os.environ.get('MASTER_ADDR')}, master_port={os.environ.get('MASTER_PORT')}, "
+                    f"timeout={timeout_seconds}s"
+                )
                 dist.init_process_group(
                     backend='nccl',
                     init_method='env://',
                     world_size=self.world_size,
-                    rank=self.rank
+                    rank=self.rank,
+                    timeout=timedelta(seconds=timeout_seconds)
                 )
             
             # 设置当前进程的GPU
@@ -108,7 +127,16 @@ class DeviceManager:
             self.device = torch.device(f"cuda:{self.local_rank}")
             self.distributed = True
             
-            device_logger.info(f"✅ 分布式训练初始化成功 - Rank: {self.rank}/{self.world_size}, Local Rank: {self.local_rank}, Device: {self.device}")
+            device_logger.info(
+                f"✅ 分布式训练初始化成功 - Rank: {self.rank}/{self.world_size}, Local Rank: {self.local_rank}, Device: {self.device}"
+            )
+            # 打印关键 NCCL/网络相关环境变量，便于定位网络问题
+            if self.is_main_process():
+                nccl_vars = {k: os.environ.get(k) for k in [
+                    'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_SOCKET_IFNAME',
+                    'NCCL_P2P_DISABLE', 'NCCL_NET_GDR_LEVEL', 'TORCH_DISTRIBUTED_DEBUG'
+                ]}
+                device_logger.info(f"NCCL/分布式环境变量: {nccl_vars}")
             
         except Exception as e:
             device_logger.error(f"❌ 分布式训练初始化失败: {e}")

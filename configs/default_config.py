@@ -30,6 +30,8 @@ class DefaultConfig:
     TOKENIZER_MAX_LEN = 30523
     NUM_DISEASES = 14  # 疾病类别数量
     TEMPERATURE = 0.07  # 对比学习温度参数
+    # 对比损失类型: "region" 使用区域级别ITC; "clip" 使用batch内CLIP形式
+    CONTRASTIVE_LOSS_TYPE = "region"
     
     # 生成目标设置
     GENERATION_TARGET = "all"  # 可选值: "findings" 或 "all" (findings + impression)
@@ -83,7 +85,7 @@ class DefaultConfig:
     TENSORBOARD_DIR = "runs"
     
     # 评估设置
-    EVAL_FREQ = 5  # 每N个epoch评估一次
+    EVAL_FREQ = 1  # 每N个epoch评估一次
     
     # CheXbert路径
     CHEXBERT_CHECKPOINT_PATH = None  # CheXbert模型路径，需要在local_config中设置

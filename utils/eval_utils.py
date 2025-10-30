@@ -484,7 +484,7 @@ def test_vit(
     use_consistent_eval=False,  # 新增参数：是否使用一致性评估模式
 ):
     """
-    评估PRETRAIN_VIT阶段的模型性能，只评估region-level ITC损失
+    评估PRETRAIN_VIT阶段的模型性能，根据配置评估选定的对比损失类型
 
     参数:
         config: 配置参数
@@ -502,7 +502,7 @@ def test_vit(
     """
     model.eval()
     running_loss = 0
-    running_region_itc_loss = 0
+    running_selected_loss = 0
     num_batches = 0
 
     # 创建进度条
@@ -532,11 +532,13 @@ def test_vit(
             outputs = model(**source)
             outputs = args_to_kwargs(outputs)
 
-            # 收集region_itc_loss
-            if "region_itc_loss" in outputs and outputs["region_itc_loss"] is not None:
-                loss_val = outputs["region_itc_loss"].item()
+            # 收集所选损失
+            loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
+            loss_key = 'region_itc_loss' if loss_type == 'region' else 'clip_itc_loss'
+            if loss_key in outputs and outputs[loss_key] is not None:
+                loss_val = outputs[loss_key].item()
                 running_loss += loss_val
-                running_region_itc_loss += loss_val
+                running_selected_loss += loss_val
                 num_batches += 1
             
             # 【修复】及时清理batch数据
@@ -544,23 +546,34 @@ def test_vit(
 
     # 计算平均损失
     avg_loss = running_loss / num_batches if num_batches > 0 else 0.0
-    avg_region_itc_loss = running_region_itc_loss / num_batches if num_batches > 0 else 0.0
+    avg_selected_loss = running_selected_loss / num_batches if num_batches > 0 else 0.0
 
     # 记录到TensorBoard
     if writer is not None and epoch is not None:
-        writer.add_scalar(f"{mode}/ViT/Region_ITC_Loss", avg_region_itc_loss, epoch)
+        loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
+        if loss_type == 'region':
+            writer.add_scalar(f"{mode}/ViT/Region_ITC_Loss", avg_selected_loss, epoch)
+        else:
+            writer.add_scalar(f"{mode}/ViT/CLIP_ITC_Loss", avg_selected_loss, epoch)
 
     # 打印评估结果
     logger.info(f"ViT预训练阶段评估 (Epoch {epoch}):")
-    logger.info(f"  平均Region-ITC损失: {avg_region_itc_loss:.4f}")
+    loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
+    if loss_type == 'region':
+        logger.info(f"  平均Region-ITC损失: {avg_selected_loss:.4f}")
+    else:
+        logger.info(f"  平均CLIP-ITC损失: {avg_selected_loss:.4f}")
 
     # 构建返回结果
     result = {
         "overall_metrics": {
-            "ce_f1": avg_region_itc_loss,  # 使用region_itc_loss作为主要指标(用于保存最佳模型)
+            # 使用选定损失作为主要指标(用于保存最佳模型)
+            "ce_f1": avg_selected_loss,
         },
         "loss": avg_loss,
-        "region_itc_loss": avg_region_itc_loss,
+        # 同时返回两个键，未计算的为0或缺省
+        "region_itc_loss": avg_selected_loss if getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region') == 'region' else None,
+        "clip_itc_loss": avg_selected_loss if getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region') == 'clip' else None,
     }
 
     return avg_loss, result

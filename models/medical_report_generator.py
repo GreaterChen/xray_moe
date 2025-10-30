@@ -109,35 +109,53 @@ class MedicalReportGenerator(nn.Module):
             visual_features = self.image_encoder(region_features)  # [B, 1+num_regions, hidden_size]
 
             if mode == "train":
-                # 计算区域级别的patch-sentence对比损失(PSC)
+                # 按配置选择对比损失类型
+                loss_type = getattr(self.config, 'CONTRASTIVE_LOSS_TYPE', 'region')
                 region_itc_loss = None
-                if getattr(self.config, 'ENABLE_REGION_ITC', True):
-                    region_itc_loss = self.compute_region_itc_loss(
-                        visual_features, region_detected, anatomical_embeddings_batch, 
-                        anatomical_nlp_status_batch, same_text_region_groups_batch, image_ids
+                clip_itc_loss = None
+                if loss_type == 'region':
+                    if getattr(self.config, 'ENABLE_REGION_ITC', True):
+                        region_itc_loss = self.compute_region_itc_loss(
+                            visual_features, region_detected, anatomical_embeddings_batch,
+                            anatomical_nlp_status_batch, same_text_region_groups_batch, image_ids
+                        )
+                elif loss_type == 'clip':
+                    clip_itc_loss = self.compute_clip_itc_loss(
+                        visual_features=visual_features,
+                        findings=findings
                     )
 
-                # 返回结果(不再包含LTC损失和疾病分类损失)
+                # 返回结果
                 results = {
                     "region_itc_loss": region_itc_loss,
+                    "clip_itc_loss": clip_itc_loss,
                     "visual_features": visual_features,
                 }
                 return results
 
             # 如果是评估/推理模式
             else:
-                # 为测试模式计算region_itc_loss
+                # 为测试模式计算对比损失
                 with torch.no_grad():
+                    loss_type = getattr(self.config, 'CONTRASTIVE_LOSS_TYPE', 'region')
                     region_itc_loss = None
-                    if getattr(self.config, 'ENABLE_REGION_ITC', True):
-                        region_itc_loss = self.compute_region_itc_loss(
-                            visual_features, region_detected, anatomical_embeddings_batch, 
-                            anatomical_nlp_status_batch, same_text_region_groups_batch, image_ids
+                    clip_itc_loss = None
+                    if loss_type == 'region':
+                        if getattr(self.config, 'ENABLE_REGION_ITC', True):
+                            region_itc_loss = self.compute_region_itc_loss(
+                                visual_features, region_detected, anatomical_embeddings_batch,
+                                anatomical_nlp_status_batch, same_text_region_groups_batch, image_ids
+                            )
+                    elif loss_type == 'clip':
+                        clip_itc_loss = self.compute_clip_itc_loss(
+                            visual_features=visual_features,
+                            findings=findings
                         )
 
                 # 返回简化的结果
                 return {
                     "region_itc_loss": region_itc_loss,
+                    "clip_itc_loss": clip_itc_loss,
                     "visual_features": visual_features,
                 }
 
@@ -573,5 +591,55 @@ class MedicalReportGenerator(nn.Module):
         # 平均所有样本的损失
         loss = torch.stack(losses).mean()
         
+        return loss
+
+    def compute_clip_itc_loss(self, visual_features, findings):
+        """
+        计算batch内最普通的CLIP式图文对比损失。
+        使用CLS全局视觉特征与CXR-BERT的文本CLS特征作为一一对应的正样本，
+        其他(batch内)为负样本。复用与region相同的投影层与归一化。
+
+        参数:
+            visual_features: ViT输出视觉特征 [B, 1+num_regions, hidden_size]
+            findings: 批次的报告文本（tokenized或字符串列表，交给cxr_bert处理）
+
+        返回:
+            标量对比损失 (对称 InfoNCE, i->t 与 t->i 平均)
+        """
+        if self.cxr_bert is None:
+            return None
+
+        device = visual_features.device
+        batch_size = visual_features.size(0)
+        if batch_size < 2:
+            return None
+
+        # 全局视觉特征：CLS token
+        global_visual = visual_features[:, 0, :]  # [B, hidden_size]
+
+        # 文本特征：CXR-BERT CLS
+        text_cls = self.cxr_bert(findings)  # [B, hidden_size]
+
+        # 投影 + 归一化（复用region的映射层）
+        eps = 1e-8
+        mapped_visual = F.normalize(self.region_visual_projection(global_visual), p=2, dim=1, eps=eps)
+        mapped_text = F.normalize(self.region_text_projection(text_cls), p=2, dim=1, eps=eps)
+
+        # 相似度与温度
+        temperature = getattr(self.config, 'TEMPERATURE', 0.07)
+        logits_per_image = torch.matmul(mapped_visual, mapped_text.t()) / temperature  # [B, B]
+        logits_per_text = torch.matmul(mapped_text, mapped_visual.t()) / temperature   # [B, B]
+
+        # 数值稳定
+        logits_per_image = torch.clamp(logits_per_image, min=-10.0, max=10.0)
+        logits_per_text = torch.clamp(logits_per_text, min=-10.0, max=10.0)
+
+        # 目标：对角为正样本
+        targets = torch.arange(batch_size, device=device)
+        loss_i2t = F.cross_entropy(logits_per_image, targets)
+        loss_t2i = F.cross_entropy(logits_per_text, targets)
+        loss = 0.5 * (loss_i2t + loss_t2i)
+        if torch.isnan(loss) or torch.isinf(loss):
+            return torch.tensor(0.0, device=device, requires_grad=True)
         return loss
 

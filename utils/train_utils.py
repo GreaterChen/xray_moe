@@ -242,14 +242,16 @@ def _compute_loss(config, output):
         return total_loss
     
     elif phase == "PRETRAIN_VIT":
-        # 预训练阶段：只有区域级别ITC损失(patch-sentence对齐)
-        if "region_itc_loss" in output and output["region_itc_loss"] is not None:
-            region_itc_weight = getattr(config, 'REGION_ITC_WEIGHT', 1.0)
-            loss = region_itc_weight * output["region_itc_loss"]
+        # 预训练阶段：根据配置选择对比损失类型
+        loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
+        loss_key = 'region_itc_loss' if loss_type == 'region' else 'clip_itc_loss'
+        if loss_key in output and output[loss_key] is not None:
+            contrastive_weight = getattr(config, 'REGION_ITC_WEIGHT', 1.0)
+            loss = contrastive_weight * output[loss_key]
             return loss
         else:
-            # 如果没有region_itc_loss,返回零损失
-            train_utils_logger.warning("⚠️ PRETRAIN_VIT阶段未检测到region_itc_loss")
+            # 如果没有相应的对比损失，返回零损失
+            train_utils_logger.warning(f"⚠️ PRETRAIN_VIT阶段未检测到{loss_key}")
             return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
     
     else:
@@ -277,11 +279,13 @@ def _log_training_metrics(writer, config, loss, output, epoch, step, total_steps
     elif phase == "PRETRAIN_VIT":
         output_dict = args_to_kwargs(output)
         vit_losses = {}
-        
-        # 只记录region_itc_loss
-        if "region_itc_loss" in output_dict and output_dict["region_itc_loss"] is not None:
-            vit_losses["Train/ViT/Region_ITC_Loss"] = output_dict["region_itc_loss"].item()
-        
+        loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
+        if loss_type == 'region':
+            if "region_itc_loss" in output_dict and output_dict["region_itc_loss"] is not None:
+                vit_losses["Train/ViT/Region_ITC_Loss"] = output_dict["region_itc_loss"].item()
+        else:
+            if "clip_itc_loss" in output_dict and output_dict["clip_itc_loss"] is not None:
+                vit_losses["Train/ViT/CLIP_ITC_Loss"] = output_dict["clip_itc_loss"].item()
         for tag, value in vit_losses.items():
             writer.add_scalar(tag, value, global_step)
     
