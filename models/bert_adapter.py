@@ -126,28 +126,45 @@ class BertAdapter(nn.Module):
         self,
         visual_features,
         history_encoding,
-        max_new_tokens=100,
-        do_sample=True,
-        temperature=0.7,
-        top_p=0.9,
-        repetition_penalty=1.0,
-        num_beams=3,
+        max_new_tokens=None,
+        do_sample=None,
+        temperature=None,
+        top_p=None,
+        repetition_penalty=None,
+        num_beams=None,
         use_history=False,  # 添加use_history参数
     ):
         """
-        医学报告生成模型的生成接口
+        医学报告生成模型的生成接口（对齐PromptMRG24配置）
         
         Args:
             visual_features: 视觉特征 [batch_size, num_tokens, visual_dim]
             history_encoding: 历史文本的编码 {input_ids, attention_mask} 或 BatchEncoding 或 str list
-            max_new_tokens: 生成文本的最大新token数量
-            do_sample: 是否采样生成
-            temperature: 温度参数
-            top_p: 概率截断阈值
-            repetition_penalty: 重复惩罚系数
-            num_beams: beam search的宽度
+            max_new_tokens: 生成文本的最大新token数量（None则使用config配置）
+            do_sample: 是否采样生成（None则使用config配置）
+            temperature: 温度参数（None则使用config配置）
+            top_p: 概率截断阈值（None则使用config配置）
+            repetition_penalty: 重复惩罚系数（None则使用config配置）
+            num_beams: beam search的宽度（None则使用config配置）
             use_history: 是否使用历史文本
         """
+        # 从config读取默认生成参数（对齐PromptMRG24）
+        if max_new_tokens is None:
+            max_new_tokens = getattr(self.config, 'GEN_MAX_NEW_TOKENS', 150)
+        if do_sample is None:
+            do_sample = getattr(self.config, 'GEN_DO_SAMPLE', False)  # 默认False，确定性生成
+        if temperature is None:
+            temperature = getattr(self.config, 'GEN_TEMPERATURE', 0.7)
+        if top_p is None:
+            top_p = getattr(self.config, 'GEN_TOP_P', 0.9)
+        if repetition_penalty is None:
+            repetition_penalty = getattr(self.config, 'GEN_REPETITION_PENALTY', 1.0)
+        if num_beams is None:
+            num_beams = getattr(self.config, 'GEN_NUM_BEAMS', 3)
+        
+        # 获取最小长度配置
+        min_length = getattr(self.config, 'GEN_MIN_LENGTH', 100)
+        
         # 准备历史文本输入
         prepared_history = self._prepare_history_input(history_encoding) if use_history else None
         
@@ -169,6 +186,7 @@ class BertAdapter(nn.Module):
             mode="generate", 
             generation_params={
                 "max_new_tokens": max_new_tokens,
+                "min_length": min_length,  # 添加最小长度
                 "temperature": temperature,
                 "do_sample": do_sample,
                 "top_p": top_p,

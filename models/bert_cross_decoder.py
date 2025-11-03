@@ -222,6 +222,7 @@ class BertCrossDecoder(nn.Module):
         visual_attention_mask,
         num_beams=3,
         max_new_tokens=100,
+        min_length=None,
         do_sample=True,
         top_p=0.9,
         temperature=0.7,
@@ -237,6 +238,8 @@ class BertCrossDecoder(nn.Module):
             visual_attention_mask: 视觉特征的attention_mask
             num_beams: beam search的宽度
             max_new_tokens: 生成的最大新token数量
+            min_length: 生成的最小长度
+            do_sample: 是否采样生成
             top_p: 采样的概率阈值
             temperature: 采样的温度
             repetition_penalty: 重复惩罚系数
@@ -267,6 +270,10 @@ class BertCrossDecoder(nn.Module):
             "top_p": top_p,
             "temperature": temperature,
         }
+        
+        # 添加最小长度约束
+        if min_length is not None:
+            generation_kwargs["min_length"] = min_length
         
         # 添加交叉注意力参数
         generation_kwargs.update(model_kwargs)
