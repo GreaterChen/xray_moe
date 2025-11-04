@@ -5,6 +5,78 @@ import torch.nn.functional as F
 from transformers import BertConfig, BertTokenizer, BertLMHeadModel
 
 
+class BertLMHeadModelWithCrossAttention(BertLMHeadModel):
+    """
+    继承自BertLMHeadModel，添加对encoder_hidden_states和encoder_attention_mask的正确处理
+    """
+    def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **model_kwargs):
+        """
+        重写以正确处理encoder_hidden_states和encoder_attention_mask在beam search中的扩展
+        """
+        input_shape = input_ids.shape
+        effective_batch_size = input_shape[0]
+
+        # 添加dummy token
+        if self.config.pad_token_id is None:
+            raise ValueError("The PAD token should be defined for generation")
+
+        attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((attention_mask.shape[0], 1))], dim=-1)
+        dummy_token = torch.full(
+            (effective_batch_size, 1), self.config.pad_token_id, dtype=torch.long, device=input_ids.device
+        )
+        input_ids = torch.cat([input_ids, dummy_token], dim=1)
+
+        # 处理encoder_hidden_states和encoder_attention_mask
+        # 这些在第一次调用generate时会被传入，之后会保存在model_kwargs中
+        inputs = {
+            "input_ids": input_ids, 
+            "attention_mask": attention_mask,
+        }
+        
+        # 保留encoder相关的参数
+        if "encoder_hidden_states" in model_kwargs:
+            inputs["encoder_hidden_states"] = model_kwargs["encoder_hidden_states"]
+        if "encoder_attention_mask" in model_kwargs:
+            inputs["encoder_attention_mask"] = model_kwargs["encoder_attention_mask"]
+            
+        return inputs
+    
+    @staticmethod
+    def _expand_inputs_for_generation(
+        expand_size=1,
+        is_encoder_decoder=False,
+        input_ids=None,
+        **model_kwargs,
+    ):
+        """
+        重写以正确扩展encoder_hidden_states和encoder_attention_mask用于beam search
+        使用repeat_interleave而不是index_select，遵循transformers标准实现
+        """
+        # 如果expand_size为1，不需要扩展
+        if expand_size == 1:
+            return input_ids, model_kwargs
+
+        def _expand_dict_for_generation(dict_to_expand):
+            """扩展字典中的所有张量"""
+            for key in dict_to_expand:
+                if (
+                    key != "cache_position"
+                    and dict_to_expand[key] is not None
+                    and isinstance(dict_to_expand[key], torch.Tensor)
+                ):
+                    dict_to_expand[key] = dict_to_expand[key].repeat_interleave(expand_size, dim=0)
+            return dict_to_expand
+
+        # 扩展input_ids
+        if input_ids is not None:
+            input_ids = input_ids.repeat_interleave(expand_size, dim=0)
+
+        # 扩展model_kwargs中的所有张量（包括encoder_hidden_states和encoder_attention_mask）
+        model_kwargs = _expand_dict_for_generation(model_kwargs)
+
+        return input_ids, model_kwargs
+
+
 class BertCrossDecoder(nn.Module):
     """
     BERT交叉注意力解码器模型，使用视觉特征作为KV源，历史文本作为Q的开头
@@ -46,8 +118,9 @@ class BertCrossDecoder(nn.Module):
         decoder_config.add_cross_attention = True
         decoder_config.is_decoder = True
 
-        # 初始化解码器
-        self.text_decoder = BertLMHeadModel.from_pretrained(
+        # 初始化解码器，使用自定义的BertLMHeadModelWithCrossAttention类
+        # 这个类正确处理了encoder_hidden_states和encoder_attention_mask在beam search中的扩展
+        self.text_decoder = BertLMHeadModelWithCrossAttention.from_pretrained(
             "bert-base-uncased", config=decoder_config, local_files_only=True
         )
 
@@ -141,24 +214,56 @@ class BertCrossDecoder(nn.Module):
                 raise ValueError(f"目标文本必须是BatchEncoding、编码字典或文本列表，当前类型: {type(target_text)}")
             
             if use_history:
-                # 直接将历史最后一个token(SEP)替换为PAD
-                history_input_ids[:, -1] = self.tokenizer.pad_token_id
-                history_attention_mask[:, -1] = 0
+                # 获取每个样本的实际history长度（去除padding）
+                # history_attention_mask中1的位置表示实际内容
+                actual_history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
                 
-                # 使用历史作为prompt：将历史文本和目标文本拼接
-                # 跳过目标的第一个token(CLS)，确保拼接后只有一个有效的SEP标记
-                full_input_ids = torch.cat([history_input_ids, target_input_ids[:, 1:]], dim=1)
-                full_attention_mask = torch.cat([history_attention_mask, target_attention_mask[:, 1:]], dim=1)
+                # 获取每个样本的实际target长度（去除padding和CLS）
+                # target格式: [CLS] t1 t2 ... tm [SEP] [PAD] ...
+                # 我们需要: t1 t2 ... tm [SEP]（跳过CLS）
+                actual_target_lengths = target_attention_mask.sum(dim=1) - 1  # -1是因为要跳过CLS
                 
-                # 创建标签：历史部分设为-100(不计算损失)，目标部分保持原样
-                labels = torch.full_like(full_input_ids, -100)
-                # 目标文本位置的标签设置为目标token ID(从历史长度位置开始)
-                history_len = history_input_ids.shape[1]
-                labels[:, history_len:] = target_input_ids[:, 1:]  # 跳过目标文本的第一个token(CLS)
+                # 为了批处理，我们需要统一序列长度
+                # 方案：移除history的padding，保留SEP，然后拼接target（跳过CLS）
                 
-                # 设置[PAD]位置的标签为-100，使模型不计算这些位置的损失
-                pad_positions = (full_input_ids == self.tokenizer.pad_token_id)
-                labels[pad_positions] = -100
+                batch_size = history_input_ids.shape[0]
+                max_total_len = actual_history_lengths.max() + actual_target_lengths.max()
+                
+                # 初始化拼接后的张量
+                full_input_ids = torch.full(
+                    (batch_size, max_total_len), 
+                    self.tokenizer.pad_token_id, 
+                    dtype=torch.long, 
+                    device=device
+                )
+                full_attention_mask = torch.zeros(
+                    (batch_size, max_total_len), 
+                    dtype=torch.long, 
+                    device=device
+                )
+                labels = torch.full(
+                    (batch_size, max_total_len), 
+                    -100, 
+                    dtype=torch.long, 
+                    device=device
+                )
+                
+                # 逐样本处理以正确对齐
+                for i in range(batch_size):
+                    h_len = actual_history_lengths[i].item()
+                    t_len = actual_target_lengths[i].item()
+                    
+                    # 拼接: [CLS] h1 h2 ... hn [SEP] | t1 t2 ... tm [SEP]
+                    # History部分（保留SEP）
+                    full_input_ids[i, :h_len] = history_input_ids[i, :h_len]
+                    full_attention_mask[i, :h_len] = 1
+                    # labels的history部分全部设为-100（不计算损失）
+                    
+                    # Target部分（跳过CLS，从第2个token开始）
+                    full_input_ids[i, h_len:h_len+t_len] = target_input_ids[i, 1:1+t_len]
+                    full_attention_mask[i, h_len:h_len+t_len] = 1
+                    # labels的target部分设为对应的token id
+                    labels[i, h_len:h_len+t_len] = target_input_ids[i, 1:1+t_len]
             
             else:
                 # 不使用历史作为prompt，仅使用视觉特征
@@ -247,9 +352,14 @@ class BertCrossDecoder(nn.Module):
         Returns:
             generated_texts: 生成的文本列表
         """
-        # 准备生成所需的输入
-        input_ids = history_input_ids
-        attention_mask = history_attention_mask
+        # 移除history的padding，与训练时保持一致
+        # 获取每个样本的实际history长度
+        actual_history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
+        max_history_len = actual_history_lengths.max().item()
+        
+        # 截断到实际最大长度，移除无用的padding
+        input_ids = history_input_ids[:, :max_history_len]
+        attention_mask = history_attention_mask[:, :max_history_len]
         
         # 准备交叉注意力参数
         model_kwargs = {
@@ -266,10 +376,16 @@ class BertCrossDecoder(nn.Module):
             "eos_token_id": self.tokenizer.sep_token_id,
             "pad_token_id": self.tokenizer.pad_token_id,
             "repetition_penalty": repetition_penalty,
-            "do_sample": do_sample,
-            "top_p": top_p,
-            "temperature": temperature,
         }
+        
+        # 当使用beam search (num_beams > 1)时，不能同时使用sampling
+        if num_beams > 1:
+            generation_kwargs["do_sample"] = False
+        else:
+            generation_kwargs["do_sample"] = do_sample
+            if do_sample:
+                generation_kwargs["top_p"] = top_p
+                generation_kwargs["temperature"] = temperature
         
         # 添加最小长度约束
         if min_length is not None:
@@ -285,15 +401,11 @@ class BertCrossDecoder(nn.Module):
         generated_texts = []
         for i, tokens in enumerate(outputs):
             # 获取当前批次样本的实际历史长度
-            actual_history_len = history_input_ids.size(1)
-            if actual_history_len > 1:  # 如果使用了实际的历史文本
-                # 由于现在使用右侧填充，history_attention_mask中的1表示实际内容
-                actual_history_len = torch.sum(history_attention_mask[i]).item()
-                # 只解码历史之后生成的内容
-                generated_part = tokens[actual_history_len:]
-            else:
-                # 如果只有起始token，直接跳过第一个token
-                generated_part = tokens[1:]
+            # 由于我们已经移除了padding，直接使用实际长度
+            actual_history_len = actual_history_lengths[i].item()
+            
+            # 只解码历史之后生成的内容
+            generated_part = tokens[actual_history_len:]
             
             # 解码生成的部分
             text = self.tokenizer.decode(generated_part, skip_special_tokens=True)

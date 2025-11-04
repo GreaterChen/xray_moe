@@ -228,9 +228,8 @@ class MedicalReportGenerator(nn.Module):
                 region_features = detection_outputs["region_features"]
                 region_detected = detection_outputs["region_detected"]
 
-            # 第二步：通过标准ViT处理区域特征（冻结）
-            with torch.no_grad():
-                visual_features = self.image_encoder(region_features)  # [B, 1+num_regions, hidden_size]
+            # 第二步：通过标准ViT处理区域特征（可训练）
+            visual_features = self.image_encoder(region_features)  # [B, 1+num_regions, hidden_size]
             
             # 第三步：使用RGAT进行三阶段推理（可训练）
             disease_features = None

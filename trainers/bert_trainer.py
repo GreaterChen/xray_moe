@@ -26,7 +26,7 @@ class BertFinetuneTrainer(BaseTrainer):
         # 2. 使用公共函数构建ViT
         vit_model = build_vit_model(
             self.config,
-            load_pretrained=False,  # BERT微调阶段不预加载ViT权重
+            load_pretrained=True,
             logger=self.logger,
             device=self.device_manager.device
         )
