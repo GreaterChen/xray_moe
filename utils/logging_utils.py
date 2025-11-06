@@ -28,6 +28,24 @@ def setup_logger(log_dir="logs", is_main_process=True):
     
     # 创建logger
     logger = logging.getLogger("train_logger")
+    
+    # 动态拼接logger名称：在默认名称后追加从CHECKPOINT_PATH_TO中
+    # "/mnt/chenlb/xray_moe/results/" 之后的路径片段，并将 "/" 替换为 "_"
+    try:
+        from configs import config as _cfg  # 延迟导入，避免循环依赖
+        checkpoint_path = getattr(_cfg, "CHECKPOINT_PATH_TO", "")
+        if isinstance(checkpoint_path, str) and checkpoint_path:
+            boundary = "results/"
+            if boundary in checkpoint_path:
+                suffix_part = checkpoint_path.split(boundary, 1)[1]
+            else:
+                suffix_part = checkpoint_path
+            suffix_part = suffix_part.strip("/").replace("/", "_")
+            if suffix_part:
+                logger.name = f"train_logger_{suffix_part}"
+    except Exception:
+        # 配置不可用或解析失败时，保持默认名称
+        pass
     logger.setLevel(logging.DEBUG)  # 设置为DEBUG级别以捕获所有信息
     
     # 清除已存在的处理器（避免重复）

@@ -89,9 +89,23 @@ class BaseTrainer(ABC):
     def setup_tensorboard(self):
         """设置TensorBoard"""
         current_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        
+        # 从CHECKPOINT_PATH_TO中提取results/之后的路径作为前缀
+        checkpoint_path = getattr(self.config, "CHECKPOINT_PATH_TO", "")
+        path_suffix = ""
+        if isinstance(checkpoint_path, str) and checkpoint_path:
+            boundary = "results/"
+            if boundary in checkpoint_path:
+                path_suffix = checkpoint_path.split(boundary, 1)[1]
+            else:
+                path_suffix = checkpoint_path
+            path_suffix = path_suffix.strip("/").replace("/", "_")
+            if path_suffix:
+                path_suffix = path_suffix + "_"
+        
         tensorboard_log_dir = os.path.join(
             self.config.TENSORBOARD_DIR,
-            f"{self.config.MODEL_NAME}_{self.config.PHASE}_{current_time}"
+            f"{self.config.MODEL_NAME}_{self.config.PHASE}_{path_suffix}_{current_time}"
         )
         self.writer = SummaryWriter(tensorboard_log_dir)
         self.logger.info(f"TensorBoard日志目录: {tensorboard_log_dir}")
