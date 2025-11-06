@@ -2,6 +2,7 @@
 from trainers.vit_trainer import ViTPretrainTrainer
 from trainers.bert_trainer import BertFinetuneTrainer
 from trainers.detection_trainer import DetectionTrainer
+from trainers.iuxray_finetune_trainer import IUXRAYFinetuneTrainer
 
 
 class TrainerFactory:
@@ -11,6 +12,7 @@ class TrainerFactory:
         "PRETRAIN_VIT": ViTPretrainTrainer,
         "FINETUNE_BERT": BertFinetuneTrainer,
         "TRAIN_DETECTION": DetectionTrainer,
+        "FINETUNE_IUXRAY": IUXRAYFinetuneTrainer,
     }
     
     @classmethod
@@ -40,8 +42,8 @@ class TrainerFactory:
         
         trainer_class = cls._trainers[phase]
         
-        # BERT训练器需要tokenizer
-        if phase == "FINETUNE_BERT":
+        # BERT训练器和IU_XRAY训练器需要tokenizer
+        if phase in ["FINETUNE_BERT", "FINETUNE_IUXRAY"]:
             if tokenizer is None:
                 raise ValueError(f"{phase} 阶段需要提供tokenizer")
             return trainer_class(config, device_manager, logger, tokenizer)

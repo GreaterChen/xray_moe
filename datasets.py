@@ -538,3 +538,263 @@ def mimic_collate_fn(batch):
         "gts": (findings, [""]*len(findings)),  # 添加gts字段保持兼容性
         "split": ["train"]*len(findings),  # 添加split字段保持兼容性
     }
+
+
+# --- IU_XRAY Dataset ---
+class IUXRAY(data.Dataset):
+    """IU_XRAY数据集 - 用于端到端微调和测试"""
+    
+    # 类变量用于存储共享数据
+    _shared_data = {
+        "loaded": False,
+        "annotation": None,
+    }
+    
+    # 14个疾病标签
+    NUM_DISEASES = 14
+    
+    @classmethod
+    def load_shared_data(cls, ann_path):
+        """加载IU_XRAY数据集注释"""
+        if cls._shared_data["loaded"]:
+            return
+        
+        dataset_logger.info(f"📋 正在加载IU_XRAY注释文件: {ann_path}")
+        
+        with open(ann_path, "r") as f:
+            annotation_data = json.load(f)
+        
+        # 注释数据已经划分为 train, val, test
+        # 格式: {"train": [...], "val": [...], "test": [...]}
+        
+        # 统一使用 "validate" 命名
+        new_annotation = {
+            "train": annotation_data.get("train", []),
+            "validate": annotation_data.get("val", []),  # 注意：从"val"映射到"validate"
+            "test": annotation_data.get("test", [])
+        }
+        
+        # 处理每个样本的文本
+        for split in new_annotation:
+            for item in new_annotation[split]:
+                # 清理report文本
+                item["report"] = cls._clean_report(item.get("report", ""))
+                # 清理history文本
+                item["history"] = cls._clean_report(item.get("history", ""))
+        
+        cls._shared_data["annotation"] = new_annotation
+        cls._shared_data["loaded"] = True
+        
+        dataset_logger.info(f"✅ IU_XRAY数据集加载完成:")
+        dataset_logger.info(f"  - 训练集: {len(new_annotation['train'])} 条")
+        dataset_logger.info(f"  - 验证集: {len(new_annotation['validate'])} 条")
+        dataset_logger.info(f"  - 测试集: {len(new_annotation['test'])} 条")
+    
+    def __init__(
+        self,
+        ann_path,
+        images_dir,
+        input_size=(224, 224),
+        random_transform=True,
+        tokenizer=None,
+        mode="train"
+    ):
+        """
+        初始化IU_XRAY数据集
+        
+        Args:
+            ann_path: 注释文件路径
+            images_dir: 图片目录路径
+            input_size: 输入图片大小
+            random_transform: 是否使用随机变换
+            tokenizer: 分词器
+            mode: 数据集模式 ("train", "validate", "test")
+        """
+        # 加载共享数据
+        self.load_shared_data(ann_path)
+        
+        self.tokenizer = tokenizer
+        self.bos_token_id = self.tokenizer.bos_token_id
+        self.eos_token_id = self.tokenizer.sep_token_id  # BERT使用[SEP]作为EOS
+        self.pad_token_id = self.tokenizer.pad_token_id
+        
+        self.images_dir = images_dir
+        self.input_size = input_size
+        self.random_transform = random_transform
+        self.mode = mode
+        
+        # 使用共享数据
+        self.data = self._shared_data["annotation"][self.mode]
+        
+        # 图像变换
+        if random_transform:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+            ])
+        else:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+            ])
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        info = self.data[idx]
+        
+        # 获取字段
+        report = info["report"]
+        history = info["history"]
+        disease_label = np.array(info["labels"], dtype=np.float16)
+        image_id = info["id"]
+        
+        # 获取图像路径 - 拼接完整路径
+        # info["image_path"]是相对路径列表，如 ["CXR2384_IM-0942/0.png"]
+        # 完整路径应该是: images_dir + image_path[0]
+        img_path = os.path.join(self.images_dir, info["image_path"][0])
+        
+        # 处理图像
+        try:
+            img = Image.open(img_path).convert("RGB")
+            img = self.transform(img)
+        except Exception as e:
+            dataset_logger.error(f"❌ 无法加载图像: {img_path}, 错误: {e}")
+            # 返回空白图像
+            img = torch.zeros((3, self.input_size[0], self.input_size[1]))
+        
+        # IU_XRAY没有bbox标注，返回空目标
+        boxes = torch.zeros((0, 4), dtype=torch.float32)
+        labels = torch.zeros((0,), dtype=torch.int64)
+        
+        target = {
+            "boxes": boxes,
+            "labels": labels,
+            "image_id": torch.tensor([idx]),
+            "area": torch.zeros((0,), dtype=torch.float32),
+            "iscrowd": torch.zeros((0,), dtype=torch.int64),
+        }
+        
+        output = {
+            "image": img,
+            "image_id": image_id,
+            "bbox_targets": target,
+            "findings": report,  # IU_XRAY只有一个report字段
+            "history": history,
+            "label": disease_label,
+            "image_path": img_path,
+            "anatomical_embeddings": {},  # IU_XRAY没有解剖区域嵌入
+            "anatomical_nlp_status": {},
+            "same_text_region_groups": [],
+            "impression": "",  # IU_XRAY没有单独的impression
+            "original_findings": report,
+        }
+        
+        return output
+    
+    @staticmethod
+    def _clean_report(report):
+        """清理报告文本 - 与MIMIC使用相同的清理策略"""
+        report_cleaner = (
+            lambda t: t.replace("\n", " ")
+            .replace("__", "_")
+            .replace("__", "_")
+            .replace("__", "_")
+            .replace("__", "_")
+            .replace("__", "_")
+            .replace("__", "_")
+            .replace("__", "_")
+            .replace("  ", " ")
+            .replace("  ", " ")
+            .replace("  ", " ")
+            .replace("  ", " ")
+            .replace("  ", " ")
+            .replace("  ", " ")
+            .replace("..", ".")
+            .replace("..", ".")
+            .replace("..", ".")
+            .replace("..", ".")
+            .replace("..", ".")
+            .replace("..", ".")
+            .replace("..", ".")
+            .replace("..", ".")
+            .replace("1. ", "")
+            .replace(". 2. ", ". ")
+            .replace(". 3. ", ". ")
+            .replace(". 4. ", ". ")
+            .replace(". 5. ", ". ")
+            .replace(" 2. ", ". ")
+            .replace(" 3. ", ". ")
+            .replace(" 4. ", ". ")
+            .replace(" 5. ", ". ")
+            .strip()
+            .lower()
+            .split(". ")
+        )
+        sent_cleaner = lambda t: re.sub(
+            "[.,?;*!%^&_+():-\[\]{}]",
+            "",
+            t.replace('"', "")
+            .replace("/", "")
+            .replace("\\", "")
+            .replace("'", "")
+            .strip()
+            .lower(),
+        )
+        tokens = [
+            sent_cleaner(sent)
+            for sent in report_cleaner(report)
+            if sent_cleaner(sent) != []
+        ]
+        report = " . ".join(tokens) + " ."
+        return report
+
+
+# 添加collate_fn函数处理IU_XRAY数据
+def iuxray_collate_fn(batch):
+    """IU_XRAY数据集的collate_fn - 与MIMIC保持一致的格式"""
+    batch_size = len(batch)
+    
+    # 预分配
+    images = torch.empty((batch_size, 3, 224, 224), dtype=torch.float32)
+    bbox_targets = [None] * batch_size
+    findings = [None] * batch_size
+    histories = [None] * batch_size
+    labels = np.empty((batch_size, 14), dtype=np.float16)
+    image_paths = [None] * batch_size
+    image_ids = [None] * batch_size
+    anatomical_embeddings = [None] * batch_size
+    anatomical_nlp_status = [None] * batch_size
+    same_text_region_groups = [None] * batch_size
+    
+    # 填充
+    for i, item in enumerate(batch):
+        images[i] = item["image"]
+        bbox_targets[i] = item["bbox_targets"]
+        findings[i] = item["findings"]
+        histories[i] = item["history"]
+        labels[i] = item["label"]
+        image_paths[i] = item["image_path"]
+        image_ids[i] = item["image_id"]
+        anatomical_embeddings[i] = item["anatomical_embeddings"]
+        anatomical_nlp_status[i] = item["anatomical_nlp_status"]
+        same_text_region_groups[i] = item["same_text_region_groups"]
+    
+    # 转换标签
+    label_tensor = torch.from_numpy(labels)
+    
+    return {
+        "image": images,
+        "bbox_targets": bbox_targets,
+        "findings": findings,
+        "history": histories,
+        "label": label_tensor,
+        "image_path": image_paths,
+        "image_id": image_ids,
+        "anatomical_embeddings": anatomical_embeddings,
+        "anatomical_nlp_status": anatomical_nlp_status,
+        "same_text_region_groups": same_text_region_groups,
+        "gts": (findings, [""]*len(findings)),
+        "split": ["test"]*len(findings),  # IU_XRAY主要用于测试
+    }

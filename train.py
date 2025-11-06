@@ -27,7 +27,7 @@ except RuntimeError:
 # 项目模块
 from utils import setup_logger
 from device_utils import DeviceManager, setup_for_distributed
-from datasets import MIMIC, mimic_collate_fn
+from datasets import MIMIC, mimic_collate_fn, IUXRAY, iuxray_collate_fn
 from configs import config
 from trainers import TrainerFactory
 
@@ -61,62 +61,106 @@ def create_datasets(config, tokenizer):
         tokenizer: 分词器
         
     Returns:
-        train_data, valid_data, test_data
+        train_data, valid_data, test_data, dataset_type
     """
     input_size = (config.IMAGE_SIZE, config.IMAGE_SIZE)
     
-    # 加载共享数据
-    MIMIC.load_shared_data(
-        directory=config.DATA_DIR,
-        ann_dir=config.ANN_DIR,
-        mode=config.MODE,
-        binary_mode=True,
-        split_csv_path=config.SPLIT_CSV_PATH
-    )
+    # 根据配置决定使用哪个数据集
+    dataset_name = getattr(config, 'DATASET_NAME', 'MIMIC')
     
-    # 创建训练数据集
-    train_data = MIMIC(
-        directory=config.DATA_DIR,
-        ann_dir=config.ANN_DIR,
-        images_dir=config.IMAGES_DIR,
-        input_size=input_size,
-        random_transform=True,
-        tokenizer=tokenizer,
-        mode="train",
-        subset_size=100 if config.DEBUG else None,
-        generation_target=config.GENERATION_TARGET
-    )
-    
-    # 创建验证数据集 
-    valid_data = MIMIC(
-        directory=config.DATA_DIR,
-        ann_dir=config.ANN_DIR,
-        images_dir=config.IMAGES_DIR,
-        input_size=input_size,
-        random_transform=False,
-        tokenizer=tokenizer,
-        mode="validate",
-        subset_size=50 if config.DEBUG else None,
-        generation_target=config.GENERATION_TARGET
-    )
-    
-    # 创建测试数据集
-    test_data = MIMIC(
-        directory=config.DATA_DIR,
-        ann_dir=config.ANN_DIR,
-        images_dir=config.IMAGES_DIR,
-        input_size=input_size,
-        random_transform=False,
-        tokenizer=tokenizer,
-        mode="test",
-        subset_size=50 if config.DEBUG else None,
-        generation_target=config.GENERATION_TARGET
-    )
-    
-    return train_data, valid_data, test_data
+    if dataset_name == 'IUXRAY':
+        # 使用IU_XRAY数据集
+        # 加载共享数据
+        IUXRAY.load_shared_data(
+            ann_path=config.IUXRAY_ANN_PATH
+        )
+        
+        # 创建训练数据集
+        train_data = IUXRAY(
+            ann_path=config.IUXRAY_ANN_PATH,
+            images_dir=config.IUXRAY_IMAGES_DIR,
+            input_size=input_size,
+            random_transform=True,
+            tokenizer=tokenizer,
+            mode="train"
+        )
+        
+        # 创建验证数据集
+        valid_data = IUXRAY(
+            ann_path=config.IUXRAY_ANN_PATH,
+            images_dir=config.IUXRAY_IMAGES_DIR,
+            input_size=input_size,
+            random_transform=False,
+            tokenizer=tokenizer,
+            mode="validate"
+        )
+        
+        # 创建测试数据集
+        test_data = IUXRAY(
+            ann_path=config.IUXRAY_ANN_PATH,
+            images_dir=config.IUXRAY_IMAGES_DIR,
+            input_size=input_size,
+            random_transform=False,
+            tokenizer=tokenizer,
+            mode="test"
+        )
+        
+        return train_data, valid_data, test_data, 'IUXRAY'
+        
+    else:
+        # 使用MIMIC数据集（默认）
+        # 加载共享数据
+        MIMIC.load_shared_data(
+            directory=config.DATA_DIR,
+            ann_dir=config.ANN_DIR,
+            mode=config.MODE,
+            binary_mode=True,
+            split_csv_path=config.SPLIT_CSV_PATH
+        )
+        
+        # 创建训练数据集
+        train_data = MIMIC(
+            directory=config.DATA_DIR,
+            ann_dir=config.ANN_DIR,
+            images_dir=config.IMAGES_DIR,
+            input_size=input_size,
+            random_transform=True,
+            tokenizer=tokenizer,
+            mode="train",
+            subset_size=100 if config.DEBUG else None,
+            generation_target=config.GENERATION_TARGET
+        )
+        
+        # 创建验证数据集 
+        valid_data = MIMIC(
+            directory=config.DATA_DIR,
+            ann_dir=config.ANN_DIR,
+            images_dir=config.IMAGES_DIR,
+            input_size=input_size,
+            random_transform=False,
+            tokenizer=tokenizer,
+            mode="validate",
+            subset_size=50 if config.DEBUG else None,
+            generation_target=config.GENERATION_TARGET
+        )
+        
+        # 创建测试数据集
+        test_data = MIMIC(
+            directory=config.DATA_DIR,
+            ann_dir=config.ANN_DIR,
+            images_dir=config.IMAGES_DIR,
+            input_size=input_size,
+            random_transform=False,
+            tokenizer=tokenizer,
+            mode="test",
+            subset_size=50 if config.DEBUG else None,
+            generation_target=config.GENERATION_TARGET
+        )
+        
+        return train_data, valid_data, test_data, 'MIMIC'
 
 
-def create_data_loaders(train_data, valid_data, test_data, config, device_manager):
+def create_data_loaders(train_data, valid_data, test_data, config, device_manager, dataset_type='MIMIC'):
     """
     创建数据加载器
     
@@ -126,10 +170,14 @@ def create_data_loaders(train_data, valid_data, test_data, config, device_manage
         test_data: 测试数据集
         config: 配置对象
         device_manager: 设备管理器
+        dataset_type: 数据集类型 ('MIMIC' 或 'IUXRAY')
         
     Returns:
         train_loader, valid_loader, test_loader, train_sampler, valid_sampler, test_sampler
     """
+    # 根据数据集类型选择collate_fn
+    collate_fn = iuxray_collate_fn if dataset_type == 'IUXRAY' else mimic_collate_fn
+    
     # 获取分布式采样器
     train_sampler = device_manager.get_sampler(train_data, shuffle=True)
     valid_sampler = device_manager.get_sampler(valid_data, shuffle=False)
@@ -145,7 +193,7 @@ def create_data_loaders(train_data, valid_data, test_data, config, device_manage
         pin_memory=getattr(config, 'PIN_MEMORY', True if device_manager.device.type == 'cuda' else False),
         prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 2),
         persistent_workers=getattr(config, 'PERSISTENT_WORKERS', False) if config.NUM_WORKERS > 0 else False,
-        collate_fn=mimic_collate_fn
+        collate_fn=collate_fn
     )
     
     # 创建验证数据加载器
@@ -158,7 +206,7 @@ def create_data_loaders(train_data, valid_data, test_data, config, device_manage
         pin_memory=getattr(config, 'PIN_MEMORY', True if device_manager.device.type == 'cuda' else False),
         prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 2),
         persistent_workers=getattr(config, 'PERSISTENT_WORKERS', False) if config.NUM_WORKERS > 0 else False,
-        collate_fn=mimic_collate_fn
+        collate_fn=collate_fn
     )
     
     # 创建测试数据加载器
@@ -171,7 +219,7 @@ def create_data_loaders(train_data, valid_data, test_data, config, device_manage
         pin_memory=getattr(config, 'PIN_MEMORY', True if device_manager.device.type == 'cuda' else False),
         prefetch_factor=getattr(config, 'PREFETCH_FACTOR', 2),
         persistent_workers=getattr(config, 'PERSISTENT_WORKERS', False) if config.NUM_WORKERS > 0 else False,
-        collate_fn=mimic_collate_fn
+        collate_fn=collate_fn
     )
     
     return train_loader, valid_loader, test_loader, train_sampler, valid_sampler, test_sampler
@@ -213,7 +261,8 @@ def main():
         
         # 7. 创建数据集
         logger.info("创建数据集...")
-        train_data, valid_data, test_data = create_datasets(config, tokenizer)
+        train_data, valid_data, test_data, dataset_type = create_datasets(config, tokenizer)
+        logger.info(f"数据集类型: {dataset_type}")
         logger.info(f"训练集大小: {len(train_data)}")
         logger.info(f"验证集大小: {len(valid_data)}")
         logger.info(f"测试集大小: {len(test_data)}")
@@ -221,7 +270,7 @@ def main():
         # 8. 创建数据加载器
         logger.info("创建数据加载器...")
         train_loader, valid_loader, test_loader, train_sampler, valid_sampler, test_sampler = create_data_loaders(
-            train_data, valid_data, test_data, config, device_manager
+            train_data, valid_data, test_data, config, device_manager, dataset_type
         )
         
         # 9. 使用工厂创建训练器

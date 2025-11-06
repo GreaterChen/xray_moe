@@ -20,11 +20,15 @@ class DefaultConfig:
     IMAGES_DIR = "/path/to/MIMIC/images_224/"  # 需要在local_config中覆盖
     NEGATIVE_POOL_DIR = "/path/to/pool.npy"  # 需要在local_config中覆盖
     SPLIT_CSV_PATH = None  # 数据集划分CSV文件路径（可选，如果不设置则自动划分）
+    
+    # IU_XRAY数据集设置（用于微调和测试）
+    IUXRAY_ANN_PATH = "/mnt/chenlb/IU_XRAY/r2gen_version/annotation_with_history_view_labels_split_multi_view_entries_pa_ap_views.json"
+    IUXRAY_IMAGES_DIR = "/mnt/chenlb/IU_XRAY/r2gen_version/images_224"
 
     # 模型设置
     MODEL_NAME = "MedicalReportGenerator"
     IMAGE_SIZE = 224
-    DATASET_NAME = "MIMIC"
+    DATASET_NAME = "MIMIC"  # 可选值: "MIMIC", "IUXRAY"
     MAX_LEN_FINDINGS = 100
     MAX_LEN_HISTORY = 50
     TOKENIZER_MAX_LEN = 30523
