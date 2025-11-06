@@ -1,5 +1,6 @@
 """训练器基类"""
 import os
+import json
 import torch
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -109,6 +110,44 @@ class BaseTrainer(ABC):
         )
         self.writer = SummaryWriter(tensorboard_log_dir)
         self.logger.info(f"TensorBoard日志目录: {tensorboard_log_dir}")
+        
+        # 保存配置信息到结果目录
+        self._save_config_to_dir(tensorboard_log_dir)
+    
+    def _save_config_to_dir(self, output_dir):
+        """
+        将配置信息保存到指定目录
+        
+        Args:
+            output_dir: 输出目录路径
+        """
+        try:
+            # 确保目录存在
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # 提取配置信息
+            config_dict = {}
+            for attr in dir(self.config):
+                # 跳过私有属性和方法
+                if not attr.startswith('_') and not callable(getattr(self.config, attr)):
+                    value = getattr(self.config, attr)
+                    # 确保值可以序列化为JSON
+                    try:
+                        json.dumps(value)
+                        config_dict[attr] = value
+                    except (TypeError, ValueError):
+                        # 不可序列化的对象转换为字符串
+                        config_dict[attr] = str(value)
+            
+            # 保存为JSON文件
+            config_file = os.path.join(output_dir, "config.json")
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(config_dict, f, indent=2, ensure_ascii=False)
+            
+            self.logger.info(f"配置信息已保存到: {config_file}")
+            
+        except Exception as e:
+            self.logger.warning(f"保存配置信息时出错: {e}")
     
     def setup_mixed_precision(self):
         """设置混合精度训练"""

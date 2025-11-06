@@ -1,8 +1,9 @@
-"""BERT微调阶段的训练器"""
+"""BERT微调阶段的训练器（支持多种decoder）"""
 import torch
 from trainers.base_trainer import BaseTrainer
 from models.medical_report_generator import MedicalReportGenerator
 from models.bert_adapter import BertAdapter
+from models.qwen2vl_decoder import Qwen2VLAdapter
 from models.model_builder import build_detection_model, build_vit_model, freeze_model_parameters
 from utils import train, test_llm, load
 from metrics import compute_scores
@@ -17,8 +18,9 @@ class BertFinetuneTrainer(BaseTrainer):
         self.chexbert_metrics = None
     
     def build_model(self):
-        """构建BERT微调模型"""
-        self.logger.info("构建BERT微调模型...")
+        """构建微调模型（支持BERT和Qwen2.5-VL decoder）"""
+        decoder_type = getattr(self.config, 'DECODER_TYPE', 'bert').lower()
+        self.logger.info(f"构建微调模型 (decoder类型: {decoder_type})...")
         
         # 1. 使用公共函数构建检测器
         enhanced_rcnn = build_detection_model(self.config, self.logger, device=self.device_manager.device)
@@ -31,21 +33,35 @@ class BertFinetuneTrainer(BaseTrainer):
             device=self.device_manager.device
         )
         
-        # 3. 创建BERT解码器
-        self.logger.info("初始化BERT解码器...")
-        bert_model = BertAdapter(
-            config=self.config,
-            tokenizer=self.tokenizer,
-            hidden_dim=768,
-            max_length=100
-        )
+        # 3. 根据配置创建解码器
+        if decoder_type == 'qwen2vl':
+            self.logger.info("初始化Qwen2.5-VL解码器...")
+            qwen_model_name = getattr(self.config, 'QWEN_MODEL_NAME', 'Qwen/Qwen2.5-VL-3B-Instruct')
+            decoder_model = Qwen2VLAdapter(
+                config=self.config,
+                tokenizer=self.tokenizer,
+                hidden_dim=768,
+                max_length=196,
+                qwen_model_name=qwen_model_name
+            )
+            self.logger.info(f"✅ Qwen2.5-VL解码器初始化完成 (模型: {qwen_model_name})")
+        else:
+            # 默认使用BERT解码器
+            self.logger.info("初始化BERT解码器...")
+            decoder_model = BertAdapter(
+                config=self.config,
+                tokenizer=self.tokenizer,
+                hidden_dim=768,
+                max_length=100
+            )
+            self.logger.info("✅ BERT解码器初始化完成")
         
         # 4. 组装医学报告生成模型
         self.model = MedicalReportGenerator(
             config=self.config,
             object_detector=enhanced_rcnn,
             image_encoder=vit_model,
-            findings_decoder=bert_model
+            findings_decoder=decoder_model
         )
         
         # 5. 冻结策略：
@@ -59,7 +75,7 @@ class BertFinetuneTrainer(BaseTrainer):
         vit_trainable = sum(p.numel() for p in self.model.image_encoder.parameters() if p.requires_grad)
         decoder_trainable = sum(p.numel() for p in self.model.findings_decoder.parameters() if p.requires_grad)
         
-        self.logger.info(f"✅ BERT微调模型构建完成")
+        self.logger.info(f"✅ {decoder_type.upper()}微调模型构建完成")
         self.logger.info(f"  - 检测器可训练参数: {detector_trainable:,} (仅特征提取层)")
         self.logger.info(f"  - ViT可训练参数: {vit_trainable:,}")
         self.logger.info(f"  - 解码器可训练参数: {decoder_trainable:,}")

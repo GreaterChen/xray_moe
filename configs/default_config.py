@@ -6,7 +6,7 @@
 
 class DefaultConfig:
     # Debug模式
-    DEBUG = True
+    DEBUG = False
     
     # 设备设置
     USE_CUDA = False  # 是否使用GPU，设置为False则强制使用CPU
@@ -36,6 +36,10 @@ class DefaultConfig:
     TEMPERATURE = 0.07  # 对比学习温度参数
     # 对比损失类型: "region" 使用区域级别ITC; "clip" 使用batch内CLIP形式
     CONTRASTIVE_LOSS_TYPE = "region"
+    
+    # 解码器设置
+    DECODER_TYPE = "bert"  # 可选值: "bert" 或 "qwen2vl"
+    QWEN_MODEL_NAME = "Qwen/Qwen2.5-VL-3B-Instruct"  # Qwen2.5-VL-3B模型名称或路径
     
     # 生成目标设置
     GENERATION_TARGET = "all"  # 可选值: "findings" 或 "all" (findings + impression)

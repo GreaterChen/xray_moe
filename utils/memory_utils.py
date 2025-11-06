@@ -87,7 +87,6 @@ def release_process_memory():
         import ctypes
         libc = ctypes.CDLL("libc.so.6")
         libc.malloc_trim(0)
-        memory_logger.info("已调用 malloc_trim 归还空闲内存")
     except Exception:
         # 兼容非 glibc 或受限环境，忽略错误
         pass
@@ -97,10 +96,3 @@ def release_process_memory():
         allocated = torch.cuda.memory_allocated(i) / 1024**2
         reserved = torch.cuda.memory_reserved(i) / 1024**2
         
-        memory_logger.info(f"\nGPU {i}: {props.name}")
-        memory_logger.info(f"  已分配内存: {allocated:.1f} MB")
-        memory_logger.info(f"  保留内存: {reserved:.1f} MB")
-        memory_logger.info(f"  总内存: {props.total_memory / 1024**2:.1f} MB")
-    
-    memory_logger.info("=" * 60)
-
