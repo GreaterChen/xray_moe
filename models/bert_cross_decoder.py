@@ -94,6 +94,9 @@ class BertCrossDecoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.max_length = max_length
         
+        # 从配置中获取是否启用RAGT
+        self.enable_ragt = getattr(config, 'ENABLE_RGAT', True)
+        
         # 使用传入的tokenizer或创建一个新的
         if tokenizer:
             self.tokenizer = tokenizer
@@ -129,9 +132,12 @@ class BertCrossDecoder(nn.Module):
         
         # 添加特征映射层，确保视觉特征和疾病特征维度匹配
         # visual_features: [B, 30, 768] (1个CLS + 29个区域)
-        # disease_features: [B, 14, 768]
+        # disease_features: [B, 14, 768] (仅在ENABLE_RGAT=True时使用)
         self.visual_projection = nn.Linear(hidden_dim, hidden_dim)
-        self.disease_projection = nn.Linear(hidden_dim, hidden_dim)
+        
+        # 只有在启用RAGT时才创建疾病特征映射层
+        if self.enable_ragt:
+            self.disease_projection = nn.Linear(hidden_dim, hidden_dim)
         
         # 设置视觉和疾病特征的token数量
         self.num_visual_tokens = 30
@@ -142,9 +148,9 @@ class BertCrossDecoder(nn.Module):
         前向传播
         
         Args:
-            visual_features: 组合特征 [batch_size, num_total_tokens, hidden_dim]
-                           包含视觉特征(前30个token)和疾病特征(后14个token)的拼接
-                           总共44个token
+            visual_features: 视觉特征 [batch_size, num_tokens, hidden_dim]
+                           如果ENABLE_RGAT=True: [B, 44, 768] 包含视觉特征(前30个token)和疾病特征(后14个token)
+                           如果ENABLE_RGAT=False: [B, 30, 768] 仅包含视觉特征
             history: 历史文本编码 {input_ids, attention_mask} 或原始文本列表
             target_text: 目标生成文本编码 {input_ids, attention_mask} 或原始文本列表
             mode: 训练模式 "train" 或 "generate"
@@ -158,22 +164,27 @@ class BertCrossDecoder(nn.Module):
         batch_size = visual_features.shape[0]
         device = visual_features.device
         
-        # 将输入特征拆分为视觉特征和疾病特征两部分
-        # visual_features输入实际是combined_features: [B, 44, 768]
-        # 前30个token是视觉特征，后14个token是疾病特征
-        visual_part = visual_features[:, :self.num_visual_tokens, :]  # [B, 30, 768]
-        disease_part = visual_features[:, self.num_visual_tokens:self.num_visual_tokens+self.num_disease_tokens, :]  # [B, 14, 768]
+        # 根据是否启用RAGT来处理输入特征
+        if self.enable_ragt:
+            # RAGT模式：输入包含视觉特征和疾病特征
+            # visual_features: [B, 44, 768]，前30个token是视觉特征，后14个token是疾病特征
+            visual_part = visual_features[:, :self.num_visual_tokens, :]  # [B, 30, 768]
+            disease_part = visual_features[:, self.num_visual_tokens:self.num_visual_tokens+self.num_disease_tokens, :]  # [B, 14, 768]
+            
+            # 分别对视觉特征和疾病特征进行映射
+            projected_visual = self.visual_projection(visual_part)  # [B, 30, 768]
+            projected_disease = self.disease_projection(disease_part)  # [B, 14, 768]
+            
+            # 拼接映射后的特征作为encoder_hidden_states
+            projected_features = torch.cat([projected_visual, projected_disease], dim=1)  # [B, 44, 768]
+        else:
+            # 非RAGT模式：输入仅包含视觉特征
+            # visual_features: [B, 30, 768]
+            projected_features = self.visual_projection(visual_features)  # [B, 30, 768]
         
-        # 分别对视觉特征和疾病特征进行映射
-        projected_visual = self.visual_projection(visual_part)  # [B, 30, 768]
-        projected_disease = self.disease_projection(disease_part)  # [B, 14, 768]
-        
-        # 拼接映射后的特征作为encoder_hidden_states
-        projected_visual = torch.cat([projected_visual, projected_disease], dim=1)  # [B, 44, 768]
-        
-        # 创建视觉特征的attention mask
+        # 创建特征的attention mask
         visual_attention_mask = torch.ones(
-            projected_visual.size()[:-1], dtype=torch.long, device=device
+            projected_features.size()[:-1], dtype=torch.long, device=device
         )
         
         # 处理历史文本
@@ -323,7 +334,7 @@ class BertCrossDecoder(nn.Module):
             outputs = self.text_decoder(
                 input_ids=full_input_ids,
                 attention_mask=full_attention_mask,
-                encoder_hidden_states=projected_visual,  # 视觉特征作为cross-attention的KV源
+                encoder_hidden_states=projected_features,  # 视觉特征作为cross-attention的KV源
                 encoder_attention_mask=visual_attention_mask,
                 labels=labels,  # 根据use_history设置不同的标签
                 output_hidden_states=True,
@@ -348,7 +359,7 @@ class BertCrossDecoder(nn.Module):
             params = {
                 "history_input_ids": history_input_ids,
                 "history_attention_mask": history_attention_mask,
-                "visual_features": projected_visual,
+                "visual_features": projected_features,
                 "visual_attention_mask": visual_attention_mask,
             }
             
