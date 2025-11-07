@@ -127,10 +127,10 @@ def prepare_batch_data(
     if history and "history" in batch:
         text_fields_to_process.append(("history", config.MAX_LEN_HISTORY))
     
-    # 获取tokenizer
+    # 获取tokenizer（根据配置可能是BERT或Qwen tokenizer）
     tokenizer = data_loader.dataset.tokenizer
     original_padding_side = tokenizer.padding_side
-    tokenizer.padding_side = 'right'  # BERT使用右侧padding
+    tokenizer.padding_side = 'right'  # 统一使用右侧padding
     
     # 批量处理文本
     for field, max_len in text_fields_to_process:

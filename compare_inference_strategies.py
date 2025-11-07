@@ -34,7 +34,7 @@ from configs import config
 from datasets import MIMIC, mimic_collate_fn, IUXRAY, iuxray_collate_fn
 from models.medical_report_generator import MedicalReportGenerator
 from models.bert_adapter import BertAdapter
-from models.qwen2vl_decoder import Qwen2VLAdapter
+from models.qwenvl_decoder import QwenVLAdapter
 from models.model_builder import build_detection_model, build_vit_model
 from metrics import compute_scores
 from tools.metrics_clinical import CheXbertMetrics
@@ -124,9 +124,9 @@ class InferenceComparator:
         
         # 3. 根据配置创建解码器
         if decoder_type == 'qwen2vl':
-            self.logger.info("初始化Qwen2.5-VL解码器...")
-            qwen_model_name = getattr(self.config, 'QWEN_MODEL_NAME', 'Qwen/Qwen2.5-VL-3B-Instruct')
-            decoder_model = Qwen2VLAdapter(
+            self.logger.info("初始化Qwen VL解码器...")
+            qwen_model_name = getattr(self.config, 'QWEN_MODEL_NAME', 'Qwen/Qwen3-VL-4B-Instruct')
+            decoder_model = QwenVLAdapter(
                 config=self.config,
                 tokenizer=self.tokenizer,
                 hidden_dim=768,

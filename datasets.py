@@ -276,7 +276,8 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         self.tokenizer = tokenizer
         self.bos_token_id = self.tokenizer.bos_token_id
-        self.eos_token_id = self.tokenizer.sep_token_id  # BERT使用[SEP]作为EOS
+        # 根据tokenizer类型选择EOS token (BERT使用[SEP], Qwen使用eos_token)
+        self.eos_token_id = getattr(self.tokenizer, 'sep_token_id', None) or self.tokenizer.eos_token_id
         self.pad_token_id = self.tokenizer.pad_token_id
 
         self.sources = ["image", "findings", "history", "bbox_targets"]
@@ -615,7 +616,8 @@ class IUXRAY(data.Dataset):
         
         self.tokenizer = tokenizer
         self.bos_token_id = self.tokenizer.bos_token_id
-        self.eos_token_id = self.tokenizer.sep_token_id  # BERT使用[SEP]作为EOS
+        # 根据tokenizer类型选择EOS token (BERT使用[SEP], Qwen使用eos_token)
+        self.eos_token_id = getattr(self.tokenizer, 'sep_token_id', None) or self.tokenizer.eos_token_id
         self.pad_token_id = self.tokenizer.pad_token_id
         
         self.images_dir = images_dir

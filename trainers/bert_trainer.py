@@ -3,7 +3,7 @@ import torch
 from trainers.base_trainer import BaseTrainer
 from models.medical_report_generator import MedicalReportGenerator
 from models.bert_adapter import BertAdapter
-from models.qwen2vl_decoder import Qwen2VLAdapter
+from models.qwenvl_decoder import QwenVLAdapter
 from models.model_builder import build_detection_model, build_vit_model, freeze_model_parameters
 from utils import train, test_llm, load
 from metrics import compute_scores
@@ -34,17 +34,17 @@ class BertFinetuneTrainer(BaseTrainer):
         )
         
         # 3. 根据配置创建解码器
-        if decoder_type == 'qwen2vl':
-            self.logger.info("初始化Qwen2.5-VL解码器...")
-            qwen_model_name = getattr(self.config, 'QWEN_MODEL_NAME', 'Qwen/Qwen2.5-VL-3B-Instruct')
-            decoder_model = Qwen2VLAdapter(
+        if decoder_type in ['qwen2vl', 'qwenvl']:
+            self.logger.info("初始化Qwen VL解码器...")
+            qwen_model_name = getattr(self.config, 'QWEN_MODEL_NAME', 'Qwen/Qwen3-VL-4B-Instruct')
+            decoder_model = QwenVLAdapter(
                 config=self.config,
                 tokenizer=self.tokenizer,
                 hidden_dim=768,
                 max_length=196,
                 qwen_model_name=qwen_model_name
             )
-            self.logger.info(f"✅ Qwen2.5-VL解码器初始化完成 (模型: {qwen_model_name})")
+            self.logger.info(f"✅ Qwen VL解码器初始化完成 (模型: {qwen_model_name})")
         else:
             # 默认使用BERT解码器
             self.logger.info("初始化BERT解码器...")

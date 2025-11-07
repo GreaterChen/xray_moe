@@ -42,12 +42,28 @@ def setup_tokenizer(config):
     Returns:
         tokenizer对象
     """
-    # BERT tokenizer
-    tokenizer = BertTokenizer.from_pretrained(
-        "bert-base-uncased", 
-        local_files_only=True
-    )
-    tokenizer.add_special_tokens({"bos_token": "[DEC]"})
+    decoder_type = getattr(config, 'DECODER_TYPE', 'bert').lower()
+    
+    if decoder_type == 'qwenvl':
+        # Qwen VL tokenizer
+        from transformers import AutoTokenizer
+        qwen_model_name = getattr(config, 'QWEN_MODEL_NAME', 'Qwen/Qwen3-VL-4B-Instruct')
+        tokenizer = AutoTokenizer.from_pretrained(
+            qwen_model_name,
+            trust_remote_code=True
+        )
+        # Qwen tokenizer已经有pad_token (<|endoftext|>)，不需要额外设置
+        print(f"✅ 使用Qwen tokenizer: {qwen_model_name}")
+        print(f"   pad_token: {tokenizer.pad_token} (ID: {tokenizer.pad_token_id})")
+        print(f"   eos_token: {tokenizer.eos_token} (ID: {tokenizer.eos_token_id})")
+    else:
+        # BERT tokenizer (默认)
+        tokenizer = BertTokenizer.from_pretrained(
+            "bert-base-uncased", 
+            local_files_only=True
+        )
+        tokenizer.add_special_tokens({"bos_token": "[DEC]"})
+        print("✅ 使用BERT tokenizer")
     
     return tokenizer
 
