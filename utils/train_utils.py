@@ -244,7 +244,18 @@ def _compute_loss(config, output):
     elif phase == "PRETRAIN_VIT":
         # 预训练阶段：根据配置选择对比损失类型
         loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
-        loss_key = 'region_itc_loss' if loss_type == 'region' else 'clip_itc_loss'
+        
+        # 根据损失类型选择对应的损失键
+        if loss_type == 'region':
+            loss_key = 'region_itc_loss'
+        elif loss_type == 'clip':
+            loss_key = 'clip_itc_loss'
+        elif loss_type == 'simple_region_clip':
+            loss_key = 'simple_region_clip_loss'
+        else:
+            train_utils_logger.warning(f"⚠️ 未知的对比损失类型: {loss_type}")
+            loss_key = 'region_itc_loss'
+        
         if loss_key in output and output[loss_key] is not None:
             contrastive_weight = getattr(config, 'REGION_ITC_WEIGHT', 1.0)
             loss = contrastive_weight * output[loss_key]
@@ -283,9 +294,12 @@ def _log_training_metrics(writer, config, loss, output, epoch, step, total_steps
         if loss_type == 'region':
             if "region_itc_loss" in output_dict and output_dict["region_itc_loss"] is not None:
                 vit_losses["Train/ViT/Region_ITC_Loss"] = output_dict["region_itc_loss"].item()
-        else:
+        elif loss_type == 'clip':
             if "clip_itc_loss" in output_dict and output_dict["clip_itc_loss"] is not None:
                 vit_losses["Train/ViT/CLIP_ITC_Loss"] = output_dict["clip_itc_loss"].item()
+        elif loss_type == 'simple_region_clip':
+            if "simple_region_clip_loss" in output_dict and output_dict["simple_region_clip_loss"] is not None:
+                vit_losses["Train/ViT/Simple_Region_CLIP_Loss"] = output_dict["simple_region_clip_loss"].item()
         for tag, value in vit_losses.items():
             writer.add_scalar(tag, value, global_step)
     

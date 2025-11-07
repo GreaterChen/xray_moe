@@ -16,8 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import logging
 
-# 导入Qwen2.5-VL模型类
-from transformers import Qwen3VLForConditionalGeneration as QwenVLModel
+
 from transformers import AutoTokenizer, AutoProcessor
 
 
@@ -71,8 +70,11 @@ class QwenVLDecoder(nn.Module):
         self.num_visual_tokens = num_visual_tokens
         self.num_disease_tokens = num_disease_tokens
         self.use_lora = use_lora and PEFT_AVAILABLE
+
+        # 导入Qwen3-VL模型类
+        from transformers import Qwen3VLForConditionalGeneration as QwenVLModel
         
-        # 加载Qwen2.5-VL-3B模型
+        # 加载Qwen3-VL模型
         qwen_decoder_logger.info(f"加载Qwen模型: {qwen_model_name}")
         self.qwen_model = QwenVLModel.from_pretrained(
             qwen_model_name,

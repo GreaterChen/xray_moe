@@ -534,7 +534,15 @@ def test_vit(
 
             # 收集所选损失
             loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
-            loss_key = 'region_itc_loss' if loss_type == 'region' else 'clip_itc_loss'
+            if loss_type == 'region':
+                loss_key = 'region_itc_loss'
+            elif loss_type == 'clip':
+                loss_key = 'clip_itc_loss'
+            elif loss_type == 'simple_region_clip':
+                loss_key = 'simple_region_clip_loss'
+            else:
+                loss_key = 'region_itc_loss'
+                
             if loss_key in outputs and outputs[loss_key] is not None:
                 loss_val = outputs[loss_key].item()
                 running_loss += loss_val
@@ -553,27 +561,33 @@ def test_vit(
         loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
         if loss_type == 'region':
             writer.add_scalar(f"{mode}/ViT/Region_ITC_Loss", avg_selected_loss, epoch)
-        else:
+        elif loss_type == 'clip':
             writer.add_scalar(f"{mode}/ViT/CLIP_ITC_Loss", avg_selected_loss, epoch)
+        elif loss_type == 'simple_region_clip':
+            writer.add_scalar(f"{mode}/ViT/Simple_Region_CLIP_Loss", avg_selected_loss, epoch)
 
     # 打印评估结果
     logger.info(f"ViT预训练阶段评估 (Epoch {epoch}):")
     loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
     if loss_type == 'region':
         logger.info(f"  平均Region-ITC损失: {avg_selected_loss:.4f}")
-    else:
+    elif loss_type == 'clip':
         logger.info(f"  平均CLIP-ITC损失: {avg_selected_loss:.4f}")
+    elif loss_type == 'simple_region_clip':
+        logger.info(f"  平均Simple-Region-CLIP损失: {avg_selected_loss:.4f}")
 
     # 构建返回结果
+    loss_type = getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region')
     result = {
         "overall_metrics": {
             # 使用选定损失作为主要指标(用于保存最佳模型)
             "ce_f1": avg_selected_loss,
         },
         "loss": avg_loss,
-        # 同时返回两个键，未计算的为0或缺省
-        "region_itc_loss": avg_selected_loss if getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region') == 'region' else None,
-        "clip_itc_loss": avg_selected_loss if getattr(config, 'CONTRASTIVE_LOSS_TYPE', 'region') == 'clip' else None,
+        # 返回各种损失类型，未计算的为None
+        "region_itc_loss": avg_selected_loss if loss_type == 'region' else None,
+        "clip_itc_loss": avg_selected_loss if loss_type == 'clip' else None,
+        "simple_region_clip_loss": avg_selected_loss if loss_type == 'simple_region_clip' else None,
     }
 
     return avg_loss, result

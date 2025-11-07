@@ -113,22 +113,34 @@ class MedicalReportGenerator(nn.Module):
                 loss_type = getattr(self.config, 'CONTRASTIVE_LOSS_TYPE', 'region')
                 region_itc_loss = None
                 clip_itc_loss = None
+                simple_region_clip_loss = None
+                
                 if loss_type == 'region':
+                    # 复杂的region对比学习（考虑NLP状态、同文本区域等）
                     if getattr(self.config, 'ENABLE_REGION_ITC', True):
                         region_itc_loss = self.compute_region_itc_loss(
                             visual_features, region_detected, anatomical_embeddings_batch,
                             anatomical_nlp_status_batch, same_text_region_groups_batch, image_ids
                         )
                 elif loss_type == 'clip':
+                    # 原生CLIP（image-report层面）
                     clip_itc_loss = self.compute_clip_itc_loss(
                         visual_features=visual_features,
                         findings=findings
+                    )
+                elif loss_type == 'simple_region_clip':
+                    # 简化的region CLIP（patch-sentence层面，简单配对定义）
+                    simple_region_clip_loss = self.compute_simple_region_clip_loss(
+                        visual_features=visual_features,
+                        region_detected=region_detected,
+                        anatomical_embeddings_batch=anatomical_embeddings_batch
                     )
 
                 # 返回结果
                 results = {
                     "region_itc_loss": region_itc_loss,
                     "clip_itc_loss": clip_itc_loss,
+                    "simple_region_clip_loss": simple_region_clip_loss,
                     "visual_features": visual_features,
                 }
                 return results
@@ -140,6 +152,8 @@ class MedicalReportGenerator(nn.Module):
                     loss_type = getattr(self.config, 'CONTRASTIVE_LOSS_TYPE', 'region')
                     region_itc_loss = None
                     clip_itc_loss = None
+                    simple_region_clip_loss = None
+                    
                     if loss_type == 'region':
                         if getattr(self.config, 'ENABLE_REGION_ITC', True):
                             region_itc_loss = self.compute_region_itc_loss(
@@ -151,11 +165,18 @@ class MedicalReportGenerator(nn.Module):
                             visual_features=visual_features,
                             findings=findings
                         )
+                    elif loss_type == 'simple_region_clip':
+                        simple_region_clip_loss = self.compute_simple_region_clip_loss(
+                            visual_features=visual_features,
+                            region_detected=region_detected,
+                            anatomical_embeddings_batch=anatomical_embeddings_batch
+                        )
 
                 # 返回简化的结果
                 return {
                     "region_itc_loss": region_itc_loss,
                     "clip_itc_loss": clip_itc_loss,
+                    "simple_region_clip_loss": simple_region_clip_loss,
                     "visual_features": visual_features,
                 }
 
@@ -591,6 +612,103 @@ class MedicalReportGenerator(nn.Module):
         loss = torch.stack(losses).mean()
         
         return loss
+
+    def compute_simple_region_clip_loss(self, visual_features, region_detected, anatomical_embeddings_batch):
+        """
+        计算简化的区域级CLIP对比损失（patch-sentence层面，简单配对定义）
+        
+        正负样本定义（最简单的CLIP方式）：
+        - 正样本：配对的region-sentence（同一样本的同一解剖区域）
+        - 负样本：batch内所有其他region-sentence对
+        
+        这是region层面的对比学习，但使用最简单的CLIP配对规则，不考虑NLP状态、同文本区域等复杂情况。
+        
+        参数:
+            visual_features: ViT输出的视觉特征 [B, 1+num_regions, hidden_size]
+            region_detected: 区域检测掩码 [B, num_regions]
+            anatomical_embeddings_batch: 批次中每个样本的解剖区域嵌入
+            
+        返回:
+            标量对比损失 (对称 InfoNCE, region->text 与 text->region 平均)
+        """
+        if not anatomical_embeddings_batch:
+            return None
+            
+        batch_size = visual_features.size(0)
+        device = visual_features.device
+        
+        try:
+            # 收集所有有效的region-sentence配对
+            valid_pairs = []  # [(batch_idx, region_idx), ...]
+            text_embeds_list = []
+            
+            detected_masks = region_detected > 0.5  # [B, 29]
+            
+            for batch_idx in range(batch_size):
+                anatomical_embeddings = anatomical_embeddings_batch[batch_idx]
+                if not anatomical_embeddings:
+                    continue
+                
+                batch_mask = detected_masks[batch_idx]  # [29]
+                
+                for region_idx, text_embed in anatomical_embeddings.items():
+                    if batch_mask[region_idx - 1]:  # 0-based索引
+                        valid_pairs.append((batch_idx, region_idx - 1))
+                        text_embeds_list.append(torch.as_tensor(text_embed, dtype=torch.float32))
+            
+            # 检查样本数量
+            N = len(valid_pairs)
+            if N < 2:
+                return None
+            
+            # 提取region视觉特征
+            batch_indices = torch.tensor([pair[0] for pair in valid_pairs], device=device)
+            region_indices = torch.tensor([pair[1] for pair in valid_pairs], device=device)
+            
+            region_visual = visual_features[:, 1:30, :]  # [B, 29, hidden_size]
+            visual_feats = region_visual[batch_indices, region_indices]  # [N, hidden_size]
+            
+            # 文本特征
+            text_embeds = torch.stack(text_embeds_list).to(device, non_blocking=True)  # [N, hidden_size]
+            
+            # 数值稳定性检查
+            if torch.isnan(visual_feats).any() or torch.isinf(visual_feats).any():
+                visual_feats = torch.nan_to_num(visual_feats, nan=0.0, posinf=1.0, neginf=-1.0)
+            if torch.isnan(text_embeds).any() or torch.isinf(text_embeds).any():
+                text_embeds = torch.nan_to_num(text_embeds, nan=0.0, posinf=1.0, neginf=-1.0)
+            
+            # 投影 + 归一化
+            eps = 1e-8
+            mapped_visual = F.normalize(self.region_visual_projection(visual_feats), p=2, dim=1, eps=eps)
+            mapped_text = F.normalize(self.region_text_projection(text_embeds), p=2, dim=1, eps=eps)
+            
+            # 计算相似度矩阵
+            temperature = getattr(self.config, 'REGION_ITC_TEMPERATURE', 0.07)
+            logits_region_to_text = torch.matmul(mapped_visual, mapped_text.t()) / temperature  # [N, N]
+            logits_text_to_region = torch.matmul(mapped_text, mapped_visual.t()) / temperature  # [N, N]
+            
+            # 数值稳定
+            logits_region_to_text = torch.clamp(logits_region_to_text, min=-10.0, max=10.0)
+            logits_text_to_region = torch.clamp(logits_text_to_region, min=-10.0, max=10.0)
+            
+            # 构建目标：对角线为正样本（配对的region-sentence）
+            # 即：第i个region应该匹配第i个sentence（因为它们来自同一个样本的同一个区域）
+            targets = torch.arange(N, device=device)
+            
+            # 对称的InfoNCE损失
+            loss_r2t = F.cross_entropy(logits_region_to_text, targets)
+            loss_t2r = F.cross_entropy(logits_text_to_region, targets)
+            loss = 0.5 * (loss_r2t + loss_t2r)
+            
+            if torch.isnan(loss) or torch.isinf(loss):
+                model_logger.warning("⚠️  简化区域CLIP损失计算出现NaN/Inf，返回零损失")
+                return torch.tensor(0.0, device=device, requires_grad=True)
+            
+            return loss
+                
+        except Exception as e:
+            model_logger.warning(f"⚠️  简化区域CLIP损失计算出错: {e}")
+            return None
 
     def compute_clip_itc_loss(self, visual_features, findings):
         """

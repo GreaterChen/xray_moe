@@ -112,7 +112,7 @@ class BaseTrainer(ABC):
         self.logger.info(f"TensorBoard日志目录: {tensorboard_log_dir}")
         
         # 保存配置信息到结果目录
-        self._save_config_to_dir(tensorboard_log_dir)
+        self._save_config_to_dir(self.config.CHECKPOINT_PATH_TO)
     
     def _save_config_to_dir(self, output_dir):
         """

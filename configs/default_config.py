@@ -34,7 +34,10 @@ class DefaultConfig:
     TOKENIZER_MAX_LEN = 30523
     NUM_DISEASES = 14  # 疾病类别数量
     TEMPERATURE = 0.07  # 对比学习温度参数
-    # 对比损失类型: "region" 使用区域级别ITC; "clip" 使用batch内CLIP形式
+    # 对比损失类型（PRETRAIN_VIT阶段）:
+    #   "region": 复杂的区域级别对比学习（考虑NLP状态、同文本区域等）
+    #   "clip": 原生CLIP对比学习（image-report层面，配对为正，batch内其他为负）
+    #   "simple_region_clip": 简化的区域级CLIP（patch-sentence层面，简单配对定义）
     CONTRASTIVE_LOSS_TYPE = "region"
     
     # 解码器设置
