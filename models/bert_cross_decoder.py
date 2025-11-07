@@ -127,16 +127,24 @@ class BertCrossDecoder(nn.Module):
         # 调整词表大小
         self.text_decoder.resize_token_embeddings(len(self.tokenizer))
         
-        # 添加特征映射层，确保视觉特征和文本特征维度匹配
+        # 添加特征映射层，确保视觉特征和疾病特征维度匹配
+        # visual_features: [B, 30, 768] (1个CLS + 29个区域)
+        # disease_features: [B, 14, 768]
         self.visual_projection = nn.Linear(hidden_dim, hidden_dim)
-        self.text_projection = nn.Linear(hidden_dim, hidden_dim)
+        self.disease_projection = nn.Linear(hidden_dim, hidden_dim)
+        
+        # 设置视觉和疾病特征的token数量
+        self.num_visual_tokens = 30
+        self.num_disease_tokens = 14
 
     def forward(self, visual_features, history, target_text=None, mode="train", generation_params=None, use_history=False):
         """
         前向传播
         
         Args:
-            visual_features: 视觉特征 [batch_size, num_visual_tokens, hidden_dim]
+            visual_features: 组合特征 [batch_size, num_total_tokens, hidden_dim]
+                           包含视觉特征(前30个token)和疾病特征(后14个token)的拼接
+                           总共44个token
             history: 历史文本编码 {input_ids, attention_mask} 或原始文本列表
             target_text: 目标生成文本编码 {input_ids, attention_mask} 或原始文本列表
             mode: 训练模式 "train" 或 "generate"
@@ -150,13 +158,22 @@ class BertCrossDecoder(nn.Module):
         batch_size = visual_features.shape[0]
         device = visual_features.device
         
-        # 将视觉特征映射到decoder隐藏维度
-        # projected_visual = self.visual_projection(visual_features)
-        projected_visual = visual_features
+        # 将输入特征拆分为视觉特征和疾病特征两部分
+        # visual_features输入实际是combined_features: [B, 44, 768]
+        # 前30个token是视觉特征，后14个token是疾病特征
+        visual_part = visual_features[:, :self.num_visual_tokens, :]  # [B, 30, 768]
+        disease_part = visual_features[:, self.num_visual_tokens:self.num_visual_tokens+self.num_disease_tokens, :]  # [B, 14, 768]
+        
+        # 分别对视觉特征和疾病特征进行映射
+        projected_visual = self.visual_projection(visual_part)  # [B, 30, 768]
+        projected_disease = self.disease_projection(disease_part)  # [B, 14, 768]
+        
+        # 拼接映射后的特征作为encoder_hidden_states
+        projected_visual = torch.cat([projected_visual, projected_disease], dim=1)  # [B, 44, 768]
         
         # 创建视觉特征的attention mask
         visual_attention_mask = torch.ones(
-            visual_features.size()[:-1], dtype=torch.long, device=device
+            projected_visual.size()[:-1], dtype=torch.long, device=device
         )
         
         # 处理历史文本
@@ -169,65 +186,47 @@ class BertCrossDecoder(nn.Module):
                 device=device
             )
             history_attention_mask = torch.ones_like(history_input_ids)
-        elif hasattr(history, 'input_ids'):
-            # 处理BatchEncoding或类字典类型
-            history_input_ids = history.input_ids.to(device)
-            history_attention_mask = history.attention_mask.to(device)
-        elif isinstance(history, dict) and 'input_ids' in history:
-            history_input_ids = history['input_ids'].to(device)
-            history_attention_mask = history['attention_mask'].to(device)
-        elif isinstance(history, list):
-            # 编码文本列表
-            history_encoding = self.tokenizer(
-                history,
-                max_length=100,
-                padding='max_length',
-                truncation=True,
-                return_tensors='pt',
-            ).to(device)
-            history_input_ids = history_encoding.input_ids
-            history_attention_mask = history_encoding.attention_mask
         else:
-            raise ValueError(f"历史文本必须是BatchEncoding、编码字典或文本列表，当前类型: {type(history)}")
-            
+            history_input_ids = history.input_ids.to(device)
+            # 如果history_attention_mask全为0，则设置为全1
+            history_attention_mask = history.attention_mask.to(device)
+            if history_attention_mask.sum() == 0:
+                history_attention_mask = torch.ones_like(history_input_ids)
+
         if mode == "train" and target_text is not None:
             # 处理目标文本
-            if hasattr(target_text, 'input_ids'):
-                # 处理BatchEncoding或类字典类型
-                target_input_ids = target_text.input_ids.to(device)
-                target_attention_mask = target_text.attention_mask.to(device)
-            elif isinstance(target_text, dict) and 'input_ids' in target_text:
-                target_input_ids = target_text['input_ids'].to(device)
-                target_attention_mask = target_text['attention_mask'].to(device)
-            elif isinstance(target_text, list):
-                # 编码目标文本
-                target_encoding = self.tokenizer(
-                    target_text,
-                    max_length=196,
-                    padding='max_length',
-                    truncation=True,
-                    return_tensors='pt',
-                ).to(device)
-                target_input_ids = target_encoding.input_ids
-                target_attention_mask = target_encoding.attention_mask
-            else:
-                raise ValueError(f"目标文本必须是BatchEncoding、编码字典或文本列表，当前类型: {type(target_text)}")
+            target_input_ids = target_text.input_ids.to(device)
+            target_attention_mask = target_text.attention_mask.to(device)
             
             if use_history:
+                # ============================================
+                # 使用历史文本作为prompt的自回归训练
+                # ============================================
+                # 目标：实现"预测下一个token"的自回归范式
+                # 
+                # 训练格式（history保持完整句子，target做自回归shift）：
+                #   输入 (input_ids): [CLS] h1 ... h_n [SEP] | [CLS] t1 ... t_m
+                #   标签 (labels):    [-100]........[-100] | t1 ... t_m [SEP]
+                # 
+                # 其中：
+                #   - history: [CLS] h1 ... h_n [SEP] [PAD]... (原始tokenization)
+                #   - target:  [CLS] t1 ... t_m [SEP] [PAD]... (原始tokenization)
+                #   - 拼接时保留history的[SEP]，仅对target做去CLS+右移
+                #   - 自回归shift：输入的第i个位置预测第i+1个位置的token
+                # ============================================
+                
                 # 获取每个样本的实际history长度（去除padding）
-                # history_attention_mask中1的位置表示实际内容
                 actual_history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
                 
-                # 获取每个样本的实际target长度（去除padding和CLS）
+                # 获取每个样本的实际target长度（去除padding）
                 # target格式: [CLS] t1 t2 ... tm [SEP] [PAD] ...
-                # 我们需要: t1 t2 ... tm [SEP]（跳过CLS）
-                actual_target_lengths = target_attention_mask.sum(dim=1) - 1  # -1是因为要跳过CLS
-                
-                # 为了批处理，我们需要统一序列长度
-                # 方案：移除history的padding，保留SEP，然后拼接target（跳过CLS）
+                actual_target_lengths = target_attention_mask.sum(dim=1)  # [batch_size]
                 
                 batch_size = history_input_ids.shape[0]
-                max_total_len = actual_history_lengths.max() + actual_target_lengths.max()
+                # 计算最大总长度：history（保留末尾SEP）+ target（去掉CLS与最后一个token用于shift）
+                max_history_len = actual_history_lengths.max().item()
+                max_target_input_len = torch.clamp(actual_target_lengths - 1, min=0).max().item()
+                max_total_len = max_history_len + max_target_input_len
                 
                 # 初始化拼接后的张量
                 full_input_ids = torch.full(
@@ -253,32 +252,72 @@ class BertCrossDecoder(nn.Module):
                     h_len = actual_history_lengths[i].item()
                     t_len = actual_target_lengths[i].item()
                     
-                    # 拼接: [CLS] h1 h2 ... hn [SEP] | t1 t2 ... tm [SEP]
-                    # History部分（保留SEP）
+                    # History部分：保留完整history（含末尾[SEP]）
                     full_input_ids[i, :h_len] = history_input_ids[i, :h_len]
                     full_attention_mask[i, :h_len] = 1
                     # labels的history部分全部设为-100（不计算损失）
                     
-                    # Target部分（跳过CLS，从第2个token开始）
-                    full_input_ids[i, h_len:h_len+t_len] = target_input_ids[i, 1:1+t_len]
-                    full_attention_mask[i, h_len:h_len+t_len] = 1
-                    # labels的target部分设为对应的token id
-                    labels[i, h_len:h_len+t_len] = target_input_ids[i, 1:1+t_len]
+                    # Target部分：自回归shift（去掉target结尾token，保留开头[CLS]以驱动首个预测）
+                    target_input_len = max(t_len - 1, 0)
+                    if target_input_len <= 0:
+                        continue
+                    
+                    # 输入部分：[CLS] t1 ... t_m（不含最终[SEP]）
+                    start = h_len
+                    end = h_len + target_input_len
+                    full_input_ids[i, start:end] = target_input_ids[i, :target_input_len]
+                    full_attention_mask[i, start:end] = 1
+                    
+                    # 标签部分：t1 ... t_m [SEP]
+                    labels[i, start:end] = target_input_ids[i, 1:1+target_input_len]
             
             else:
-                # 不使用历史作为prompt，仅使用视觉特征
-                # 直接使用目标文本作为输入和标签
-                full_input_ids = target_input_ids
-                full_attention_mask = target_attention_mask
+                # ============================================
+                # 不使用历史文本，仅使用视觉特征的自回归训练
+                # ============================================
+                # 训练格式：
+                #   输入 (input_ids): [CLS] t1 t2 ... t_m
+                #   标签 (labels):    t1 t2 ... t_m [SEP]
+                # 
+                # 自回归shift：输入的第i个位置预测第i+1个位置的token
+                # ============================================
                 
-                # 创建标签：目标文本的所有token都计算损失
-                labels = target_input_ids.clone()
-                # 设置[PAD]位置的标签为-100，使模型不计算这些位置的损失
-                pad_positions = (full_input_ids == self.tokenizer.pad_token_id)
-                labels[pad_positions] = -100
+                # 获取每个样本的实际长度
+                actual_lengths = target_attention_mask.sum(dim=1)  # [batch_size]
+                max_input_len = torch.clamp(actual_lengths - 1, min=0).max().item()
                 
-                # 将[CLS]标记的标签设为-100（不计算损失）
-                labels[:, 0] = -100
+                # 初始化输入和标签（去掉最后一个token用于shift）
+                full_input_ids = torch.full(
+                    (batch_size, max_input_len), 
+                    self.tokenizer.pad_token_id, 
+                    dtype=torch.long, 
+                    device=device
+                )
+                full_attention_mask = torch.zeros(
+                    (batch_size, max_input_len), 
+                    dtype=torch.long, 
+                    device=device
+                )
+                labels = torch.full(
+                    (batch_size, max_input_len), 
+                    -100, 
+                    dtype=torch.long, 
+                    device=device
+                )
+                
+                # 逐样本处理自回归shift
+                for i in range(batch_size):
+                    actual_len = actual_lengths[i].item()
+                    if actual_len <= 1:
+                        continue
+                    
+                    input_len = actual_len - 1
+                    # 输入：[CLS] t1 t2 ... t_m（去掉最后一个token，通常是[SEP]）
+                    full_input_ids[i, :input_len] = target_input_ids[i, :input_len]
+                    full_attention_mask[i, :input_len] = 1
+                    
+                    # 标签：t1 t2 ... t_m [SEP]（向前shift一位）
+                    labels[i, :input_len] = target_input_ids[i, 1:1+input_len]
             
             # 模型前向传播
             outputs = self.text_decoder(
@@ -397,16 +436,12 @@ class BertCrossDecoder(nn.Module):
         # 生成文本
         outputs = self.text_decoder.generate(**generation_kwargs)
 
-        # 解码生成的文本，去除历史文本部分，只保留新生成的内容
+        # 解码生成的文本，去除统一的输入前缀（与传入generate的input_ids长度一致），只保留新生成的内容
         generated_texts = []
-        for i, tokens in enumerate(outputs):
-            # 获取当前批次样本的实际历史长度
-            # 由于我们已经移除了padding，直接使用实际长度
-            actual_history_len = actual_history_lengths[i].item()
-            
-            # 只解码历史之后生成的内容
-            generated_part = tokens[actual_history_len:]
-            
+        input_len = input_ids.shape[1]
+        for _, tokens in enumerate(outputs):
+            # 只解码输入前缀之后生成的内容
+            generated_part = tokens[input_len:]
             # 解码生成的部分
             text = self.tokenizer.decode(generated_part, skip_special_tokens=True)
             generated_texts.append(text)

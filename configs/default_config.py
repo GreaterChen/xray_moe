@@ -29,7 +29,7 @@ class DefaultConfig:
     MODEL_NAME = "MedicalReportGenerator"
     IMAGE_SIZE = 224
     DATASET_NAME = "MIMIC"  # 可选值: "MIMIC", "IUXRAY"
-    MAX_LEN_FINDINGS = 100
+    MAX_LEN_FINDINGS = 150
     MAX_LEN_HISTORY = 50
     TOKENIZER_MAX_LEN = 30523
     NUM_DISEASES = 14  # 疾病类别数量
