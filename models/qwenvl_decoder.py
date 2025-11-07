@@ -19,13 +19,16 @@ import logging
 # 导入Qwen2.5-VL模型类
 from transformers import Qwen3VLForConditionalGeneration as QwenVLModel
 from transformers import AutoTokenizer, AutoProcessor
-QWEN_VERSION = "2.5"
 
 
 # 导入LoRA相关
 try:
     from peft import LoraConfig, get_peft_model, TaskType
     PEFT_AVAILABLE = True
+    qwen_decoder_logger = logging.getLogger("train_logger")
+    if qwen_decoder_logger.hasHandlers():
+        qwen_decoder_logger.warning("启用LoRA功能")
+
 except ImportError:
     PEFT_AVAILABLE = False
     qwen_decoder_logger = logging.getLogger("train_logger")
@@ -105,7 +108,7 @@ class QwenVLDecoder(nn.Module):
         qwen_decoder_logger.info("从Qwen模型加载tokenizer")
         
         # 获取Qwen模型的隐藏维度
-        self.qwen_hidden_dim = 2560
+        self.qwen_hidden_dim = 2048 if "2B" in qwen_model_name else 2560
         qwen_decoder_logger.info(f"Qwen模型隐藏维度: {self.qwen_hidden_dim}")
         
         # 视觉特征线性映射层：将视觉特征映射到Qwen的隐藏维度
@@ -213,7 +216,7 @@ class QwenVLDecoder(nn.Module):
             inputs_embeds: 嵌入向量 [B, total_len, qwen_hidden_dim]
             attention_mask: 注意力掩码 [B, total_len]
             
-        拼接顺序: [特征tokens with special tokens] + [history tokens] + [target tokens]
+        拼接顺序: [特征tokens with special tokens] + [history tokens] + [instruction prompt] + [target tokens]
         """
         batch_size = combined_features.size(0)
         num_feature_tokens = combined_features.size(1)
@@ -227,6 +230,11 @@ class QwenVLDecoder(nn.Module):
         # 获取embedding函数
         embed_tokens = self.qwen_model.get_input_embeddings()
         
+        # 确保 combined_features 的 dtype 与 Qwen 模型一致（bfloat16）
+        # 获取模型的 dtype
+        model_dtype = next(self.qwen_model.parameters()).dtype
+        combined_features = combined_features.to(dtype=model_dtype)
+        
         # 初始化
         inputs_embeds = combined_features
         attention_mask = feature_attention_mask
@@ -236,6 +244,22 @@ class QwenVLDecoder(nn.Module):
             history_embeds = embed_tokens(history_input_ids)
             inputs_embeds = torch.cat([inputs_embeds, history_embeds], dim=1)
             attention_mask = torch.cat([attention_mask, history_attention_mask], dim=1)
+            
+            # 在history后添加指令性prompt
+            instruction_prompt = "\n\n根据上述信息，生成诊断报告：\n"
+            prompt_tokens = self.tokenizer(
+                instruction_prompt,
+                return_tensors="pt",
+                add_special_tokens=False
+            ).input_ids.to(device)
+            
+            # 将prompt复制到batch中的每个样本
+            prompt_tokens = prompt_tokens.repeat(batch_size, 1)
+            prompt_embeds = embed_tokens(prompt_tokens)
+            prompt_mask = torch.ones(batch_size, prompt_tokens.size(1), dtype=torch.long, device=device)
+            
+            inputs_embeds = torch.cat([inputs_embeds, prompt_embeds], dim=1)
+            attention_mask = torch.cat([attention_mask, prompt_mask], dim=1)
         
         # 添加target text embedding
         if text_input_ids is not None and text_attention_mask is not None:
@@ -333,17 +357,30 @@ class QwenVLDecoder(nn.Module):
                 history_labels = torch.full(
                     (batch_size, num_history_tokens), -100, dtype=torch.long, device=device
                 )
+                
+                # 为instruction prompt创建标签（设为-100，不计算损失）
+                instruction_prompt = "\n\n根据上述信息，生成诊断报告：\n"
+                prompt_tokens = self.tokenizer(
+                    instruction_prompt,
+                    return_tensors="pt",
+                    add_special_tokens=False
+                ).input_ids.to(device)
+                num_prompt_tokens = prompt_tokens.size(1)
+                prompt_labels = torch.full(
+                    (batch_size, num_prompt_tokens), -100, dtype=torch.long, device=device
+                )
             else:
                 history_labels = None
+                prompt_labels = None
             
             # Target文本标签
             text_labels = target_input_ids.clone()
             # 将padding位置设为-100
             text_labels[target_attention_mask == 0] = -100
             
-            # 拼接标签: [feature_labels] + [history_labels] + [text_labels]
+            # 拼接标签: [feature_labels] + [history_labels] + [prompt_labels] + [text_labels]
             if history_labels is not None:
-                labels = torch.cat([feature_labels, history_labels, text_labels], dim=1)
+                labels = torch.cat([feature_labels, history_labels, prompt_labels, text_labels], dim=1)
             else:
                 labels = torch.cat([feature_labels, text_labels], dim=1)
             

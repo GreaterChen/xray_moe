@@ -14,7 +14,16 @@ def compute_scores(gts, res):
     """
 
     # post-processing, make format consistent
+    # 统一大小写与基本格式，避免大小写对BLEU等指标的干扰
+    def _normalize_text(s: str) -> str:
+        return s.lower()
+
+    # 规范化gts与res文本（均转为小写）
+    for k in gts.keys():
+        gts[k] = [_normalize_text(x) for x in gts[k]]
     for k in res.keys():
+        res[k][0] = _normalize_text(res[k][0])
+        # 额外的简单标点处理，保持原有行为
         res[k][0] = (res[k][0] + " ").replace(". ", " . ").replace(" - ", "-")
 
     # Set up scorers

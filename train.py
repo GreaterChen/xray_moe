@@ -10,6 +10,9 @@ import torch.utils.data as data
 from transformers import BertTokenizer
 from transformers import logging as hf_logging
 
+# 设置 tokenizers 环境变量，避免多进程时的警告
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # 屏蔽警告
 hf_logging.set_verbosity_error()
 warnings.filterwarnings("ignore", message="A decoder-only architecture is being used")

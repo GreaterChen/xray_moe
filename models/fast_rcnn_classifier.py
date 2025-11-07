@@ -300,16 +300,18 @@ class EnhancedFastRCNN(nn.Module):
             roi_batch_indices = torch.cat(roi_batch_indices)
 
             # 批量提取ROI特征
-            with torch.no_grad(), torch.amp.autocast("cuda"):
-                roi_features = torchvision.ops.roi_align(
-                    feature_maps,
-                    torch.cat([roi_batch_indices.unsqueeze(1), all_rois], dim=1),
-                    output_size=(7, 7),
-                    spatial_scale=1.0,
-                    sampling_ratio=2,
-                )
-
-                # 展平特征并批量投影
+            with torch.amp.autocast("cuda"):
+                # ROI align 从冻结的特征图中提取，不需要梯度
+                with torch.no_grad():
+                    roi_features = torchvision.ops.roi_align(
+                        feature_maps,
+                        torch.cat([roi_batch_indices.unsqueeze(1), all_rois], dim=1),
+                        output_size=(7, 7),
+                        spatial_scale=1.0,
+                        sampling_ratio=2,
+                    )
+                
+                # 展平特征并批量投影 - feature_projector 需要训练，所以这里要保留梯度
                 flat_features = roi_features.reshape(roi_features.size(0), -1)
                 projected_features = self.feature_projector(flat_features)
 
