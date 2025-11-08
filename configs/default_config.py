@@ -43,6 +43,7 @@ class DefaultConfig:
     # 解码器设置
     DECODER_TYPE = "bert"  # 可选值: "bert" 或 "qwen2vl"
     QWEN_MODEL_NAME = "Qwen/Qwen2.5-VL-3B-Instruct"  # Qwen2.5-VL-3B模型名称或路径
+    USE_HISTORY = False  # 是否在解码器中使用历史文本作为prompt
     
     # LoRA微调设置（仅用于Qwen2.5-VL decoder）
     USE_LORA = True  # 是否使用LoRA微调（推荐开启以节省显存）

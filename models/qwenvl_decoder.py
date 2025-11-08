@@ -70,6 +70,9 @@ class QwenVLDecoder(nn.Module):
         self.num_visual_tokens = num_visual_tokens
         self.num_disease_tokens = num_disease_tokens
         self.use_lora = use_lora and PEFT_AVAILABLE
+        
+        # 从配置中获取是否使用历史文本
+        self.use_history = getattr(config, 'USE_HISTORY', False)
 
         # 导入Qwen3-VL模型类
         from transformers import Qwen3VLForConditionalGeneration as QwenVLModel
@@ -278,7 +281,6 @@ class QwenVLDecoder(nn.Module):
         target_text=None,
         mode="train",
         generation_params=None,
-        use_history=False,
         disease_features=None,  # 新增：疾病特征
     ):
         """
@@ -290,12 +292,14 @@ class QwenVLDecoder(nn.Module):
             target_text: 目标文本编码 {input_ids, attention_mask}
             mode: "train" 或 "generate"
             generation_params: 生成参数字典
-            use_history: 是否使用历史文本
             disease_features: 疾病特征 [B, num_disease_tokens, disease_dim]
             
         Returns:
             训练模式: (logits, hidden_states, decoded_texts, loss)
             生成模式: 生成的文本列表
+            
+        Note:
+            是否使用历史文本由config中的USE_HISTORY参数控制
         """
         batch_size = visual_features.size(0)
         device = visual_features.device
@@ -308,7 +312,7 @@ class QwenVLDecoder(nn.Module):
             # 处理history文本
             history_input_ids = None
             history_attention_mask = None
-            if use_history and history is not None:
+            if self.use_history and history is not None:
                 if hasattr(history, 'input_ids'):
                     history_input_ids = history.input_ids.to(device)
                     history_attention_mask = history.attention_mask.to(device)
@@ -558,7 +562,6 @@ class QwenVLAdapter(nn.Module):
         findings,
         attention_mask=None,
         labels=None,
-        use_history=False,
     ):
         """
         医学报告生成模型的前向传播接口（与BertAdapter兼容）
@@ -570,9 +573,9 @@ class QwenVLAdapter(nn.Module):
             findings: 报告文本编码
             attention_mask: 注意力掩码
             labels: 标签
-            use_history: 是否使用历史文本
             
         Note:
+            是否使用历史文本由config中的USE_HISTORY参数控制
             特殊token (<|vision_start|>, <|vision_end|>, <|disease_start|>, <|disease_end|>)
             会在decoder内部自动添加，调用者不需要手动添加
         """
@@ -592,7 +595,6 @@ class QwenVLAdapter(nn.Module):
             history=history_encoding,
             target_text=findings,
             mode="train",
-            use_history=use_history,
             disease_features=disease_only,
         )
         
@@ -626,7 +628,6 @@ class QwenVLAdapter(nn.Module):
         top_p=None,
         repetition_penalty=None,
         num_beams=None,
-        use_history=False,
     ):
         """
         医学报告生成模型的生成接口（与BertAdapter兼容）
@@ -640,9 +641,9 @@ class QwenVLAdapter(nn.Module):
             top_p: nucleus sampling参数
             repetition_penalty: 重复惩罚
             num_beams: beam search宽度
-            use_history: 是否使用历史文本
             
         Note:
+            是否使用历史文本由config中的USE_HISTORY参数控制
             特殊token会在decoder内部自动添加
         """
         # 从config读取默认参数
@@ -683,7 +684,6 @@ class QwenVLAdapter(nn.Module):
                 "repetition_penalty": repetition_penalty,
                 "num_beams": num_beams,
             },
-            use_history=use_history,
             disease_features=disease_only,
         )
 

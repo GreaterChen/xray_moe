@@ -71,7 +71,6 @@ class BertAdapter(nn.Module):
         findings,
         attention_mask=None,
         labels=None,
-        use_history=False,  # 添加use_history参数
     ):
         """
         医学报告生成模型的前向传播接口
@@ -82,15 +81,19 @@ class BertAdapter(nn.Module):
             findings: 报告文本编码 {input_ids, attention_mask} 或 BatchEncoding
             attention_mask: 注意力掩码 [batch_size, seq_len]
             labels: 标签 [batch_size, seq_len]
-            use_history: 是否使用历史文本作为prompt，如为False则仅使用视觉特征
+            
+        Note:
+            是否使用历史文本由config中的USE_HISTORY参数控制
         """
+        # 从decoder的config获取use_history设置
+        use_history = self.decoder.use_history
+        
         # 准备历史文本输入
         prepared_history = self._prepare_history_input(history_encoding) if use_history else None
         
-        # 如果use_history=True但是prepared_history为None，则强制设置use_history=False
+        # 如果use_history=True但是prepared_history为None，记录警告
         if use_history and prepared_history is None:
-            bert_adapter_logger.warning("警告: use_history=True但history为None，自动设置use_history=False")
-            use_history = False
+            bert_adapter_logger.warning("警告: config.USE_HISTORY=True但history为None，将使用默认起始token")
         
         # 调用BERT交叉解码器
         logits, hidden_states, decoded_texts, loss = self.decoder(
@@ -98,7 +101,6 @@ class BertAdapter(nn.Module):
             history=prepared_history,
             target_text=findings,
             mode="train",
-            use_history=use_history  # 传递use_history参数
         )
         
         # 构造支持字典操作和属性访问的输出对象
@@ -132,7 +134,6 @@ class BertAdapter(nn.Module):
         top_p=None,
         repetition_penalty=None,
         num_beams=None,
-        use_history=False,  # 添加use_history参数
     ):
         """
         医学报告生成模型的生成接口（对齐PromptMRG24配置）
@@ -146,8 +147,13 @@ class BertAdapter(nn.Module):
             top_p: 概率截断阈值（None则使用config配置）
             repetition_penalty: 重复惩罚系数（None则使用config配置）
             num_beams: beam search的宽度（None则使用config配置）
-            use_history: 是否使用历史文本
+            
+        Note:
+            是否使用历史文本由config中的USE_HISTORY参数控制
         """
+        # 从decoder的config获取use_history设置
+        use_history = self.decoder.use_history
+        
         # 从config读取默认生成参数（对齐PromptMRG24）
         if max_new_tokens is None:
             max_new_tokens = getattr(self.config, 'GEN_MAX_NEW_TOKENS', 150)
@@ -173,11 +179,9 @@ class BertAdapter(nn.Module):
             if not hasattr(prepared_history, 'input_ids') and not (isinstance(prepared_history, dict) and 'input_ids' in prepared_history):
                 bert_adapter_logger.warning(f"警告: 历史文本编码格式不正确，类型: {type(prepared_history)}")
                 prepared_history = None
-                use_history = False
         elif use_history and prepared_history is None:
-            # 如果use_history=True但是history为None，则强制设置use_history=False
-            bert_adapter_logger.warning("警告: use_history=True但history为None，自动设置use_history=False")
-            use_history = False
+            # 如果use_history=True但是history为None，记录警告
+            bert_adapter_logger.warning("警告: config.USE_HISTORY=True但history为None，将使用默认起始token")
             
         # 调用BERT交叉解码器生成文本，传递所有生成参数
         return self.decoder(
@@ -193,5 +197,4 @@ class BertAdapter(nn.Module):
                 "repetition_penalty": repetition_penalty,
                 "num_beams": num_beams
             },
-            use_history=use_history  # 传递use_history参数
         ) 

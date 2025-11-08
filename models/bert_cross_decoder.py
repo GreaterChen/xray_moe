@@ -97,6 +97,9 @@ class BertCrossDecoder(nn.Module):
         # 从配置中获取是否启用RAGT
         self.enable_ragt = getattr(config, 'ENABLE_RGAT', True)
         
+        # 从配置中获取是否使用历史文本
+        self.use_history = getattr(config, 'USE_HISTORY', False)
+        
         # 使用传入的tokenizer或创建一个新的
         if tokenizer:
             self.tokenizer = tokenizer
@@ -143,7 +146,7 @@ class BertCrossDecoder(nn.Module):
         self.num_visual_tokens = 30
         self.num_disease_tokens = 14
 
-    def forward(self, visual_features, history, target_text=None, mode="train", generation_params=None, use_history=False):
+    def forward(self, visual_features, history, target_text=None, mode="train", generation_params=None):
         """
         前向传播
         
@@ -155,11 +158,13 @@ class BertCrossDecoder(nn.Module):
             target_text: 目标生成文本编码 {input_ids, attention_mask} 或原始文本列表
             mode: 训练模式 "train" 或 "generate"
             generation_params: 生成参数字典，用于mode="generate"
-            use_history: 是否使用历史文本作为prompt，如为False则仅使用视觉特征
             
         Returns:
             如果mode="train"：返回 logits, hidden_states, decoded_texts, loss_lm
             如果mode="generate"：返回生成的文本列表
+            
+        Note:
+            是否使用历史文本作为prompt由config中的USE_HISTORY参数控制
         """
         batch_size = visual_features.shape[0]
         device = visual_features.device
@@ -188,7 +193,7 @@ class BertCrossDecoder(nn.Module):
         )
         
         # 处理历史文本
-        if not use_history or history is None:
+        if not self.use_history or history is None:
             # 如果不使用历史文本或历史文本为空，创建一个只包含起始token的序列
             history_input_ids = torch.full(
                 (batch_size, 1),
@@ -209,7 +214,7 @@ class BertCrossDecoder(nn.Module):
             target_input_ids = target_text.input_ids.to(device)
             target_attention_mask = target_text.attention_mask.to(device)
             
-            if use_history:
+            if self.use_history:
                 # ============================================
                 # 使用历史文本作为prompt的自回归训练
                 # ============================================
@@ -336,7 +341,7 @@ class BertCrossDecoder(nn.Module):
                 attention_mask=full_attention_mask,
                 encoder_hidden_states=projected_features,  # 视觉特征作为cross-attention的KV源
                 encoder_attention_mask=visual_attention_mask,
-                labels=labels,  # 根据use_history设置不同的标签
+                labels=labels,  # 根据self.use_history设置不同的标签
                 output_hidden_states=True,
                 return_dict=True,
             )

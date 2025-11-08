@@ -220,7 +220,6 @@ class MedicalReportGenerator(nn.Module):
                         visual_features=combined_features,
                         history_encoding=history,
                         findings=findings,
-                        use_history=True
                     )
                     if disease_preds is not None:
                         outputs["disease_preds"] = disease_preds
@@ -230,7 +229,6 @@ class MedicalReportGenerator(nn.Module):
                     generated_texts = self.findings_decoder.generate(
                         visual_features=combined_features,
                         history_encoding=history,
-                        use_history=True
                     )
                     results = {"findings_text": generated_texts}
                     if disease_preds is not None:
@@ -284,7 +282,6 @@ class MedicalReportGenerator(nn.Module):
                     visual_features=combined_features,
                     history_encoding=history,
                     findings=findings,
-                    use_history=True
                 )
                 
                 # 添加RGAT损失到输出
@@ -300,7 +297,6 @@ class MedicalReportGenerator(nn.Module):
                     generated_texts = self.findings_decoder.generate(
                         visual_features=combined_features,
                         history_encoding=history,
-                        use_history=True
                     )
                 
                 results = {"findings_text": generated_texts}
