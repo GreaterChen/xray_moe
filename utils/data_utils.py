@@ -141,7 +141,7 @@ def prepare_batch_data(
             padding="max_length",
             truncation=True,
             return_tensors="pt",
-        ).to(device, non_blocking=True)
+        ).to(device)
         
         source[field] = encoded
         target[field] = encoded

@@ -69,6 +69,15 @@ class MedicalReportGenerator(nn.Module):
         elif config.PHASE == "FINETUNE_BERT" and not enable_rgat:
             model_logger.info("ℹ️  RGAT模块已禁用，decoder将直接使用视觉特征")
 
+    def train(self, mode: bool = True):
+        """
+        自定义train，以便在整体训练模式下保持检测器骨干处于eval，
+        仅开放feature projector等可训练分支。
+        """
+        super().train(mode)
+        if self.object_detector is not None and hasattr(self.object_detector, 'detector'):
+            self.object_detector.detector.eval()
+        return self
 
 
     def forward(
@@ -95,15 +104,14 @@ class MedicalReportGenerator(nn.Module):
             return self.object_detector(image, bbox_targets)
         elif phase == "PRETRAIN_VIT":
             # 第一步：使用目标检测器提取区域特征
-            with torch.no_grad():  # 冻结目标检测器
-                detection_outputs = self.object_detector(
-                    image,
-                    bbox_targets,
-                    current_epoch=current_epoch,
-                    total_epochs=total_epochs,
-                )
-                region_features = detection_outputs["region_features"]
-                region_detected = detection_outputs["region_detected"]
+            detection_outputs = self.object_detector(
+                image,
+                bbox_targets,
+                current_epoch=current_epoch,
+                total_epochs=total_epochs,
+            )
+            region_features = detection_outputs["region_features"]
+            region_detected = detection_outputs["region_detected"]
 
             # 第二步：通过标准ViT处理区域特征
             visual_features = self.image_encoder(region_features)  # [B, 1+num_regions, hidden_size]
@@ -236,16 +244,15 @@ class MedicalReportGenerator(nn.Module):
                     return results
 
         elif phase == "FINETUNE_BERT":
-            # 第一步：使用目标检测器提取区域特征（冻结）
-            with torch.no_grad():
-                detection_outputs = self.object_detector(
-                    image,
-                    bbox_targets,
-                    current_epoch=current_epoch,
-                    total_epochs=total_epochs,
-                )
-                region_features = detection_outputs["region_features"]
-                region_detected = detection_outputs["region_detected"]
+            # 第一步：使用目标检测器提取区域特征
+            detection_outputs = self.object_detector(
+                image,
+                bbox_targets,
+                current_epoch=current_epoch,
+                total_epochs=total_epochs,
+            )
+            region_features = detection_outputs["region_features"]
+            region_detected = detection_outputs["region_detected"]
 
             # 第二步：通过标准ViT处理区域特征（可训练）
             visual_features = self.image_encoder(region_features)  # [B, 1+num_regions, hidden_size]
@@ -755,4 +762,3 @@ class MedicalReportGenerator(nn.Module):
         if torch.isnan(loss) or torch.isinf(loss):
             return torch.tensor(0.0, device=device, requires_grad=True)
         return loss
-

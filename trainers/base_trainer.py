@@ -152,7 +152,7 @@ class BaseTrainer(ABC):
     def setup_mixed_precision(self):
         """设置混合精度训练"""
         if self.config.USE_MIXED_PRECISION:
-            self.scaler = torch.amp.GradScaler("cuda")
+            self.scaler = torch.cuda.amp.GradScaler()
             self.logger.info("混合精度训练已启用")
         else:
             self.scaler = None

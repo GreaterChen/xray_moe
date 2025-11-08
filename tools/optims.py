@@ -117,8 +117,7 @@ class LinearWarmupCosineLRScheduler:
         self.last_step = cur_step
         
         # assuming the warmup iters less than one epoch
-        # if cur_epoch == 0:
-        if cur_epoch == 1:
+        if cur_epoch == 0:
             warmup_lr_schedule(
                 step=cur_step,
                 optimizer=self.optimizer,
