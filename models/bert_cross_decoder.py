@@ -195,19 +195,43 @@ class BertCrossDecoder(nn.Module):
         # 处理历史文本
         if not self.use_history or history is None:
             # 如果不使用历史文本或历史文本为空，创建一个只包含起始token的序列
+            # 注意：使用cls_token_id而不是bos_token_id，以保持与训练时target的[CLS]开头一致
+            # 训练时target被tokenizer编码为：[CLS] t1 t2 ... tm [SEP]
+            # 所以生成时也应该从[CLS]开始，确保训练和生成的起始token一致
             history_input_ids = torch.full(
                 (batch_size, 1),
-                self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else self.tokenizer.cls_token_id,
+                self.tokenizer.cls_token_id,  # 强制使用[CLS]，与训练时一致
                 dtype=torch.long,
                 device=device
             )
             history_attention_mask = torch.ones_like(history_input_ids)
         else:
             history_input_ids = history.input_ids.to(device)
-            # 如果history_attention_mask全为0，则设置为全1
             history_attention_mask = history.attention_mask.to(device)
-            if history_attention_mask.sum() == 0:
-                history_attention_mask = torch.ones_like(history_input_ids)
+            
+            # 检查并修复每个样本的attention_mask
+            # 如果某个样本的attention_mask全为0（说明history为空），设置一个有效的起始token
+            empty_mask = (history_attention_mask.sum(dim=1) == 0)  # [batch_size]
+            if empty_mask.any():
+                # 对于空history的样本，创建一个只包含起始token的序列
+                # 使用cls_token_id以保持与训练时的一致性（训练时target以[CLS]开头）
+                start_token = self.tokenizer.cls_token_id
+                history_input_ids[empty_mask, 0] = start_token
+                history_attention_mask[empty_mask, 0] = 1
+                # 将其他位置设为padding
+                if history_input_ids.size(1) > 1:
+                    history_input_ids[empty_mask, 1:] = self.tokenizer.pad_token_id
+                    history_attention_mask[empty_mask, 1:] = 0
+            
+            # 移除多余的padding，与推理时保持一致
+            # 获取每个样本的实际history长度
+            actual_history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
+            max_history_len = actual_history_lengths.max().item()
+            
+            # 截断到实际最大长度，移除无用的padding
+            if max_history_len < history_input_ids.size(1):
+                history_input_ids = history_input_ids[:, :max_history_len]
+                history_attention_mask = history_attention_mask[:, :max_history_len]
 
         if mode == "train" and target_text is not None:
             # 处理目标文本
@@ -407,14 +431,48 @@ class BertCrossDecoder(nn.Module):
         Returns:
             generated_texts: 生成的文本列表
         """
-        # 移除history的padding，与训练时保持一致
-        # 获取每个样本的实际history长度
-        actual_history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
-        max_history_len = actual_history_lengths.max().item()
+        # 【关键修复4】计算每个样本的真实history长度，避免padding导致的裁剪错误
+        # 问题：如果用统一的max_history_len裁剪，实际长度较短的样本会保留尾部padding
+        #       在解码时用统一的input_len裁剪会导致生成内容被错误截断
+        # 解决：为每个样本构造去除padding的input，并记录各自的实际前缀长度
+        batch_size = history_input_ids.shape[0]
+        device = history_input_ids.device
         
-        # 截断到实际最大长度，移除无用的padding
-        input_ids = history_input_ids[:, :max_history_len]
-        attention_mask = history_attention_mask[:, :max_history_len]
+        # 计算每个样本的真实history长度
+        history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
+        max_history_len = history_lengths.max().item()
+        
+        # 根据真实长度构造新的batch（去除尾部padding）
+        trimmed_input_ids = torch.full(
+            (batch_size, max_history_len), 
+            self.tokenizer.pad_token_id, 
+            dtype=torch.long, 
+            device=device
+        )
+        trimmed_attention_mask = torch.zeros(
+            (batch_size, max_history_len), 
+            dtype=torch.long, 
+            device=device
+        )
+        
+        for idx, length in enumerate(history_lengths.tolist()):
+            if length > 0:
+                trimmed_input_ids[idx, :length] = history_input_ids[idx, :length]
+                trimmed_attention_mask[idx, :length] = 1
+        
+        input_ids = trimmed_input_ids
+        attention_mask = trimmed_attention_mask
+        
+        # 【关键修复0】当使用历史文本作为prompt时，需要在history后加入[CLS]作为生成起点
+        # 以匹配训练时的格式：输入 = history + [CLS] + 部分target
+        # 这样模型在生成时的输入格式与训练时完全一致
+        if self.use_history:
+            cls_token = torch.full((batch_size, 1), self.tokenizer.cls_token_id, dtype=torch.long, device=device)
+            cls_attention = torch.ones((batch_size, 1), dtype=torch.long, device=device)
+            input_ids = torch.cat([input_ids, cls_token], dim=1)
+            attention_mask = torch.cat([attention_mask, cls_attention], dim=1)
+            # 更新前缀长度（加上[CLS]）
+            history_lengths = history_lengths + 1
         
         # 准备交叉注意力参数
         model_kwargs = {
@@ -452,12 +510,14 @@ class BertCrossDecoder(nn.Module):
         # 生成文本
         outputs = self.text_decoder.generate(**generation_kwargs)
 
-        # 解码生成的文本，去除统一的输入前缀（与传入generate的input_ids长度一致），只保留新生成的内容
+        # 【关键修复4】按每个样本的实际前缀长度裁剪，避免错误截断生成内容
+        # 问题：不同样本的实际history长度不同，但之前用统一的input_len裁剪
+        #       导致实际长度较短的样本，其生成内容被错误截断甚至变为空
+        # 解决：按各自的history_lengths裁剪前缀
         generated_texts = []
-        input_len = input_ids.shape[1]
-        for _, tokens in enumerate(outputs):
-            # 只解码输入前缀之后生成的内容
-            generated_part = tokens[input_len:]
+        for idx, (tokens, prefix_len) in enumerate(zip(outputs, history_lengths.tolist())):
+            # 只保留前缀之后生成的新内容
+            generated_part = tokens[prefix_len:]
             # 解码生成的部分
             text = self.tokenizer.decode(generated_part, skip_special_tokens=True)
             generated_texts.append(text)

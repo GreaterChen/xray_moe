@@ -330,6 +330,28 @@ class QwenVLDecoder(nn.Module):
                     ).to(device)
                     history_input_ids = history_encoding.input_ids
                     history_attention_mask = history_encoding.attention_mask
+                
+                # 处理空history和移除padding（与bert_cross_decoder保持一致）
+                if history_input_ids is not None and history_attention_mask is not None:
+                    # 检查并修复每个样本的attention_mask
+                    empty_mask = (history_attention_mask.sum(dim=1) == 0)  # [batch_size]
+                    if empty_mask.any():
+                        # 对于空history的样本，设置为None（不使用history）
+                        # Qwen处理方式：如果history为空，就不添加history部分
+                        pass  # 保留原始的history_input_ids和mask，后续会通过attention_mask过滤
+                    
+                    # 移除多余的padding，与推理时保持一致
+                    actual_history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
+                    max_history_len = actual_history_lengths.max().item()
+                    
+                    # 如果所有样本的history都为空，则不使用history
+                    if max_history_len == 0:
+                        history_input_ids = None
+                        history_attention_mask = None
+                    elif max_history_len < history_input_ids.size(1):
+                        # 截断到实际最大长度，移除无用的padding
+                        history_input_ids = history_input_ids[:, :max_history_len]
+                        history_attention_mask = history_attention_mask[:, :max_history_len]
             
             # 处理目标文本
             if hasattr(target_text, 'input_ids'):
@@ -428,6 +450,21 @@ class QwenVLDecoder(nn.Module):
                     ).to(device)
                     history_input_ids = history_encoding.input_ids
                     history_attention_mask = history_encoding.attention_mask
+                
+                # 处理空history和移除padding（与训练模式保持一致）
+                if history_input_ids is not None and history_attention_mask is not None:
+                    # 移除多余的padding
+                    actual_history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
+                    max_history_len = actual_history_lengths.max().item()
+                    
+                    # 如果所有样本的history都为空，则不使用history
+                    if max_history_len == 0:
+                        history_input_ids = None
+                        history_attention_mask = None
+                    elif max_history_len < history_input_ids.size(1):
+                        # 截断到实际最大长度，移除无用的padding
+                        history_input_ids = history_input_ids[:, :max_history_len]
+                        history_attention_mask = history_attention_mask[:, :max_history_len]
             
             params = generation_params or {}
             return self.generate(
