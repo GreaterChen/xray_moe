@@ -195,44 +195,31 @@ class BertCrossDecoder(nn.Module):
         
         # 处理历史文本
         if not self.use_history or history is None:
-            # 如果不使用历史文本或历史文本为空，创建一个只包含起始token的序列
-            # 注意：使用cls_token_id而不是bos_token_id，以保持与训练时target的[CLS]开头一致
-            # 训练时target被tokenizer编码为：[CLS] t1 t2 ... tm [SEP]
-            # 所以生成时也应该从[CLS]开始，确保训练和生成的起始token一致
-            history_input_ids = torch.full(
-                (batch_size, 1),
-                self.tokenizer.cls_token_id,  # 强制使用[CLS]，与训练时一致
-                dtype=torch.long,
-                device=device
-            )
-            history_attention_mask = torch.ones_like(history_input_ids)
+            # 如果不使用历史文本或历史文本为空，创建一个空的序列
+            history_input_ids = torch.empty((batch_size, 0), dtype=torch.long, device=device)
+            history_attention_mask = torch.empty((batch_size, 0), dtype=torch.long, device=device)
         else:
             history_input_ids = history.input_ids.to(device)
             history_attention_mask = history.attention_mask.to(device)
             
-            # 检查并修复每个样本的attention_mask
-            # 如果某个样本的attention_mask全为0（说明history为空），设置一个有效的起始token
-            empty_mask = (history_attention_mask.sum(dim=1) == 0)  # [batch_size]
-            if empty_mask.any():
-                # 对于空history的样本，创建一个只包含起始token的序列
-                # 使用cls_token_id以保持与训练时的一致性（训练时target以[CLS]开头）
-                start_token = self.tokenizer.cls_token_id
-                history_input_ids[empty_mask, 0] = start_token
-                history_attention_mask[empty_mask, 0] = 1
-                # 将其他位置设为padding
-                if history_input_ids.size(1) > 1:
-                    history_input_ids[empty_mask, 1:] = self.tokenizer.pad_token_id
-                    history_attention_mask[empty_mask, 1:] = 0
+            # 移除所有样本末尾的padding，以获得实际的history序列
+            # 这一步对于保证后续拼接的正确性至关重要
+            unpadded_inputs = []
+            unpadded_masks = []
+            actual_lengths = history_attention_mask.sum(dim=1)
+            for i in range(batch_size):
+                length = actual_lengths[i].item()
+                if length > 0:
+                    unpadded_inputs.append(history_input_ids[i, :length])
+                    unpadded_masks.append(history_attention_mask[i, :length])
+                else:
+                    # 如果history为空，则添加空张量
+                    unpadded_inputs.append(torch.empty((0,), dtype=torch.long, device=device))
+                    unpadded_masks.append(torch.empty((0,), dtype=torch.long, device=device))
             
-            # 移除多余的padding，与推理时保持一致
-            # 获取每个样本的实际history长度
-            actual_history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
-            max_history_len = actual_history_lengths.max().item()
-            
-            # 截断到实际最大长度，移除无用的padding
-            if max_history_len < history_input_ids.size(1):
-                history_input_ids = history_input_ids[:, :max_history_len]
-                history_attention_mask = history_attention_mask[:, :max_history_len]
+            # 使用pad_sequence重新对齐，确保批处理中的张量形状一致
+            history_input_ids = pad_sequence(unpadded_inputs, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+            history_attention_mask = pad_sequence(unpadded_masks, batch_first=True, padding_value=0)
 
         if mode == "train" and target_text is not None:
             # 处理目标文本
@@ -435,37 +422,36 @@ class BertCrossDecoder(nn.Module):
         batch_size = history_input_ids.shape[0]
         device = history_input_ids.device
         
-        # 【关键修复4】按样本长度裁剪history，避免在history与[CLS]之间残留padding
-        history_lengths = history_attention_mask.sum(dim=1)  # [batch_size]
+        # 准备解码器的输入
+        # 如果使用history，则在history后拼接[CLS]作为prompt
+        # 如果不使用history，则直接用[CLS]作为起始prompt
         per_sample_inputs = []
-        per_sample_masks = []
         prefix_lengths = []
-        
-        for idx, length in enumerate(history_lengths.tolist()):
-            if length > 0:
-                seq = history_input_ids[idx, :length]
-                mask = history_attention_mask[idx, :length]
-            else:
-                # 回退：如果history长度为0，使用一个[CLS]占位
-                seq = history_input_ids.new_full((1,), self.tokenizer.cls_token_id)
-                mask = history_attention_mask.new_ones((1,), dtype=torch.long)
-            
-            if self.use_history:
+
+        if self.use_history:
+            history_lengths = history_attention_mask.sum(dim=1)
+            for i in range(batch_size):
+                length = history_lengths[i].item()
+                # 提取实际的history（如果存在）
+                seq = history_input_ids[i, :length]
+                
+                # 在history后追加[CLS] token
                 cls_token = history_input_ids.new_full((1,), self.tokenizer.cls_token_id)
-                cls_mask = history_attention_mask.new_ones((1,), dtype=torch.long)
-                seq = torch.cat([seq, cls_token], dim=0)
-                mask = torch.cat([mask, cls_mask], dim=0)
-            
-            per_sample_inputs.append(seq)
-            per_sample_masks.append(mask)
-            prefix_lengths.append(seq.size(0))
-        
+                prompt = torch.cat([seq, cls_token], dim=0)
+                
+                per_sample_inputs.append(prompt)
+                prefix_lengths.append(prompt.size(0))
+        else:
+            # 不使用history时，每个样本的prompt都只是一个[CLS]
+            for i in range(batch_size):
+                prompt = history_input_ids.new_full((1,), self.tokenizer.cls_token_id)
+                per_sample_inputs.append(prompt)
+                prefix_lengths.append(prompt.size(0))
+
         input_ids = pad_sequence(
             per_sample_inputs, batch_first=True, padding_value=self.tokenizer.pad_token_id
         )
-        attention_mask = pad_sequence(
-            per_sample_masks, batch_first=True, padding_value=0
-        )
+        attention_mask = (input_ids != self.tokenizer.pad_token_id).long()
         prefix_lengths = torch.tensor(prefix_lengths, device=device)
         
         # 准备交叉注意力参数
