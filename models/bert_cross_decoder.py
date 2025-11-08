@@ -95,8 +95,8 @@ class BertCrossDecoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.max_length = max_length
         
-        # 从配置中获取是否启用RAGT
-        self.enable_ragt = getattr(config, 'ENABLE_RGAT', True)
+        # 从配置中获取是否启用RGAT
+        self.enable_rgat = getattr(config, 'ENABLE_RGAT', True)
         
         # 从配置中获取是否使用历史文本
         self.use_history = getattr(config, 'USE_HISTORY', False)
@@ -108,7 +108,6 @@ class BertCrossDecoder(nn.Module):
             self.tokenizer.padding_side = 'right'
         else:
             self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", local_files_only=True)
-            self.tokenizer.add_special_tokens({"bos_token": "[DEC]"})
             # 设置padding_side为right，与BERT预训练一致
             self.tokenizer.padding_side = 'right'
         
@@ -139,8 +138,8 @@ class BertCrossDecoder(nn.Module):
         # disease_features: [B, 14, 768] (仅在ENABLE_RGAT=True时使用)
         self.visual_projection = nn.Linear(hidden_dim, hidden_dim)
         
-        # 只有在启用RAGT时才创建疾病特征映射层
-        if self.enable_ragt:
+        # 只有在启用RGAT时才创建疾病特征映射层
+        if self.enable_rgat:
             self.disease_projection = nn.Linear(hidden_dim, hidden_dim)
         
         # 设置视觉和疾病特征的token数量
@@ -170,9 +169,9 @@ class BertCrossDecoder(nn.Module):
         batch_size = visual_features.shape[0]
         device = visual_features.device
         
-        # 根据是否启用RAGT来处理输入特征
-        if self.enable_ragt:
-            # RAGT模式：输入包含视觉特征和疾病特征
+        # 根据是否启用RGAT来处理输入特征
+        if self.enable_rgat:
+            # RGAT模式：输入包含视觉特征和疾病特征
             # visual_features: [B, 44, 768]，前30个token是视觉特征，后14个token是疾病特征
             visual_part = visual_features[:, :self.num_visual_tokens, :]  # [B, 30, 768]
             disease_part = visual_features[:, self.num_visual_tokens:self.num_visual_tokens+self.num_disease_tokens, :]  # [B, 14, 768]
@@ -184,7 +183,7 @@ class BertCrossDecoder(nn.Module):
             # 拼接映射后的特征作为encoder_hidden_states
             projected_features = torch.cat([projected_visual, projected_disease], dim=1)  # [B, 44, 768]
         else:
-            # 非RAGT模式：输入仅包含视觉特征
+            # 非RGAT模式：输入仅包含视觉特征
             # visual_features: [B, 30, 768]
             projected_features = self.visual_projection(visual_features)  # [B, 30, 768]
         
