@@ -129,8 +129,6 @@ def prepare_batch_data(
     
     # 获取tokenizer（根据配置可能是BERT或Qwen tokenizer）
     tokenizer = data_loader.dataset.tokenizer
-    original_padding_side = tokenizer.padding_side
-    tokenizer.padding_side = 'right'  # 统一使用右侧padding
     
     # 批量处理文本
     for field, max_len in text_fields_to_process:
@@ -145,9 +143,6 @@ def prepare_batch_data(
         
         source[field] = encoded
         target[field] = encoded
-    
-    # 恢复tokenizer设置
-    tokenizer.padding_side = original_padding_side
     
     # 处理标签
     if label and "label" in batch:

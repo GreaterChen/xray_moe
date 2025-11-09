@@ -537,14 +537,12 @@ class InferenceComparator:
                 "num_beams": 3,
                 "do_sample": False,
                 "max_new_tokens": getattr(self.config, 'GEN_MAX_NEW_TOKENS', 150),
-                "min_length": getattr(self.config, 'GEN_MIN_LENGTH', 100),
                 "repetition_penalty": getattr(self.config, 'GEN_REPETITION_PENALTY', 1.0)
             },
             "beam_search_5": {
                 "num_beams": 5,
                 "do_sample": False,
                 "max_new_tokens": getattr(self.config, 'GEN_MAX_NEW_TOKENS', 150),
-                "min_length": getattr(self.config, 'GEN_MIN_LENGTH', 100),
                 "repetition_penalty": getattr(self.config, 'GEN_REPETITION_PENALTY', 1.0)
             },
             "sampling_temp0.7": {
@@ -553,7 +551,6 @@ class InferenceComparator:
                 "temperature": 0.7,
                 "top_p": 0.9,
                 "max_new_tokens": getattr(self.config, 'GEN_MAX_NEW_TOKENS', 150),
-                "min_length": getattr(self.config, 'GEN_MIN_LENGTH', 100),
                 "repetition_penalty": getattr(self.config, 'GEN_REPETITION_PENALTY', 1.0)
             },
             "sampling_temp1.0": {
@@ -562,14 +559,12 @@ class InferenceComparator:
                 "temperature": 1.0,
                 "top_p": 0.9,
                 "max_new_tokens": getattr(self.config, 'GEN_MAX_NEW_TOKENS', 150),
-                "min_length": getattr(self.config, 'GEN_MIN_LENGTH', 100),
                 "repetition_penalty": getattr(self.config, 'GEN_REPETITION_PENALTY', 1.0)
             },
             "greedy": {
                 "num_beams": 1,
                 "do_sample": False,
                 "max_new_tokens": getattr(self.config, 'GEN_MAX_NEW_TOKENS', 150),
-                "min_length": getattr(self.config, 'GEN_MIN_LENGTH', 100),
                 "repetition_penalty": getattr(self.config, 'GEN_REPETITION_PENALTY', 1.0)
             }
         }

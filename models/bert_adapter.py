@@ -168,9 +168,6 @@ class BertAdapter(nn.Module):
         if num_beams is None:
             num_beams = getattr(self.config, 'GEN_NUM_BEAMS', 3)
         
-        # 获取最小长度配置
-        min_length = getattr(self.config, 'GEN_MIN_LENGTH', 100)
-        
         # 准备历史文本输入
         prepared_history = self._prepare_history_input(history_encoding) if use_history else None
         
@@ -190,7 +187,6 @@ class BertAdapter(nn.Module):
             mode="generate", 
             generation_params={
                 "max_new_tokens": max_new_tokens,
-                "min_length": min_length,  # 添加最小长度
                 "temperature": temperature,
                 "do_sample": do_sample,
                 "top_p": top_p,

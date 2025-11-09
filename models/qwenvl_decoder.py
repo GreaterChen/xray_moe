@@ -481,7 +481,6 @@ class QwenVLDecoder(nn.Module):
         history_attention_mask=None,
         num_beams=3,
         max_new_tokens=150,
-        min_length=100,
         do_sample=True,
         top_p=0.9,
         temperature=0.7,
@@ -496,7 +495,6 @@ class QwenVLDecoder(nn.Module):
             history_attention_mask: 历史文本的attention mask [B, history_len]（可选）
             num_beams: beam search宽度
             max_new_tokens: 最大生成token数
-            min_length: 最小生成长度
             do_sample: 是否采样
             top_p: nucleus sampling参数
             temperature: 温度参数
@@ -520,7 +518,6 @@ class QwenVLDecoder(nn.Module):
             "inputs_embeds": inputs_embeds,
             "attention_mask": attention_mask,
             "max_new_tokens": max_new_tokens,
-            "min_length": min_length,
             "num_beams": num_beams,
             "do_sample": do_sample if num_beams == 1 else False,  # beam search时不能采样
             "temperature": temperature if do_sample else 1.0,
@@ -697,8 +694,6 @@ class QwenVLAdapter(nn.Module):
         if num_beams is None:
             num_beams = getattr(self.config, 'GEN_NUM_BEAMS', 3)
         
-        min_length = getattr(self.config, 'GEN_MIN_LENGTH', 100)
-        
         # 分离视觉特征和疾病特征
         if visual_features.size(1) > 30:
             visual_only = visual_features[:, :30, :]
@@ -714,7 +709,6 @@ class QwenVLAdapter(nn.Module):
             mode="generate",
             generation_params={
                 "max_new_tokens": max_new_tokens,
-                "min_length": min_length,
                 "temperature": temperature,
                 "do_sample": do_sample,
                 "top_p": top_p,
