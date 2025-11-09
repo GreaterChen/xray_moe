@@ -29,15 +29,27 @@ except Exception:
     _HAS_TOKENIZER = False
 
 
-def build_target_text(findings: str, impression: str) -> str:
-    """对齐 MIMIC.__getitem__ 在 generation_target = "all" 时的拼接逻辑。"""
+def build_target_text(findings: str, impression: str, generation_target: str = "all") -> str:
+    """对齐 MIMIC.__getitem__ 的拼接逻辑。
+    
+    Args:
+        findings: findings文本
+        impression: impression文本
+        generation_target: "findings" 或 "all"
+    """
     findings = findings or ""
     impression = impression or ""
-    if findings and impression:
-        return f"{findings} {impression}".strip()
-    if impression:
-        return impression.strip()
-    return findings.strip()
+    
+    if generation_target == "all":
+        # 拼接 findings 和 impression
+        if findings and impression:
+            return f"{findings} {impression}".strip()
+        if impression:
+            return impression.strip()
+        return findings.strip()
+    else:
+        # 仅使用 findings
+        return findings.strip()
 
 
 def compute_basic_stats(values: List[int]) -> Dict[str, float]:
@@ -72,14 +84,18 @@ def main():
     parser = argparse.ArgumentParser(description="Analyze text length distribution for generation_target=all")
     parser.add_argument("--save_csv", action="store_true", help="是否将统计结果保存到CSV")
     parser.add_argument("--ann_path", type=str, default=None, help="覆盖默认注释路径")
+    parser.add_argument("--generation_target", type=str, default="all", choices=["findings", "all"], help="生成目标类型")
     args = parser.parse_args()
 
     ann_path = args.ann_path or config.ANN_DIR
     split_csv_path = getattr(config, "SPLIT_CSV_PATH", None)
+    generation_target = args.generation_target
 
     if not os.path.exists(ann_path):
         print(f"[Error] 注释文件不存在: {ann_path}")
         sys.exit(1)
+
+    print(f"[Info] 使用 generation_target={generation_target}")
 
     # 加载共享注释，不加载图像
     MIMIC.load_shared_data(
@@ -88,6 +104,7 @@ def main():
         mode=getattr(config, "MODE", "TRAIN"),
         binary_mode=True,
         split_csv_path=split_csv_path,
+        generation_target=generation_target,
     )
 
     annotation = MIMIC._shared_data.get("annotation", {})
@@ -115,7 +132,7 @@ def main():
             # MIMIC.load_shared_data 已对 findings、impression 做过 _clean_report
             findings = item.get("findings", "")
             impression = item.get("impression", "")
-            target_text = build_target_text(findings, impression)
+            target_text = build_target_text(findings, impression, generation_target)
 
             # 基础长度
             char_lens.append(len(target_text))

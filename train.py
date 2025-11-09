@@ -134,7 +134,8 @@ def create_datasets(config, tokenizer):
             ann_dir=config.ANN_DIR,
             mode=config.MODE,
             binary_mode=True,
-            split_csv_path=config.SPLIT_CSV_PATH
+            split_csv_path=config.SPLIT_CSV_PATH,
+            generation_target=config.GENERATION_TARGET
         )
         
         # 创建训练数据集

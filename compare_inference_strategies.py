@@ -238,7 +238,8 @@ class InferenceComparator:
                 ann_dir=self.config.ANN_DIR,
                 mode="INFER",
                 binary_mode=True,
-                split_csv_path=self.config.SPLIT_CSV_PATH
+                split_csv_path=self.config.SPLIT_CSV_PATH,
+                generation_target=self.config.GENERATION_TARGET
             )
             
             test_data = MIMIC(
