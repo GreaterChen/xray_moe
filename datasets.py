@@ -327,7 +327,9 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         findings = info["findings"]
         impression = info.get("impression", "")
         history = info["history"]
-        disease_label = np.array(info["labels"], dtype=np.float16)
+        disease_label = np.array(info["labels"], dtype=np.float32)
+        disease_label = np.nan_to_num(disease_label, nan=0.0)
+        disease_label = np.where(disease_label > 0, 1.0, 0.0).astype(np.float16)
         image_id = info['image_id']
         
         # 根据配置决定生成目标

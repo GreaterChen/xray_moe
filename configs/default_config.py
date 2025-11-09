@@ -6,7 +6,7 @@
 
 class DefaultConfig:
     # Debug模式
-    DEBUG = False
+    DEBUG = True
     
     # 设备设置
     USE_CUDA = False  # 是否使用GPU，设置为False则强制使用CPU
