@@ -37,6 +37,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         "anatomical_embeddings": None,  # 新增：存储解剖区域嵌入数据
         "anatomical_nlp_status": None,  # 新增：存储解剖区域NLP状态（normal/abnormal）
         "same_text_region_groups": None,  # 新增：存储同文本区域分组
+        "generation_target": None,  # 新增：记录数据加载时使用的 generation_target
     }
 
     # 使用统一的解剖区域顺序定义（从configs.constants导入）
@@ -133,10 +134,16 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             cls._shared_data["same_text_region_groups"] = {}
 
     @classmethod
-    def load_shared_data(cls, directory, ann_dir, mode, binary_mode=True, split_csv_path=None):
+    def load_shared_data(cls, directory, ann_dir, mode, binary_mode=True, split_csv_path=None, generation_target="findings"):
         """预处理优化版本，加载MIMIC数据集注释"""
-        if cls._shared_data["loaded"]:
+        # 如果已经加载且 generation_target 相同，则直接返回
+        if cls._shared_data["loaded"] and cls._shared_data["generation_target"] == generation_target:
             return
+        
+        # 如果 generation_target 不同，需要重新加载
+        if cls._shared_data["loaded"] and cls._shared_data["generation_target"] != generation_target:
+            dataset_logger.info(f"🔄 generation_target 从 '{cls._shared_data['generation_target']}' 变更为 '{generation_target}'，重新加载数据...")
+            cls._shared_data["loaded"] = False
 
         with open(ann_dir, "r") as f:
             # 对大文件使用内存映射
@@ -168,9 +175,16 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                 impression = item.get("impression", "").strip()
                 history = item.get("history", "").strip()
                 
-                # 至少要有 findings 或 impression 之一不为空
-                # 这样可以支持 generation_target="all" 时使用 impression
-                if findings != "" or impression != "":
+                # 根据 generation_target 决定过滤条件
+                should_keep = False
+                if generation_target == "findings":
+                    # 只保留 findings 不为空的数据
+                    should_keep = findings != ""
+                else:
+                    # generation_target == "all" 时，至少要有 findings 或 impression 之一不为空
+                    should_keep = findings != "" or impression != ""
+                
+                if should_keep:
                     # 字段映射和预处理
                     processed_item = {
                         "image_id": item.get("id", ""),
@@ -255,6 +269,7 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
             raise ValueError(f"不支持的注释数据格式: {type(annotation_data)}")
                 
         cls._shared_data["annotation"] = new_annotation
+        cls._shared_data["generation_target"] = generation_target
         cls._shared_data["loaded"] = True
 
 
@@ -271,8 +286,11 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         subset_size=None,
         generation_target="findings",
     ):
+        
+        # 生成目标设置（需要在 load_shared_data 之前设置）
+        self.generation_target = generation_target
 
-        self.load_shared_data(directory, ann_dir, mode)
+        self.load_shared_data(directory, ann_dir, mode, generation_target=generation_target)
 
         self.tokenizer = tokenizer
         self.bos_token_id = self.tokenizer.bos_token_id
@@ -282,9 +300,6 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
 
         self.sources = ["image", "findings", "history", "bbox_targets"]
         self.targets = ["findings", "label"]
-        
-        # 生成目标设置
-        self.generation_target = generation_target  # "findings" 或 "all"
 
         self.dir = directory
         self.images_dir = images_dir if images_dir else os.path.join(directory, "images_224")
@@ -345,13 +360,8 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
                 target_text = ""  # 理论上不应该出现，因为过滤时已经检查过
         else:
             # 默认只使用 findings
-            # 如果 findings 为空但 impression 不为空，也使用 impression（容错处理）
-            if findings:
-                target_text = findings
-            elif impression:
-                target_text = impression
-            else:
-                target_text = ""
+            # 因为在数据加载阶段已经过滤掉了 findings 为空的数据，这里直接使用 findings
+            target_text = findings
         
         # 获取图像路径
         image_base_path = "/".join(info["image_path"][0].split("/")[:-1])
