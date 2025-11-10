@@ -58,7 +58,7 @@ def build_vit_model(config, load_pretrained=False, logger=None, device=None):
     if logger:
         logger.info("初始化Vision Transformer...")
     
-    vit_model = MedicalVisionTransformer()
+    vit_model = MedicalVisionTransformer(config=config)
     
     # 如果需要加载预训练权重
     if load_pretrained and hasattr(config, 'VIT_CHECKPOINT_PATH_FROM') and \

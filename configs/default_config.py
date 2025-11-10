@@ -43,6 +43,9 @@ class DefaultConfig:
     # 解码器设置
     DECODER_TYPE = "bert"  # 可选值: "bert" 或 "qwen2vl"
     QWEN_MODEL_NAME = "Qwen/Qwen2.5-VL-3B-Instruct"  # Qwen2.5-VL-3B模型名称或路径
+    QWEN_MODEL_PATH = None  # Qwen模型本地路径（可选）
+    HF_CACHE_DIR = None  # HuggingFace缓存根目录（可选）
+    HF_LOCAL_FILES_ONLY = False  # 是否仅使用本地文件（离线模式）
     USE_HISTORY = False  # 是否在解码器中使用历史文本作为prompt
     
     # LoRA微调设置（仅用于Qwen2.5-VL decoder）
@@ -95,6 +98,10 @@ class DefaultConfig:
     DETECTION_CHECKPOINT_PATH_FROM = "/path/to/detection_checkpoint.pth"  # 需要在local_config中覆盖
     CHECKPOINT_PATH_FROM = None
     CHECKPOINT_PATH_TO = "/path/to/save/checkpoint/"  # 需要在local_config中覆盖
+    VIT_MODEL_NAME = "google/vit-base-patch16-224"  # ViT模型名称或路径
+    VIT_MODEL_PATH = None  # ViT模型本地路径（可选）
+    VIT_CACHE_DIR = None  # ViT专用缓存目录（默认使用HF_CACHE_DIR）
+    VIT_LOCAL_FILES_ONLY = False  # 是否仅使用本地ViT模型文件
     VIT_CHECKPOINT_PATH_FROM = None  # ViT预训练权重路径（用于微调阶段）
     DECODER_CHECKPOINT_PATH_FROM = None  # 解码器权重路径（用于继续训练）
     IMAGE_ENCODER_CHECKPOINT_PATH_FROM = None  # 图像编码器权重路径（用于推理）

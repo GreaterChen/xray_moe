@@ -35,6 +35,52 @@ from configs import config
 from trainers import TrainerFactory
 
 
+def resolve_local_hf_path(path, candidate_files=None, verbose=False):
+    """
+    解析本地HuggingFace缓存路径，必要时自动定位snapshots子目录
+    """
+    if not path:
+        return path
+    
+    if isinstance(candidate_files, str):
+        candidate_files = (candidate_files,)
+    candidate_files = candidate_files or ("config.json",)
+    
+    def has_required_files(directory):
+        for filename in candidate_files:
+            if os.path.exists(os.path.join(directory, filename)):
+                return True
+        return False
+    
+    if os.path.isfile(path):
+        return path
+    
+    if os.path.isdir(path):
+        if has_required_files(path):
+            return path
+        
+        snapshots_dir = os.path.join(path, "snapshots")
+        if os.path.isdir(snapshots_dir):
+            snapshot_dirs = []
+            for name in os.listdir(snapshots_dir):
+                candidate = os.path.join(snapshots_dir, name)
+                if os.path.isdir(candidate):
+                    try:
+                        mtime = os.path.getmtime(candidate)
+                    except OSError:
+                        mtime = 0
+                    snapshot_dirs.append((mtime, candidate))
+            for _, candidate in sorted(snapshot_dirs, key=lambda x: x[0], reverse=True):
+                if has_required_files(candidate):
+                    if verbose:
+                        print(f"ℹ️ 检测到本地snapshot路径: {candidate}")
+                    return candidate
+        if verbose:
+            print(f"⚠️ 未在路径 {path} 找到 {candidate_files}，将按原路径尝试加载。")
+    
+    return path
+
+
 def setup_tokenizer(config):
     """
     根据配置创建tokenizer
@@ -51,12 +97,46 @@ def setup_tokenizer(config):
         # Qwen VL tokenizer
         from transformers import AutoTokenizer
         qwen_model_name = getattr(config, 'QWEN_MODEL_NAME', 'Qwen/Qwen3-VL-4B-Instruct')
+        qwen_model_path = getattr(config, 'QWEN_MODEL_PATH', None)
+        hf_cache_dir = getattr(config, 'HF_CACHE_DIR', None)
+        local_files_only = getattr(config, 'HF_LOCAL_FILES_ONLY', False)
+        
+        tokenizer_source = qwen_model_path or qwen_model_name
+        tokenizer_kwargs = {
+            "trust_remote_code": True,
+        }
+        if hf_cache_dir is not None:
+            tokenizer_kwargs["cache_dir"] = hf_cache_dir
+        
+        tokenizer_candidate_files = (
+            "tokenizer_config.json",
+            "tokenizer.json",
+            "tokenizer.model",
+            "spiece.model",
+            "sentencepiece.bpe.model",
+            "vocab.json",
+            "merges.txt",
+        )
+        resolved_tokenizer_path = resolve_local_hf_path(
+            tokenizer_source,
+            candidate_files=tokenizer_candidate_files,
+            verbose=True,
+        )
+        
+        if local_files_only or os.path.exists(resolved_tokenizer_path):
+            tokenizer_kwargs["local_files_only"] = True
+            local_files_only = True
+        
+        tokenizer_source = resolved_tokenizer_path
+        
+        load_from = "本地/缓存" if tokenizer_kwargs.get("local_files_only") else "远程"
         tokenizer = AutoTokenizer.from_pretrained(
-            qwen_model_name,
-            trust_remote_code=True
+            tokenizer_source,
+            **tokenizer_kwargs
         )
         # Qwen tokenizer已经有pad_token (<|endoftext|>)，不需要额外设置
-        print(f"✅ 使用Qwen tokenizer: {qwen_model_name}")
+        print(f"✅ 使用Qwen tokenizer: {tokenizer_source}")
+        print(f"   加载来源: {load_from}")
         print(f"   pad_token: {tokenizer.pad_token} (ID: {tokenizer.pad_token_id})")
         print(f"   eos_token: {tokenizer.eos_token} (ID: {tokenizer.eos_token_id})")
     else:

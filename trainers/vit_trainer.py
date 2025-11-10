@@ -34,7 +34,7 @@ class ViTPretrainTrainer(BaseTrainer):
         
         # 3. 初始化ViT
         self.logger.info("初始化Vision Transformer...")
-        vit_model = MedicalVisionTransformer()
+        vit_model = MedicalVisionTransformer(config=self.config)
         
         # 4. 初始化CXR-BERT
         self.logger.info("初始化CXR-BERT特征提取器...")

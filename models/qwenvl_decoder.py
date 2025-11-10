@@ -38,6 +38,50 @@ except ImportError:
 # 获取logger
 qwen_decoder_logger = logging.getLogger("train_logger")
 
+def _has_required_files(dir_path, candidate_files):
+    for filename in candidate_files:
+        if os.path.exists(os.path.join(dir_path, filename)):
+            return True
+    return False
+
+def resolve_local_hf_path(path, candidate_files=None, logger=None):
+    """
+    解析本地HuggingFace缓存路径，必要时自动定位snapshots子目录
+    """
+    if not path:
+        return path
+    
+    if isinstance(candidate_files, str):
+        candidate_files = (candidate_files,)
+    candidate_files = candidate_files or ("config.json",)
+    
+    if os.path.isfile(path):
+        return path
+    
+    if os.path.isdir(path):
+        if _has_required_files(path, candidate_files):
+            return path
+        
+        snapshots_dir = os.path.join(path, "snapshots")
+        if os.path.isdir(snapshots_dir):
+            snapshot_dirs = []
+            for name in os.listdir(snapshots_dir):
+                candidate = os.path.join(snapshots_dir, name)
+                if os.path.isdir(candidate):
+                    try:
+                        mtime = os.path.getmtime(candidate)
+                    except OSError:
+                        mtime = 0
+                    snapshot_dirs.append((mtime, candidate))
+            for _, candidate in sorted(snapshot_dirs, key=lambda x: x[0], reverse=True):
+                if _has_required_files(candidate, candidate_files):
+                    if logger:
+                        logger.info(f"检测到本地snapshot路径: {candidate}")
+                    return candidate
+        if logger:
+            logger.warning(f"未在路径 {path} 找到 {candidate_files}，将按原路径尝试加载。")
+    
+    return path
 
 class QwenVLDecoder(nn.Module):
     """
@@ -77,7 +121,13 @@ class QwenVLDecoder(nn.Module):
         self.hf_cache_dir = getattr(config, 'HF_CACHE_DIR', None)
         self.qwen_model_name_or_path = getattr(config, 'QWEN_MODEL_PATH', qwen_model_name)
         local_files_only = getattr(config, 'HF_LOCAL_FILES_ONLY', False)
-        if not local_files_only and os.path.exists(self.qwen_model_name_or_path):
+        resolved_model_path = resolve_local_hf_path(
+            self.qwen_model_name_or_path,
+            candidate_files=("config.json",),
+            logger=qwen_decoder_logger,
+        )
+        self.resolved_model_path = resolved_model_path
+        if os.path.exists(resolved_model_path):
             local_files_only = True
         self.local_files_only = local_files_only
 
@@ -94,10 +144,11 @@ class QwenVLDecoder(nn.Module):
         if self.local_files_only:
             model_load_kwargs["local_files_only"] = True
         
-        load_source = "本地" if self.local_files_only else "远程/缓存"
-        qwen_decoder_logger.info(f"加载Qwen模型: {self.qwen_model_name_or_path} ({load_source})")
+        model_source = self.resolved_model_path
+        load_source = "本地/缓存" if self.local_files_only else "远程/缓存"
+        qwen_decoder_logger.info(f"加载Qwen模型: {model_source} ({load_source})")
         self.qwen_model = QwenVLModel.from_pretrained(
-            self.qwen_model_name_or_path,
+            model_source,
             **model_load_kwargs,
         )
         
@@ -130,14 +181,30 @@ class QwenVLDecoder(nn.Module):
         if self.local_files_only:
             tokenizer_kwargs["local_files_only"] = True
         
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_source = resolve_local_hf_path(
             self.qwen_model_name_or_path,
+            candidate_files=(
+                "tokenizer_config.json",
+                "tokenizer.json",
+                "tokenizer.model",
+                "spiece.model",
+                "sentencepiece.bpe.model",
+                "vocab.json",
+            ),
+            logger=qwen_decoder_logger,
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_source,
             **tokenizer_kwargs,
         )
         qwen_decoder_logger.info("从Qwen模型加载tokenizer")
         
         # 获取Qwen模型的隐藏维度
-        self.qwen_hidden_dim = self.qwen_model.config.hidden_size
+        embed_tokens = self.qwen_model.get_input_embeddings()
+        if hasattr(embed_tokens, "embedding_dim"):
+            self.qwen_hidden_dim = embed_tokens.embedding_dim
+        else:
+            self.qwen_hidden_dim = embed_tokens.weight.size(-1)
         qwen_decoder_logger.info(f"Qwen模型隐藏维度: {self.qwen_hidden_dim}")
         
         # 视觉特征线性映射层：将视觉特征映射到Qwen的隐藏维度
