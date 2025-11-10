@@ -137,7 +137,8 @@ class QwenVLDecoder(nn.Module):
         # 加载Qwen3-VL模型
         model_load_kwargs = {
             "torch_dtype": torch.bfloat16,
-            "device_map": "auto",
+            # 注意: 在DDP训练中不使用device_map="auto"，让DDP自动处理设备分配
+            # device_map="auto" 会导致模型被分散到多个设备，造成DDP训练时的设备冲突
         }
         if self.hf_cache_dir is not None:
             model_load_kwargs["cache_dir"] = self.hf_cache_dir
@@ -151,6 +152,11 @@ class QwenVLDecoder(nn.Module):
             model_source,
             **model_load_kwargs,
         )
+        
+        # 在DDP训练中，模型会在后续由DeviceManager统一移动到正确的设备
+        # 这里先确保模型在CPU上，避免多设备冲突
+        qwen_decoder_logger.info("将Qwen模型移至CPU（DDP会自动处理设备分配）")
+        self.qwen_model = self.qwen_model.cpu()
         
         # 应用LoRA（如果启用）
         if self.use_lora:

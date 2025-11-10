@@ -156,13 +156,13 @@ class BertFinetuneTrainer(BaseTrainer):
             model = self.get_raw_model()
             _, _ = load(
                 self.config.DECODER_CHECKPOINT_PATH_FROM,
-                model.findings_decoder.decoder,
+                model,
                 self.optimizer,
                 self.scheduler,
-                load_model="decoder",
+                load_model="full",
                 device=self.device_manager.device
             )
-            self.logger.info(f"从 {self.config.DECODER_CHECKPOINT_PATH_FROM} 加载解码器权重")
+            self.logger.info(f"从 {self.config.DECODER_CHECKPOINT_PATH_FROM} 加载完整模型权重")
         else:
             # 使用标准加载方式
             super().load_checkpoint()

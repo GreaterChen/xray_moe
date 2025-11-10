@@ -76,11 +76,11 @@ def load(path, model, optimizer=None, scheduler=None, load_model="object_detecto
     
     checkpoint_state_dict = checkpoint["model_state_dict"]
     
-    # 根据load_model参数提取相应的权重
-    filtered_state_dict = _filter_state_dict(checkpoint_state_dict, load_model)
+    # 先智能适配 'module.' 前缀（处理单卡/多卡互相加载的情况）
+    adapted_state_dict = _adapt_module_prefix(checkpoint_state_dict, model)
     
-    # 智能适配 'module.' 前缀（处理单卡/多卡互相加载的情况）
-    filtered_state_dict = _adapt_module_prefix(filtered_state_dict, model)
+    # 再根据load_model参数提取相应的权重
+    filtered_state_dict = _filter_state_dict(adapted_state_dict, load_model)
     
     # 加载state_dict到模型
     missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)

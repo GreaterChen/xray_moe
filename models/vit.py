@@ -142,8 +142,8 @@ class MedicalVisionTransformer(nn.Module):
         """
         batch_size = region_features.shape[0]
         
-        # 扩展并添加CLS token到区域特征前面
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        # 扩展并添加CLS token到区域特征前面；clone保证梯度stride与参数一致，避免DDP警告
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1).clone()
         x = torch.cat((cls_tokens, region_features), dim=1)  # [B, 1+num_regions, 768]
         
         # 一次性通过ViT Encoder（不再手动逐层循环）
