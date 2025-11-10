@@ -11,6 +11,7 @@ Qwen VL 解码器适配器
 3. 拼接顺序: [视觉特征] + [疾病特征] + [history文本] + [目标文本]
 4. 支持的模型: Qwen2.5-VL-3B/7B, Qwen3-VL-4B/8B等
 """
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -73,16 +74,31 @@ class QwenVLDecoder(nn.Module):
         
         # 从配置中获取是否使用历史文本
         self.use_history = getattr(config, 'USE_HISTORY', False)
+        self.hf_cache_dir = getattr(config, 'HF_CACHE_DIR', None)
+        self.qwen_model_name_or_path = getattr(config, 'QWEN_MODEL_PATH', qwen_model_name)
+        local_files_only = getattr(config, 'HF_LOCAL_FILES_ONLY', False)
+        if not local_files_only and os.path.exists(self.qwen_model_name_or_path):
+            local_files_only = True
+        self.local_files_only = local_files_only
 
         # 导入Qwen3-VL模型类
         from transformers import Qwen3VLForConditionalGeneration as QwenVLModel
         
         # 加载Qwen3-VL模型
-        qwen_decoder_logger.info(f"加载Qwen模型: {qwen_model_name}")
+        model_load_kwargs = {
+            "torch_dtype": torch.bfloat16,
+            "device_map": "auto",
+        }
+        if self.hf_cache_dir is not None:
+            model_load_kwargs["cache_dir"] = self.hf_cache_dir
+        if self.local_files_only:
+            model_load_kwargs["local_files_only"] = True
+        
+        load_source = "本地" if self.local_files_only else "远程/缓存"
+        qwen_decoder_logger.info(f"加载Qwen模型: {self.qwen_model_name_or_path} ({load_source})")
         self.qwen_model = QwenVLModel.from_pretrained(
-            qwen_model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
+            self.qwen_model_name_or_path,
+            **model_load_kwargs,
         )
         
         # 应用LoRA（如果启用）
@@ -106,14 +122,22 @@ class QwenVLDecoder(nn.Module):
                 qwen_decoder_logger.info("ℹ️  未启用LoRA，将微调完整模型")
         
 
+        tokenizer_kwargs = {
+            "trust_remote_code": True,
+        }
+        if self.hf_cache_dir is not None:
+            tokenizer_kwargs["cache_dir"] = self.hf_cache_dir
+        if self.local_files_only:
+            tokenizer_kwargs["local_files_only"] = True
+        
         self.tokenizer = AutoTokenizer.from_pretrained(
-            qwen_model_name,
-            trust_remote_code=True
+            self.qwen_model_name_or_path,
+            **tokenizer_kwargs,
         )
         qwen_decoder_logger.info("从Qwen模型加载tokenizer")
         
         # 获取Qwen模型的隐藏维度
-        self.qwen_hidden_dim = 2048 if "2B" in qwen_model_name else 2560
+        self.qwen_hidden_dim = self.qwen_model.config.hidden_size
         qwen_decoder_logger.info(f"Qwen模型隐藏维度: {self.qwen_hidden_dim}")
         
         # 视觉特征线性映射层：将视觉特征映射到Qwen的隐藏维度
@@ -433,7 +457,7 @@ class QwenVLDecoder(nn.Module):
             # 处理history文本
             history_input_ids = None
             history_attention_mask = None
-            if use_history and history is not None:
+            if self.use_history and history is not None:
                 if hasattr(history, 'input_ids'):
                     history_input_ids = history.input_ids.to(device)
                     history_attention_mask = history.attention_mask.to(device)
