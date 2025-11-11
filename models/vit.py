@@ -155,3 +155,36 @@ class MedicalVisionTransformer(nn.Module):
         final_hidden_states = self.layernorm(hidden_states)
         
         return final_hidden_states  # [B, 1+num_regions, hidden_size]
+
+
+class PatchOnlyVisionTransformer(nn.Module):
+    """
+    直接输入整图的ViT编码器：不依赖额外检测器，获得[CLS]+patch特征
+    """
+    def __init__(self, config=None, pretrained_vit_name="google/vit-base-patch16-224"):
+        super(PatchOnlyVisionTransformer, self).__init__()
+        # 与MedicalVisionTransformer类似，加载完整ViT
+        self.config_obj = config
+        model_source = getattr(config, 'VIT_MODEL_PATH', None) or getattr(config, 'VIT_MODEL_NAME', pretrained_vit_name)
+        resolved_model_source = resolve_local_hf_path(
+            model_source,
+            candidate_files="config.json"
+        )
+        load_kwargs = {}
+        if hasattr(config, 'VIT_CACHE_DIR') and config.VIT_CACHE_DIR:
+            load_kwargs["cache_dir"] = config.VIT_CACHE_DIR
+        if getattr(config, 'VIT_LOCAL_FILES_ONLY', False) or os.path.exists(resolved_model_source):
+            load_kwargs["local_files_only"] = True
+        
+        self.vit = ViTModel.from_pretrained(resolved_model_source, **load_kwargs)
+        self.hidden_size = self.vit.config.hidden_size
+        self.layernorm = nn.LayerNorm(self.hidden_size)
+
+    def forward(self, images):
+        """
+        输入: images [B, C, H, W]，输出: [B, 1+num_patches, hidden_size]
+        """
+        outputs = self.vit(images)
+        features = outputs.last_hidden_state  # [B, 1+num_patches, hidden]
+        features = self.layernorm(features)
+        return features

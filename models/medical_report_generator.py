@@ -99,7 +99,19 @@ class MedicalReportGenerator(nn.Module):
         same_text_region_groups_batch=None,  # 新增：批次中每个样本的同文本区域分组
         **kwargs
     ):
-        # 在这里实现前向传播逻辑
+        # 根据encoder类型自动适配
+        encoder_type = getattr(self.config, 'ENCODER_TYPE', 'detection+vit').lower()
+        if encoder_type == 'vit_only':
+            visual_features = self.image_encoder(image)  # 直接ViT编码
+            # 下游其它处理流程(如微调)应兼容visual_features: [B, 1+patch数, hidden]
+            results = {"visual_features": visual_features}
+            # 兼容后续分支
+            if phase == "PRETRAIN_VIT":
+                # 可根据项目需求实现对比损失类函数，这里略。
+                results["region_itc_loss"] = None
+                results["clip_itc_loss"] = None
+            return results
+        # 以下为原有逻辑：Detection+ViT
         if phase == "TRAIN_DETECTION":
             return self.object_detector(image, bbox_targets)
         elif phase == "PRETRAIN_VIT":

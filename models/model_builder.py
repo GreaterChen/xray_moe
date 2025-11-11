@@ -70,6 +70,31 @@ def build_vit_model(config, load_pretrained=False, logger=None, device=None):
     return vit_model
 
 
+def build_image_encoder(config, logger=None, device=None):
+    """
+    根据配置选择合适的图像编码器
+    Returns: encoder实例
+    """
+    encoder_type = getattr(config, 'ENCODER_TYPE', 'detection+vit').lower()
+    if encoder_type == 'vit_only':
+        if logger:
+            logger.info("使用PatchOnlyVisionTransformer (无目标检测)...")
+        from models.vit import PatchOnlyVisionTransformer
+        encoder = PatchOnlyVisionTransformer(config=config)
+        if device:
+            encoder = encoder.to(device)
+        return encoder
+    else:
+        # 默认 Detection+ViT 流程
+        if logger:
+            logger.info("使用MedicalVisionTransformer (区域特征)+检测器模式...")
+        from models.vit import MedicalVisionTransformer
+        encoder = MedicalVisionTransformer(config=config)
+        if device:
+            encoder = encoder.to(device)
+        return encoder
+
+
 def freeze_model_parameters(model, logger=None, model_name="模型"):
     """
     冻结模型的所有参数
@@ -118,4 +143,15 @@ def log_model_parameters(model, logger, model_name="模型"):
     logger.info(f"  - 总参数: {total:,}")
     logger.info(f"  - 可训练参数: {trainable:,}")
     logger.info(f"  - 冻结参数: {frozen:,}")
+
+
+def __all__():
+    return [
+        'build_detection_model',
+        'build_vit_model',
+        'build_image_encoder',
+        'freeze_model_parameters',
+        'count_trainable_parameters',
+        'log_model_parameters',
+    ]
 
