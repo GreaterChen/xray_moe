@@ -35,7 +35,7 @@ from datasets import MIMIC, mimic_collate_fn, IUXRAY, iuxray_collate_fn
 from models.medical_report_generator import MedicalReportGenerator
 from models.bert_adapter import BertAdapter
 from models.qwenvl_decoder import QwenVLAdapter
-from models.model_builder import build_detection_model, build_vit_model
+from models.model_builder import build_detection_model, build_vit_model, freeze_model_parameters, build_image_encoder
 from metrics import compute_scores
 from tools.metrics_clinical import CheXbertMetrics
 from utils import setup_logger, load
@@ -115,10 +115,9 @@ class InferenceComparator:
         )
         
         # 2. 构建ViT
-        vit_model = build_vit_model(
+        image_encoder = build_image_encoder(
             self.config,
-            load_pretrained=False,  # 从checkpoint加载
-            logger=self.logger,
+            logger=None,
             device=self.device
         )
         
@@ -149,7 +148,7 @@ class InferenceComparator:
         model = MedicalReportGenerator(
             config=self.config,
             object_detector=enhanced_rcnn,
-            image_encoder=vit_model,
+            image_encoder=image_encoder,
             findings_decoder=decoder_model
         )
         

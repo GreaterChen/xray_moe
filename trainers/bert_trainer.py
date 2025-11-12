@@ -4,7 +4,7 @@ from trainers.base_trainer import BaseTrainer
 from models.medical_report_generator import MedicalReportGenerator
 from models.bert_adapter import BertAdapter
 from models.qwenvl_decoder import QwenVLAdapter
-from models.model_builder import build_detection_model, build_vit_model, freeze_model_parameters
+from models.model_builder import build_detection_model, build_vit_model, freeze_model_parameters, build_image_encoder
 from utils import train, test_llm, load
 from metrics import compute_scores
 
@@ -25,10 +25,9 @@ class BertFinetuneTrainer(BaseTrainer):
         # 1. 使用公共函数构建检测器
         enhanced_rcnn = build_detection_model(self.config, self.logger, device=self.device_manager.device)
         
-        # 2. 使用公共函数构建ViT
-        vit_model = build_vit_model(
+        # 2. 构建图像编码器（支持多类型）
+        image_encoder = build_image_encoder(
             self.config,
-            load_pretrained=True,
             logger=self.logger,
             device=self.device_manager.device
         )
@@ -60,7 +59,7 @@ class BertFinetuneTrainer(BaseTrainer):
         self.model = MedicalReportGenerator(
             config=self.config,
             object_detector=enhanced_rcnn,
-            image_encoder=vit_model,
+            image_encoder=image_encoder,
             findings_decoder=decoder_model
         )
         

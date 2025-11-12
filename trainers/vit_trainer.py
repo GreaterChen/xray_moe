@@ -3,7 +3,8 @@ import torch
 from trainers.base_trainer import BaseTrainer
 from models.medical_report_generator import MedicalReportGenerator
 from models.fast_rcnn_classifier import DetectionOnlyFastRCNN, EnhancedFastRCNN
-from models.vit import MedicalVisionTransformer
+from models.vit import MedicalVisionTransformer, PatchOnlyVisionTransformer
+from models.model_builder import build_image_encoder
 from models.cxr_bert import CXR_BERT_FeatureExtractor
 from utils import load, train, test_vit
 from datasets import MIMIC
@@ -32,9 +33,12 @@ class ViTPretrainTrainer(BaseTrainer):
             feature_dim=768
         )
         
-        # 3. 初始化ViT
-        self.logger.info("初始化Vision Transformer...")
-        vit_model = MedicalVisionTransformer(config=self.config)
+        # 3. 构建图像编码器（支持patch/vit_only和常规区域ViT）
+        image_encoder = build_image_encoder(
+            self.config,
+            logger=self.logger,
+            device=self.device_manager.device
+        )
         
         # 4. 初始化CXR-BERT
         self.logger.info("初始化CXR-BERT特征提取器...")
@@ -44,7 +48,7 @@ class ViTPretrainTrainer(BaseTrainer):
         self.model = MedicalReportGenerator(
             config=self.config,
             object_detector=enhanced_rcnn,
-            image_encoder=vit_model,
+            image_encoder=image_encoder,
             cxr_bert=cxr_bert
         )
         

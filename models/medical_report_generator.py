@@ -6,7 +6,7 @@ import pickle
 import os
 import logging
 from models.fast_rcnn_classifier import DetectionOnlyFastRCNN
-from models.vit import MedicalVisionTransformer
+# from models.vit import MedicalVisionTransformer  # 注释掉，统一入口
 from models.rgat import ThreeStageRGAT
 from utils import analyze_gpu_memory
 
@@ -99,18 +99,41 @@ class MedicalReportGenerator(nn.Module):
         same_text_region_groups_batch=None,  # 新增：批次中每个样本的同文本区域分组
         **kwargs
     ):
-        # 根据encoder类型自动适配
         encoder_type = getattr(self.config, 'ENCODER_TYPE', 'detection+vit').lower()
+        actual_phase = kwargs.get("phase", phase)
         if encoder_type == 'vit_only':
             visual_features = self.image_encoder(image)  # 直接ViT编码
-            # 下游其它处理流程(如微调)应兼容visual_features: [B, 1+patch数, hidden]
-            results = {"visual_features": visual_features}
-            # 兼容后续分支
-            if phase == "PRETRAIN_VIT":
-                # 可根据项目需求实现对比损失类函数，这里略。
-                results["region_itc_loss"] = None
+            # --- for finetune ---
+            if actual_phase == "FINETUNE_BERT":
+                if mode == "train":
+                    outputs = self.findings_decoder(
+                        visual_features=visual_features,
+                        history_encoding=history,
+                        findings=findings,
+                    )
+                    return outputs  # 必须有loss属性
+                else:
+                    # 评测/推理：返回生成文本，兼容eval_utils.test_llm
+                    generated_texts = None
+                    if hasattr(self.findings_decoder, 'generate'):
+                        generated_texts = self.findings_decoder.generate(
+                            visual_features=visual_features,
+                            history_encoding=history,
+                        )
+                    if generated_texts is None:
+                        batch_size = visual_features.size(0)
+                        generated_texts = ["生成失败"] * batch_size
+                    return {
+                        "findings_text": generated_texts,
+                        "visual_features": visual_features,
+                    }
+            elif actual_phase == "PRETRAIN_VIT":
+                results = {"visual_features": visual_features}
+                results["region_itc_loss"] = None  # todo:如需可补损失
                 results["clip_itc_loss"] = None
-            return results
+                return results
+            else:
+                return {"visual_features": visual_features}
         # 以下为原有逻辑：Detection+ViT
         if phase == "TRAIN_DETECTION":
             return self.object_detector(image, bbox_targets)
