@@ -1,0 +1,33 @@
+================================================================================
+Detailed Metrics by Anatomical Region (按Mean IoU排序)
+================================================================================
+
+left upper lung zone (ID=21): AP@0.5=0.9065, P@0.5=0.9705, R@0.5=0.9746, F1@0.5=0.9725, Mean IoU=0.9030, Missing Rate=0.0036
+abdomen (ID=5): AP@0.5=0.9090, P@0.5=0.9801, R@0.5=0.9927, F1@0.5=0.9864, Mean IoU=0.9012, Missing Rate=0.0007
+left lung (ID=12): AP@0.5=0.9086, P@0.5=0.9830, R@0.5=0.9911, F1@0.5=0.9870, Mean IoU=0.8995, Missing Rate=0.0007
+right lung (ID=8): AP@0.5=0.9073, P@0.5=0.9842, R@0.5=0.9888, F1@0.5=0.9865, Mean IoU=0.8971, Missing Rate=0.0000
+right upper lung zone (ID=9): AP@0.5=0.9066, P@0.5=0.9678, R@0.5=0.9739, F1@0.5=0.9709, Mean IoU=0.8922, Missing Rate=0.0010
+right lower lung zone (ID=18): AP@0.5=0.8818, P@0.5=0.8634, R@0.5=0.9116, F1@0.5=0.8868, Mean IoU=0.8813, Missing Rate=0.0147
+spine (ID=20): AP@0.5=0.9091, P@0.5=0.9888, R@0.5=0.9918, F1@0.5=0.9903, Mean IoU=0.8736, Missing Rate=0.0023
+left lower lung zone (ID=27): AP@0.5=0.8790, P@0.5=0.8744, R@0.5=0.9196, F1@0.5=0.8964, Mean IoU=0.8725, Missing Rate=0.0185
+mediastinum (ID=17): AP@0.5=0.9047, P@0.5=0.9404, R@0.5=0.9825, F1@0.5=0.9610, Mean IoU=0.8620, Missing Rate=0.0000
+left mid lung zone (ID=19): AP@0.5=0.8857, P@0.5=0.9042, R@0.5=0.9455, F1@0.5=0.9244, Mean IoU=0.8575, Missing Rate=0.0055
+right mid lung zone (ID=13): AP@0.5=0.8874, P@0.5=0.8824, R@0.5=0.9346, F1@0.5=0.9078, Mean IoU=0.8571, Missing Rate=0.0068
+left apical zone (ID=26): AP@0.5=0.9011, P@0.5=0.9240, R@0.5=0.9495, F1@0.5=0.9366, Mean IoU=0.8570, Missing Rate=0.0072
+right hilar structures (ID=3): AP@0.5=0.8892, P@0.5=0.8910, R@0.5=0.9347, F1@0.5=0.9123, Mean IoU=0.8567, Missing Rate=0.0048
+right clavicle (ID=25): AP@0.5=0.8113, P@0.5=0.8868, R@0.5=0.8809, F1@0.5=0.8838, Mean IoU=0.8518, Missing Rate=0.0445
+upper mediastinum (ID=29): AP@0.5=0.9018, P@0.5=0.9234, R@0.5=0.9505, F1@0.5=0.9368, Mean IoU=0.8510, Missing Rate=0.0056
+left hilar structures (ID=16): AP@0.5=0.8818, P@0.5=0.9008, R@0.5=0.9400, F1@0.5=0.9200, Mean IoU=0.8497, Missing Rate=0.0065
+right apical zone (ID=7): AP@0.5=0.8992, P@0.5=0.9196, R@0.5=0.9433, F1@0.5=0.9313, Mean IoU=0.8470, Missing Rate=0.0058
+right costophrenic angle (ID=10): AP@0.5=0.6986, P@0.5=0.8076, R@0.5=0.7593, F1@0.5=0.7827, Mean IoU=0.8446, Missing Rate=0.0766
+aortic arch (ID=24): AP@0.5=0.8096, P@0.5=0.9228, R@0.5=0.8984, F1@0.5=0.9104, Mean IoU=0.8434, Missing Rate=0.0355
+cardiac silhouette (ID=4): AP@0.5=0.8968, P@0.5=0.8985, R@0.5=0.9542, F1@0.5=0.9255, Mean IoU=0.8428, Missing Rate=0.0043
+right hemidiaphragm (ID=22): AP@0.5=0.7937, P@0.5=0.8202, R@0.5=0.8524, F1@0.5=0.8360, Mean IoU=0.8359, Missing Rate=0.0179
+left clavicle (ID=23): AP@0.5=0.8084, P@0.5=0.8686, R@0.5=0.8749, F1@0.5=0.8717, Mean IoU=0.8331, Missing Rate=0.0372
+left costophrenic angle (ID=15): AP@0.5=0.6976, P@0.5=0.7841, R@0.5=0.7612, F1@0.5=0.7725, Mean IoU=0.8218, Missing Rate=0.0693
+svc (ID=11): AP@0.5=0.7955, P@0.5=0.8845, R@0.5=0.8737, F1@0.5=0.8791, Mean IoU=0.8168, Missing Rate=0.0202
+left hemidiaphragm (ID=1): AP@0.5=0.7970, P@0.5=0.8542, R@0.5=0.8858, F1@0.5=0.8697, Mean IoU=0.8108, Missing Rate=0.0123
+trachea (ID=6): AP@0.5=0.8985, P@0.5=0.9318, R@0.5=0.9330, F1@0.5=0.9324, Mean IoU=0.7919, Missing Rate=0.0086
+right atrium (ID=2): AP@0.5=0.8045, P@0.5=0.8862, R@0.5=0.8713, F1@0.5=0.8787, Mean IoU=0.7756, Missing Rate=0.0301
+cavoatrial junction (ID=14): AP@0.5=0.6585, P@0.5=0.7469, R@0.5=0.7249, F1@0.5=0.7357, Mean IoU=0.7341, Missing Rate=0.0461
+carina (ID=28): AP@0.5=0.5527, P@0.5=0.6951, R@0.5=0.6027, F1@0.5=0.6456, Mean IoU=0.7043, Missing Rate=0.1444
