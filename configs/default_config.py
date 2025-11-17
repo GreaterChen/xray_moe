@@ -85,6 +85,13 @@ class DefaultConfig:
     WARMUP_STEPS = 2000
     WEIGHT_DECAY = 0.01
     DROPOUT = 0.1
+    GRAD_CLIP_NORM = 1.0  # 梯度裁剪阈值
+
+    # 分层学习率设置（用于FINETUNE_BERT阶段的参数分组优化）
+    USE_LAYERWISE_LR = True  # 是否启用分层学习率
+    LORA_LR_SCALE = 1.0  # LoRA参数学习率倍数（相对于LEARNING_RATE）
+    VIT_LR_SCALE = 2.0  # ViT参数学习率倍数
+    OTHER_LR_SCALE = 3.0  # 其他参数（投影层、RGAT等）学习率倍数
 
     # 随机种子
     SEED = 123

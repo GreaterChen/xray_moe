@@ -146,15 +146,16 @@ def train(
         })
         
         # 反向传播
+        grad_clip_norm = getattr(config, 'GRAD_CLIP_NORM', 1.0)
         if scaler is not None:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
         
         # 记录到TensorBoard (在删除变量之前)
