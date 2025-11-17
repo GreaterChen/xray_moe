@@ -284,19 +284,21 @@ class BertCrossDecoder(nn.Module):
                     full_attention_mask[i, :h_len] = 1
                     # labels的history部分全部设为-100（不计算损失）
                     
-                    # Target部分：自回归shift（去掉target结尾token，保留开头[CLS]以驱动首个预测）
-                    target_input_len = max(t_len - 1, 0)
+                    # Target部分：自回归shift
+                    # 输入需要比标签少一个token（因为最后一个位置没有"下一个token"可预测）
+                    target_input_len = max(t_len - 1, 0)  # 去掉最后一个token（通常是[SEP]）
                     if target_input_len <= 0:
                         continue
                     
-                    # 输入部分：[CLS] t1 ... t_m（不含最终[SEP]）
+                    # 输入部分：[CLS] t1 t2 ... t_{m-1}（不含最终[SEP]）
                     start = h_len
                     end = h_len + target_input_len
                     full_input_ids[i, start:end] = target_input_ids[i, :target_input_len]
                     full_attention_mask[i, start:end] = 1
                     
-                    # 标签部分：t1 ... t_m [SEP]
-                    labels[i, start:end] = target_input_ids[i, 1:1+target_input_len]
+                    # 标签部分：t1 t2 t3 ... tm（每个输入位置预测下一个token）
+                    # 输入[CLS]预测t1，输入t1预测t2，...，输入t_{m-1}预测tm
+                    labels[i, start:end] = target_input_ids[i, 1:t_len]
             
             else:
                 # ============================================
@@ -339,12 +341,13 @@ class BertCrossDecoder(nn.Module):
                         continue
                     
                     input_len = actual_len - 1
-                    # 输入：[CLS] t1 t2 ... t_m（去掉最后一个token，通常是[SEP]）
+                    # 输入：[CLS] t1 t2 ... t_{m-1}（去掉最后一个token，通常是[SEP]）
                     full_input_ids[i, :input_len] = target_input_ids[i, :input_len]
                     full_attention_mask[i, :input_len] = 1
                     
-                    # 标签：t1 t2 ... t_m [SEP]（向前shift一位）
-                    labels[i, :input_len] = target_input_ids[i, 1:1+input_len]
+                    # 标签：t1 t2 t3 ... tm（每个输入位置预测下一个token）
+                    # 输入[CLS]预测t1，输入t1预测t2，...，输入t_{m-1}预测tm
+                    labels[i, :input_len] = target_input_ids[i, 1:actual_len]
             
             # 模型前向传播
             outputs = self.text_decoder(
@@ -429,15 +432,17 @@ class BertCrossDecoder(nn.Module):
             history_lengths = history_attention_mask.sum(dim=1)
             for i in range(batch_size):
                 length = history_lengths[i].item()
-                # 提取实际的history（如果存在）
-                seq = history_input_ids[i, :length]
-                
-                # 在history后追加[CLS] token
-                cls_token = history_input_ids.new_full((1,), self.tokenizer.cls_token_id)
-                prompt = torch.cat([seq, cls_token], dim=0)
-                
-                per_sample_inputs.append(prompt)
-                prefix_lengths.append(prompt.size(0))
+                if length > 0:
+                    # 提取实际的history: [CLS] h1 ... hn [SEP]
+                    # 保持完整的history作为prompt，不需要额外添加[CLS]
+                    seq = history_input_ids[i, :length]
+                    per_sample_inputs.append(seq)
+                    prefix_lengths.append(seq.size(0))
+                else:
+                    # 如果history为空，使用单个[CLS]作为起始
+                    prompt = history_input_ids.new_full((1,), self.tokenizer.cls_token_id)
+                    per_sample_inputs.append(prompt)
+                    prefix_lengths.append(prompt.size(0))
         else:
             # 不使用history时，每个样本的prompt都只是一个[CLS]
             for i in range(batch_size):
