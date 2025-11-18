@@ -85,11 +85,19 @@ def build_image_encoder(config, logger=None, device=None):
             encoder = encoder.to(device)
         return encoder
     else:
-        # 默认 Detection+ViT 流程
+        # 默认 Detection+ViT 流程：使用MedicalVisionTransformer，并在提供VIT_CHECKPOINT_PATH_FROM时加载预训练权重
         if logger:
             logger.info("使用MedicalVisionTransformer (区域特征)+检测器模式...")
-        from models.vit import MedicalVisionTransformer
-        encoder = MedicalVisionTransformer(config=config)
+
+        # 复用统一的ViT构建逻辑：当load_pretrained=True且配置中设置了VIT_CHECKPOINT_PATH_FROM时，
+        # build_vit_model内部会通过utils.load(..., load_model=\"vit\") 自动加载image_encoder权重。
+        encoder = build_vit_model(
+            config=config,
+            load_pretrained=True,
+            logger=logger,
+            device=device,
+        )
+
         if device:
             encoder = encoder.to(device)
         return encoder

@@ -688,10 +688,7 @@ def test_llm(
             decoder_tokenizer = None
             if hasattr(model, "findings_decoder"):
                 fd = model.findings_decoder
-                if hasattr(fd, "tokenizer") and fd.tokenizer is not None:
-                    decoder_tokenizer = fd.tokenizer
-                elif hasattr(fd, "decoder") and hasattr(fd.decoder, "tokenizer"):
-                    decoder_tokenizer = fd.decoder.tokenizer
+                decoder_tokenizer = fd.tokenizer
 
             if decoder_tokenizer is not None and "findings" in target and "input_ids" in target["findings"]:
                 try:
@@ -722,54 +719,6 @@ def test_llm(
             else:
                 logger.error(f"不支持的输出格式: {type(outputs)}")
                 generated_texts = ["生成失败"] * batch_size
-
-            # 如果target_texts为空（无法通过token ids解码），则退回到原有逻辑
-            if not target_texts:
-
-                # 检查batch["findings"]是否为字符串列表
-                if "findings" in batch and isinstance(batch["findings"], list) and len(batch["findings"]) > 0 and isinstance(batch["findings"][0], str):
-                    target_texts = batch["findings"]
-                # 检查batch["findings"]是否为BatchEncoding类型
-                elif "findings" in batch and hasattr(batch["findings"], "input_ids"):
-                    # 处理BatchEncoding对象
-                    target_texts = []
-                    for idx in range(batch_size):
-                        findings_ids = batch["findings"].input_ids[idx]
-                        if hasattr(model.findings_decoder, "tokenizer"):
-                            tokenizer = model.findings_decoder.tokenizer
-                            target_texts.append(
-                                tokenizer.decode(findings_ids, skip_special_tokens=True)
-                            )
-                        elif hasattr(model.findings_decoder, "decoder") and hasattr(model.findings_decoder.decoder, "tokenizer"):
-                            tokenizer = model.findings_decoder.decoder.tokenizer
-                            target_texts.append(
-                                tokenizer.decode(findings_ids, skip_special_tokens=True)
-                            )
-                        else:
-                            target_texts.append(f"[BatchEncoding]")
-                # 检查target中的findings
-                elif "findings" in target and "input_ids" in target["findings"]:
-                    # 如果findings是已编码的token IDs，进行解码
-                    target_texts = []
-                    for idx in range(batch_size):
-                        findings_ids = target["findings"]["input_ids"][idx]
-                        # 尝试使用模型内部的tokenizer解码
-                        if hasattr(model.findings_decoder, "tokenizer"):
-                            tokenizer = model.findings_decoder.tokenizer
-                            target_texts.append(
-                                tokenizer.decode(findings_ids, skip_special_tokens=True)
-                            )
-                        elif hasattr(model.findings_decoder, "decoder") and hasattr(model.findings_decoder.decoder, "tokenizer"):
-                            # 针对BERT解码器的特殊处理
-                            tokenizer = model.findings_decoder.decoder.tokenizer
-                            target_texts.append(
-                                tokenizer.decode(findings_ids, skip_special_tokens=True)
-                            )
-                        else:
-                            # 如果无法直接访问tokenizer，可以将ID保存为字符串
-                            target_texts.append(f"[IDs:{findings_ids.tolist()}]")
-                else:
-                    target_texts = ["[无目标文本]"] * batch_size
 
             # 收集预测结果和真实值
             all_preds.extend(generated_texts)
