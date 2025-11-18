@@ -309,6 +309,9 @@ class BertCrossDecoder(nn.Module):
             # Beam search模式：确定性生成
             generation_config["do_sample"] = False
             generation_config["early_stopping"] = True
+            generation_config["encoder_hidden_states"] = visual_features.repeat_interleave(num_beams, dim=0)
+            generation_config["encoder_attention_mask"] = torch.ones(generation_config["encoder_hidden_states"].size()[:-1],dtype=torch.long).to(visual_features.device)
+
         else:
             # Greedy或sampling模式
             generation_config["do_sample"] = do_sample
@@ -339,7 +342,7 @@ class BertCrossDecoder(nn.Module):
                 generated_texts.append(text)
         else:
             # 不使用history模式：只需去除起始的[CLS]
-            for i, output in enumerate(batch_size):
+            for i, output in enumerate(generated_ids):
                 text = self.tokenizer.decode(output, skip_special_tokens=True)
                 generated_texts.append(text)
         
