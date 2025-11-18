@@ -160,9 +160,9 @@ class BertCrossDecoder(nn.Module):
                 
                 batch_size = history_input_ids.shape[0]
                 max_history_len = actual_history_lengths.max().item()
-                # target去掉[CLS]后的长度
-                max_target_input_len = torch.clamp(actual_target_lengths - 2, min=0).max().item()  # -1 for CLS, -1 for last token shift
-                max_total_len = max_history_len + max_target_input_len
+                # target去掉[CLS]的长度（保留完整序列用于模型自动shift）
+                max_target_len = torch.clamp(actual_target_lengths - 1, min=0).max().item()  # 只去掉[CLS]
+                max_total_len = max_history_len + max_target_len
                 
                 # 初始化张量
                 full_input_ids = torch.full(
@@ -214,25 +214,12 @@ class BertCrossDecoder(nn.Module):
                     labels[i, start:end] = target_input_ids[i, 2:2+target_tokens_to_use]
             
             else:
-                # ============================================
-                # 不使用历史文本的自回归训练
-                # ============================================
-                # 简化版本：直接使用shift操作
-                # 输入: [CLS] t1 t2 ... t_{m-1}
-                # 标签: t1 t2 ... t_m [EOS]
+                full_input_ids = target_input_ids
+                full_attention_mask = target_attention_mask
                 
-                # 由于使用left padding，数据已经是右对齐的
-                # 只需要做简单的shift操作即可
-                
-                # 输入：去掉最后一个token
-                full_input_ids = target_input_ids[:, :-1]
-                full_attention_mask = target_attention_mask[:, :-1]
-                
-                # 标签：去掉第一个token（[CLS]），保留到[EOS]
-                labels = target_input_ids[:, 1:].clone()
-                
-                # 将padding位置的标签设为-100（忽略loss）
-                labels[target_attention_mask[:, 1:] == 0] = -100
+                # 标签也使用完整序列，但将padding位置设为-100
+                labels = target_input_ids.clone()
+                labels[target_attention_mask == 0] = -100
             
             # 模型前向传播
             outputs = self.text_decoder(
