@@ -95,8 +95,8 @@ class BertAdapter(nn.Module):
         if use_history and prepared_history is None:
             bert_adapter_logger.warning("警告: config.USE_HISTORY=True但history为None，将使用默认起始token")
         
-        # 调用BERT交叉解码器
-        logits, hidden_states, decoded_texts, loss = self.decoder(
+        # 调用BERT交叉解码器（现在只返回loss）
+        loss = self.decoder(
             visual_features=visual_features,
             history=prepared_history,
             target_text=findings,
@@ -117,10 +117,6 @@ class BertAdapter(nn.Module):
         
         outputs = BertOutputs()
         outputs.loss = loss
-        outputs.logits = logits
-        # 训练过程中不返回大张量以减少内存占用
-        outputs.hidden_states = None
-        outputs.decoded_texts = decoded_texts
         
         return outputs
     

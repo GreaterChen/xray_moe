@@ -149,10 +149,10 @@ class BertCrossDecoder(nn.Module):
                 # ============================================
                 # 格式：
                 #   history编码: [CLS] h1 h2 ... hn [SEP]
-                #   target编码:  [CLS] t1 t2 ... tm [SEP]
-                #   拼接输入:    [CLS] h1 h2 ... hn [SEP] t1 t2 ... tm-1
+                #   target编码:  [CLS] t1 t2 ... tm [EOS]
+                #   拼接输入:    [CLS] h1 h2 ... hn [SEP] t1 t2 ... tm [EOS]
                 #   拼接标签:    [-100]..........[-100][-100] t1 t2 ... tm [EOS]
-                # 注意：将target的最后一个[SEP]替换为[EOS]用于生成结束判断
+                # BertLMHeadModel会自动处理shift，让每个位置预测下一个token
                 # ============================================
                 
                 actual_history_lengths = history_attention_mask.sum(dim=1)
@@ -192,27 +192,22 @@ class BertCrossDecoder(nn.Module):
                     full_input_ids[i, :h_len] = history_input_ids[i, :h_len]
                     full_attention_mask[i, :h_len] = 1
                     
-                    # Target部分：去掉[CLS]，进行自回归shift
+                    # Target部分：去掉[CLS]，保留完整序列（t1 ... tm [EOS]）
                     if t_len <= 1:  # 只有[CLS]或空
                         continue
                     
-                    # 跳过target的[CLS]（索引0），从t1开始
-                    # 输入: t1 t2 ... t_{m-1}（不包括最后的token）
-                    target_tokens_to_use = t_len - 2  # 去掉[CLS]和最后一个token
-                    if target_tokens_to_use <= 0:
+                    # 跳过target的[CLS]（索引0），从t1开始到[EOS]
+                    target_tokens = t_len - 1  # 去掉[CLS]
+                    if target_tokens <= 0:
                         continue
                     
                     start = h_len
-                    end = h_len + target_tokens_to_use
+                    end = h_len + target_tokens
                     
-                    # 输入部分：从target的第2个token开始（跳过[CLS]）
-                    full_input_ids[i, start:end] = target_input_ids[i, 1:1+target_tokens_to_use]
+                    full_input_ids[i, start:end] = target_input_ids[i, 1:1+target_tokens]
                     full_attention_mask[i, start:end] = 1
+                    labels[i, start:end] = target_input_ids[i, 1:1+target_tokens]
                     
-                    # 标签部分：预测t1到tm（包括[EOS]）
-                    # 注意：target_input_ids的最后一个token已经在数据准备阶段被替换为[EOS]
-                    labels[i, start:end] = target_input_ids[i, 2:2+target_tokens_to_use]
-            
             else:
                 full_input_ids = target_input_ids
                 full_attention_mask = target_attention_mask
@@ -231,13 +226,8 @@ class BertCrossDecoder(nn.Module):
                 output_hidden_states=True,
                 return_dict=True,
             )
-            
-            logits = outputs.logits
-            hidden_states = outputs.hidden_states[-1]
-            decoded_texts = None
-            loss_lm = outputs.loss
-            
-            return logits, hidden_states, decoded_texts, loss_lm
+
+            return outputs.loss
             
         else:  # mode == "generate"
             params = {
@@ -266,83 +256,111 @@ class BertCrossDecoder(nn.Module):
         repetition_penalty=1.0,
     ):
         """
-        根据历史编码和视觉特征生成文本（改进版）
+        根据历史编码和视觉特征生成文本
+        
+        Args:
+            history_input_ids: 历史文本的input_ids (使用history时需要)
+            history_attention_mask: 历史文本的attention_mask (使用history时需要)
+            visual_features: 视觉特征 [batch_size, num_tokens, hidden_dim]
+            visual_attention_mask: 视觉特征的attention_mask
+            num_beams: beam search的宽度
+            max_new_tokens: 生成的最大新token数
+            do_sample: 是否采样生成
+            top_p: nucleus sampling的概率阈值
+            temperature: 温度参数
+            repetition_penalty: 重复惩罚系数
+            
+        Returns:
+            generated_texts: 生成的文本列表
         """
-        batch_size = history_input_ids.shape[0]
-        device = history_input_ids.device
+        batch_size = visual_features.shape[0]
+        device = visual_features.device
         
-        # 准备解码器的输入（与训练时保持一致）
-        per_sample_inputs = []
-        prefix_lengths = []
-
-        if self.use_history:
-            history_lengths = history_attention_mask.sum(dim=1)
-            for i in range(batch_size):
-                length = history_lengths[i].item()
-                if length > 0:
-                    # 使用完整的history作为prompt: [CLS] h1 ... hn [SEP]
-                    seq = history_input_ids[i, :length]
-                    per_sample_inputs.append(seq)
-                    prefix_lengths.append(seq.size(0))
-                else:
-                    # 如果history为空，使用[CLS]作为起始
-                    prompt = history_input_ids.new_full((1,), self.tokenizer.cls_token_id)
-                    per_sample_inputs.append(prompt)
-                    prefix_lengths.append(1)
+        # ============================================
+        # 1. 准备生成的输入序列
+        # ============================================
+        if self.use_history and history_input_ids is not None and history_attention_mask is not None:
+            # 使用history模式：history作为prompt
+            # 注意：由于使用left padding，实际的history内容在右侧
+            input_ids = history_input_ids
+            attention_mask = history_attention_mask
+            
+            # 计算每个样本的实际长度（用于后续去除prompt）
+            # left padding意味着padding在左侧，实际内容在右侧
+            input_lengths = attention_mask.sum(dim=1)  # [batch_size]
+            
         else:
-            # 不使用history时，只用[CLS]
-            for i in range(batch_size):
-                prompt = history_input_ids.new_full((1,), self.tokenizer.cls_token_id)
-                per_sample_inputs.append(prompt)
-                prefix_lengths.append(1)
-
-        input_ids = pad_sequence(
-            per_sample_inputs, batch_first=True, padding_value=self.tokenizer.pad_token_id
-        )
-        attention_mask = (input_ids != self.tokenizer.pad_token_id).long()
-        prefix_lengths = torch.tensor(prefix_lengths, device=device)
+            # 不使用history模式：只用[CLS]作为起始
+            # 批量创建[CLS] token，shape: [batch_size, 1]
+            input_ids = torch.full(
+                (batch_size, 1), 
+                self.tokenizer.cls_token_id, 
+                dtype=torch.long, 
+                device=device
+            )
+            attention_mask = torch.ones_like(input_ids)
+            input_lengths = torch.ones(batch_size, dtype=torch.long, device=device)  # 都是1
         
-        # 准备交叉注意力参数
-        model_kwargs = {
-            "encoder_hidden_states": visual_features,
-            "encoder_attention_mask": visual_attention_mask,
-        }
-        
-        # 配置生成参数
-        generation_kwargs = {
+        # ============================================
+        # 2. 配置生成参数
+        # ============================================
+        generation_config = {
+            # 基础参数
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "max_new_tokens": max_new_tokens,
-            "num_beams": num_beams,
-            "eos_token_id": self.tokenizer.eos_token_id,  # 使用[EOS]作为生成结束标志
             "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            
+            # 交叉注意力参数（用于关注视觉特征）
+            "encoder_hidden_states": visual_features,
+            "encoder_attention_mask": visual_attention_mask,
+            
+            # 生成策略参数
+            "num_beams": num_beams,
             "repetition_penalty": repetition_penalty,
         }
         
-        # beam search和sampling的互斥处理
+        # 配置采样策略：beam search和sampling互斥
         if num_beams > 1:
-            generation_kwargs["do_sample"] = False
-            generation_kwargs["early_stopping"] = True  # 添加early stopping
+            # Beam search模式：确定性生成
+            generation_config["do_sample"] = False
+            generation_config["early_stopping"] = True
         else:
-            generation_kwargs["do_sample"] = do_sample
+            # Greedy或sampling模式
+            generation_config["do_sample"] = do_sample
             if do_sample:
-                generation_kwargs["top_p"] = top_p
-                generation_kwargs["temperature"] = temperature
+                generation_config["top_p"] = top_p
+                generation_config["temperature"] = temperature
         
-        # 添加交叉注意力参数
-        generation_kwargs.update(model_kwargs)
+        # ============================================
+        # 3. 执行生成
+        # ============================================
+        with torch.no_grad():
+            generated_ids = self.text_decoder.generate(**generation_config)
         
-        # 生成文本
-        with torch.no_grad():  # 确保生成时不计算梯度
-            outputs = self.text_decoder.generate(**generation_kwargs)
-
-        # 按实际前缀长度裁剪并解码
+        # ============================================
+        # 4. 解码生成的文本（去除prompt部分）
+        # ============================================
         generated_texts = []
-        for idx, (tokens, prefix_len) in enumerate(zip(outputs, prefix_lengths.tolist())):
-            # 只保留生成的新内容
-            generated_part = tokens[prefix_len:]
-            # 解码（跳过特殊token）
-            text = self.tokenizer.decode(generated_part, skip_special_tokens=True)
-            generated_texts.append(text)
-            
+        
+        if self.use_history and history_input_ids is not None:
+            # 使用history模式：需要去除history prompt部分
+            for i in range(batch_size):
+                # 获取该样本的实际输入长度
+                prompt_len = input_lengths[i].item()
+                # 只保留生成的新内容
+                new_tokens = generated_ids[i, prompt_len:]
+                # 解码为文本
+                text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+                generated_texts.append(text)
+        else:
+            # 不使用history模式：只需去除起始的[CLS]
+            for i in range(batch_size):
+                # 跳过第一个[CLS] token
+                new_tokens = generated_ids[i, 1:]
+                # 解码为文本
+                text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+                generated_texts.append(text)
+        
         return generated_texts

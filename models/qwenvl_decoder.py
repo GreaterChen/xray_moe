@@ -518,12 +518,10 @@ class QwenVLDecoder(nn.Module):
                 return_dict=True,
             )
             
-            logits = outputs.logits
-            hidden_states = outputs.hidden_states[-1] if outputs.hidden_states else None
+            # 只返回loss，其他值在调用方没有实际使用
             loss = outputs.loss
-            decoded_texts = None  # 训练时不解码，节省时间
             
-            return logits, hidden_states, decoded_texts, loss
+            return loss
         
         else:
             # 生成模式
@@ -720,8 +718,8 @@ class QwenVLAdapter(nn.Module):
             visual_only = visual_features
             disease_only = None
         
-        # 调用Qwen解码器
-        logits, hidden_states, decoded_texts, loss = self.decoder(
+        # 调用Qwen解码器（现在只返回loss）
+        loss = self.decoder(
             visual_features=visual_only,
             history=history_encoding,
             target_text=findings,
@@ -743,9 +741,6 @@ class QwenVLAdapter(nn.Module):
         
         outputs = Qwen2VLOutputs()
         outputs.loss = loss
-        outputs.logits = logits
-        outputs.hidden_states = None  # 减少内存占用
-        outputs.decoded_texts = decoded_texts
         
         return outputs
     
