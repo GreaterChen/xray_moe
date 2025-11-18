@@ -6,75 +6,6 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers import BertConfig, BertTokenizer, BertLMHeadModel
 
 
-class BertLMHeadModelWithCrossAttention(BertLMHeadModel):
-    """
-    继承自BertLMHeadModel，添加对encoder_hidden_states和encoder_attention_mask的正确处理
-    """
-    def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **model_kwargs):
-        """
-        重写以正确处理encoder_hidden_states和encoder_attention_mask在beam search中的扩展
-        """
-        input_shape = input_ids.shape
-        effective_batch_size = input_shape[0]
-
-        # 添加dummy token
-        if self.config.pad_token_id is None:
-            raise ValueError("The PAD token should be defined for generation")
-
-        attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((attention_mask.shape[0], 1))], dim=-1)
-        dummy_token = torch.full(
-            (effective_batch_size, 1), self.config.pad_token_id, dtype=torch.long, device=input_ids.device
-        )
-        input_ids = torch.cat([input_ids, dummy_token], dim=1)
-
-        # 处理encoder_hidden_states和encoder_attention_mask
-        inputs = {
-            "input_ids": input_ids, 
-            "attention_mask": attention_mask,
-        }
-        
-        # 保留encoder相关的参数
-        if "encoder_hidden_states" in model_kwargs:
-            inputs["encoder_hidden_states"] = model_kwargs["encoder_hidden_states"]
-        if "encoder_attention_mask" in model_kwargs:
-            inputs["encoder_attention_mask"] = model_kwargs["encoder_attention_mask"]
-            
-        return inputs
-    
-    @staticmethod
-    def _expand_inputs_for_generation(
-        expand_size=1,
-        is_encoder_decoder=False,
-        input_ids=None,
-        **model_kwargs,
-    ):
-        """
-        重写以正确扩展encoder_hidden_states和encoder_attention_mask用于beam search
-        """
-        if expand_size == 1:
-            return input_ids, model_kwargs
-
-        def _expand_dict_for_generation(dict_to_expand):
-            """扩展字典中的所有张量"""
-            for key in dict_to_expand:
-                if (
-                    key != "cache_position"
-                    and dict_to_expand[key] is not None
-                    and isinstance(dict_to_expand[key], torch.Tensor)
-                ):
-                    dict_to_expand[key] = dict_to_expand[key].repeat_interleave(expand_size, dim=0)
-            return dict_to_expand
-
-        # 扩展input_ids
-        if input_ids is not None:
-            input_ids = input_ids.repeat_interleave(expand_size, dim=0)
-
-        # 扩展model_kwargs中的所有张量
-        model_kwargs = _expand_dict_for_generation(model_kwargs)
-
-        return input_ids, model_kwargs
-
-
 class BertCrossDecoder(nn.Module):
     """
     BERT交叉注意力解码器模型，使用视觉特征作为KV源，历史文本作为Q的开头
@@ -118,8 +49,8 @@ class BertCrossDecoder(nn.Module):
         decoder_config.add_cross_attention = True
         decoder_config.is_decoder = True
 
-        # 初始化解码器
-        self.text_decoder = BertLMHeadModelWithCrossAttention.from_pretrained(
+        # 初始化解码器（BertLMHeadModel原生支持交叉注意力）
+        self.text_decoder = BertLMHeadModel.from_pretrained(
             "bert-base-uncased", config=decoder_config, local_files_only=True
         )
 
@@ -286,37 +217,22 @@ class BertCrossDecoder(nn.Module):
                 # ============================================
                 # 不使用历史文本的自回归训练
                 # ============================================
-                # 保持原有逻辑
-                actual_lengths = target_attention_mask.sum(dim=1)
-                max_input_len = torch.clamp(actual_lengths - 1, min=0).max().item()
+                # 简化版本：直接使用shift操作
+                # 输入: [CLS] t1 t2 ... t_{m-1}
+                # 标签: t1 t2 ... t_m [EOS]
                 
-                full_input_ids = torch.full(
-                    (batch_size, max_input_len), 
-                    self.tokenizer.pad_token_id, 
-                    dtype=torch.long, 
-                    device=device
-                )
-                full_attention_mask = torch.zeros(
-                    (batch_size, max_input_len), 
-                    dtype=torch.long, 
-                    device=device
-                )
-                labels = torch.full(
-                    (batch_size, max_input_len), 
-                    -100, 
-                    dtype=torch.long, 
-                    device=device
-                )
+                # 由于使用left padding，数据已经是右对齐的
+                # 只需要做简单的shift操作即可
                 
-                for i in range(batch_size):
-                    actual_len = actual_lengths[i].item()
-                    if actual_len <= 1:
-                        continue
-                    
-                    input_len = actual_len - 1
-                    full_input_ids[i, :input_len] = target_input_ids[i, :input_len]
-                    full_attention_mask[i, :input_len] = 1
-                    labels[i, :input_len] = target_input_ids[i, 1:actual_len]
+                # 输入：去掉最后一个token
+                full_input_ids = target_input_ids[:, :-1]
+                full_attention_mask = target_attention_mask[:, :-1]
+                
+                # 标签：去掉第一个token（[CLS]），保留到[EOS]
+                labels = target_input_ids[:, 1:].clone()
+                
+                # 将padding位置的标签设为-100（忽略loss）
+                labels[target_attention_mask[:, 1:] == 0] = -100
             
             # 模型前向传播
             outputs = self.text_decoder(
