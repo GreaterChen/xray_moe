@@ -145,8 +145,16 @@ def setup_tokenizer(config):
             "bert-base-uncased", 
             local_files_only=True
         )
-        tokenizer.add_special_tokens({"bos_token": "[DEC]"})
+        # 添加特殊tokens：BOS用于解码开始，EOS用于生成结束
+        tokenizer.add_special_tokens({
+            "bos_token": "[DEC]",
+            "eos_token": "[EOS]"
+        })
         print("✅ 使用BERT tokenizer")
+        print(f"   pad_token: {tokenizer.pad_token} (ID: {tokenizer.pad_token_id})")
+        print(f"   bos_token: {tokenizer.bos_token} (ID: {tokenizer.bos_token_id})")
+        print(f"   eos_token: {tokenizer.eos_token} (ID: {tokenizer.eos_token_id})")
+        print(f"   sep_token: {tokenizer.sep_token} (ID: {tokenizer.sep_token_id})")
     
     return tokenizer
 

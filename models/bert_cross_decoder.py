@@ -101,10 +101,10 @@ class BertCrossDecoder(nn.Module):
         # 使用传入的tokenizer或创建一个新的
         if tokenizer:
             self.tokenizer = tokenizer
-            self.tokenizer.padding_side = 'right'
+            self.tokenizer.padding_side = 'left'
         else:
             self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", local_files_only=True)
-            self.tokenizer.padding_side = 'right'
+            self.tokenizer.padding_side = 'left'
         
         # 加载BERT配置，启用交叉注意力
         bert_config_path = os.path.join(config.ROOT_DIR if hasattr(config, 'ROOT_DIR') else '.', "configs/bert_config.json")
@@ -214,11 +214,14 @@ class BertCrossDecoder(nn.Module):
             
             if self.use_history:
                 # ============================================
-                # 使用历史文本作为prompt的自回归训练（改进版）
+                # 使用历史文本作为prompt的自回归训练
                 # ============================================
-                # 新格式（去掉target的[CLS]，让拼接更自然）：
-                #   输入: [CLS] h1 ... h_n [SEP] t1 t2 ... t_{m-1}
-                #   标签: [-100]........[-100] t1 t2 ... t_m [SEP]
+                # 格式：
+                #   history编码: [CLS] h1 h2 ... hn [SEP]
+                #   target编码:  [CLS] t1 t2 ... tm [SEP]
+                #   拼接输入:    [CLS] h1 h2 ... hn [SEP] t1 t2 ... tm-1
+                #   拼接标签:    [-100]..........[-100][-100] t1 t2 ... tm [EOS]
+                # 注意：将target的最后一个[SEP]替换为[EOS]用于生成结束判断
                 # ============================================
                 
                 actual_history_lengths = history_attention_mask.sum(dim=1)
@@ -254,7 +257,7 @@ class BertCrossDecoder(nn.Module):
                     h_len = actual_history_lengths[i].item()
                     t_len = actual_target_lengths[i].item()
                     
-                    # History部分：保留完整history
+                    # History部分：保留完整history（已包含[CLS] ... [SEP]）
                     full_input_ids[i, :h_len] = history_input_ids[i, :h_len]
                     full_attention_mask[i, :h_len] = 1
                     
@@ -263,7 +266,7 @@ class BertCrossDecoder(nn.Module):
                         continue
                     
                     # 跳过target的[CLS]（索引0），从t1开始
-                    # 输入: t1 t2 ... t_{m-1}（不包括最后的[SEP]）
+                    # 输入: t1 t2 ... t_{m-1}（不包括最后的token）
                     target_tokens_to_use = t_len - 2  # 去掉[CLS]和最后一个token
                     if target_tokens_to_use <= 0:
                         continue
@@ -275,7 +278,8 @@ class BertCrossDecoder(nn.Module):
                     full_input_ids[i, start:end] = target_input_ids[i, 1:1+target_tokens_to_use]
                     full_attention_mask[i, start:end] = 1
                     
-                    # 标签部分：预测t1到t_m（包括[SEP]）
+                    # 标签部分：预测t1到tm（包括[EOS]）
+                    # 注意：target_input_ids的最后一个token已经在数据准备阶段被替换为[EOS]
                     labels[i, start:end] = target_input_ids[i, 2:2+target_tokens_to_use]
             
             else:
@@ -407,7 +411,7 @@ class BertCrossDecoder(nn.Module):
             "attention_mask": attention_mask,
             "max_new_tokens": max_new_tokens,
             "num_beams": num_beams,
-            "eos_token_id": self.tokenizer.sep_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,  # 使用[EOS]作为生成结束标志
             "pad_token_id": self.tokenizer.pad_token_id,
             "repetition_penalty": repetition_penalty,
         }
