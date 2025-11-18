@@ -52,16 +52,6 @@ class BertCrossDecoder(nn.Module):
         # 调整词表大小
         self.text_decoder.resize_token_embeddings(len(self.tokenizer))
         
-        # 视觉特征映射层（如果需要额外的模态适配）
-        # 可以考虑添加一个开关来决定是否使用
-        self.use_visual_projection = getattr(config, 'USE_VISUAL_PROJECTION', False)
-        if self.use_visual_projection:
-            self.visual_projection = nn.Linear(hidden_dim, hidden_dim)
-        
-        # 只有在启用RGAT时才创建疾病特征映射层
-        if self.enable_rgat:
-            self.disease_projection = nn.Linear(hidden_dim, hidden_dim)
-        
         # 设置视觉和疾病特征的token数量
         self.num_visual_tokens = 30
         self.num_disease_tokens = 14
@@ -82,29 +72,9 @@ class BertCrossDecoder(nn.Module):
         batch_size = visual_features.shape[0]
         device = visual_features.device
         
-        # 处理视觉特征
-        if self.enable_rgat:
-            # RGAT模式：分离视觉特征和疾病特征
-            visual_part = visual_features[:, :self.num_visual_tokens, :]
-            disease_part = visual_features[:, self.num_visual_tokens:self.num_visual_tokens+self.num_disease_tokens, :]
-            
-            # 映射特征
-            if self.use_visual_projection:
-                visual_part = self.visual_projection(visual_part)
-            projected_disease = self.disease_projection(disease_part)
-            
-            # 拼接特征
-            projected_features = torch.cat([visual_part, projected_disease], dim=1)
-        else:
-            # 非RGAT模式
-            if self.use_visual_projection:
-                projected_features = self.visual_projection(visual_features)
-            else:
-                projected_features = visual_features
-        
         # 创建特征的attention mask
         visual_attention_mask = torch.ones(
-            projected_features.size()[:-1], dtype=torch.long, device=device
+            visual_features.size()[:-1], dtype=torch.long, device=device
         )
         
         # 处理历史文本
@@ -204,7 +174,7 @@ class BertCrossDecoder(nn.Module):
             outputs = self.text_decoder(
                 input_ids=full_input_ids,
                 attention_mask=full_attention_mask,
-                encoder_hidden_states=projected_features,
+                encoder_hidden_states=visual_features,
                 encoder_attention_mask=visual_attention_mask,
                 labels=labels,
                 return_dict=True,
@@ -216,7 +186,7 @@ class BertCrossDecoder(nn.Module):
             params = {
                 "history_input_ids": history_input_ids,
                 "history_attention_mask": history_attention_mask,
-                "visual_features": projected_features,
+                "visual_features": visual_features,
                 "visual_attention_mask": visual_attention_mask,
             }
             

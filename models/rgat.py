@@ -287,6 +287,9 @@ class ThreeStageRGAT(nn.Module):
         # 疾病分类头
         self.disease_classifier = DiseaseClassifierHead(hidden_dim_3, dropout=dropout)
         
+        # 输出归一化层
+        self.output_norm = nn.LayerNorm(hidden_dim_3)
+        
         # 加载图结构
         self.register_buffer("aa_adj", self._load_adjacency_matrix(aa_adj_path, (num_anatomy, num_anatomy)))
         self.register_buffer("dd_adj", self._load_adjacency_matrix(dd_adj_path, (num_disease, num_disease)))
@@ -409,6 +412,10 @@ class ThreeStageRGAT(nn.Module):
             edge_weights=self.dd_weights
         )  # [B, 14, hidden_dim_3]
         disease_features = F.elu(disease_features)
+        
+        # 添加LayerNorm以确保输出特征尺度一致
+        # 这对于与视觉特征拼接时保持数值稳定性很重要
+        disease_features = self.output_norm(disease_features)
         
         # === 疾病分类 ===
         disease_preds = self.disease_classifier(disease_features)  # [B, 14]
