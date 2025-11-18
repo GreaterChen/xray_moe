@@ -93,10 +93,10 @@ class MedicalReportGenerator(nn.Module):
         total_epochs=20,
         mode="train",
         image_ids=None,  # 添加image_ids参数用于文本增强
-        use_consistent_eval=False,  # 新增参数：是否在测试时保持训练模式以确保一致性
-        anatomical_embeddings_batch=None,  # 新增：批次中每个样本的解剖区域嵌入
-        anatomical_nlp_status_batch=None,  # 新增：批次中每个样本的解剖区域NLP状态
-        same_text_region_groups_batch=None,  # 新增：批次中每个样本的同文本区域分组
+        use_consistent_eval=False,
+        anatomical_embeddings_batch=None,
+        anatomical_nlp_status_batch=None,
+        same_text_region_groups_batch=None,
         **kwargs
     ):
         encoder_type = getattr(self.config, 'ENCODER_TYPE', 'detection+vit').lower()

@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
-from transformers import BertConfig, BertTokenizer, BertLMHeadModel
+from models.med import BertConfig, BertModel, BertLMHeadModel
 
 
 class BertCrossDecoder(nn.Module):
@@ -30,12 +30,7 @@ class BertCrossDecoder(nn.Module):
         self.use_history = getattr(config, 'USE_HISTORY', False)
         
         # 使用传入的tokenizer或创建一个新的
-        if tokenizer:
-            self.tokenizer = tokenizer
-            self.tokenizer.padding_side = 'left'
-        else:
-            self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", local_files_only=True)
-            self.tokenizer.padding_side = 'left'
+        self.tokenizer = tokenizer
         
         # 加载BERT配置，启用交叉注意力
         bert_config_path = os.path.join(config.ROOT_DIR if hasattr(config, 'ROOT_DIR') else '.', "configs/bert_config.json")
@@ -144,17 +139,6 @@ class BertCrossDecoder(nn.Module):
             target_attention_mask = target_text.attention_mask.to(device)
             
             if self.use_history:
-                # ============================================
-                # 使用历史文本作为prompt的自回归训练
-                # ============================================
-                # 格式：
-                #   history编码: [CLS] h1 h2 ... hn [SEP]
-                #   target编码:  [CLS] t1 t2 ... tm [EOS]
-                #   拼接输入:    [CLS] h1 h2 ... hn [SEP] t1 t2 ... tm [EOS]
-                #   拼接标签:    [-100]..........[-100][-100] t1 t2 ... tm [EOS]
-                # BertLMHeadModel会自动处理shift，让每个位置预测下一个token
-                # ============================================
-                
                 actual_history_lengths = history_attention_mask.sum(dim=1)
                 actual_target_lengths = target_attention_mask.sum(dim=1)
                 
@@ -223,7 +207,6 @@ class BertCrossDecoder(nn.Module):
                 encoder_hidden_states=projected_features,
                 encoder_attention_mask=visual_attention_mask,
                 labels=labels,
-                output_hidden_states=True,
                 return_dict=True,
             )
 
@@ -249,7 +232,7 @@ class BertCrossDecoder(nn.Module):
         visual_features,
         visual_attention_mask,
         num_beams=3,
-        max_new_tokens=100,
+        max_new_tokens=150,
         do_sample=True,
         top_p=0.9,
         temperature=0.7,
@@ -356,11 +339,8 @@ class BertCrossDecoder(nn.Module):
                 generated_texts.append(text)
         else:
             # 不使用history模式：只需去除起始的[CLS]
-            for i in range(batch_size):
-                # 跳过第一个[CLS] token
-                new_tokens = generated_ids[i, 1:]
-                # 解码为文本
-                text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+            for i, output in enumerate(batch_size):
+                text = self.tokenizer.decode(output, skip_special_tokens=True)
                 generated_texts.append(text)
         
         return generated_texts
