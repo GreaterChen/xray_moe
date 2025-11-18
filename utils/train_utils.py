@@ -223,8 +223,12 @@ def _compute_loss(config, output):
         
         # 添加RGAT疾病分类损失
         if hasattr(output, 'rgat_loss') and output.rgat_loss is not None:
-            rgat_weight = getattr(config, 'RGAT_LOSS_WEIGHT', 1.0)
-            loss += rgat_weight * output.rgat_loss
+            # 只有在启用RGAT模块且明确允许分类损失时才加入到总loss中
+            enable_rgat = getattr(config, 'ENABLE_RGAT', True)
+            enable_rgat_cls = getattr(config, 'ENABLE_RGAT_CLASSIFICATION_LOSS', True)
+            if enable_rgat and enable_rgat_cls:
+                rgat_weight = getattr(config, 'RGAT_LOSS_WEIGHT', 1.0)
+                loss += rgat_weight * output.rgat_loss
         
         return loss
     

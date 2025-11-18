@@ -130,6 +130,7 @@ class DefaultConfig:
     DA_ADJ_PATH = None  # Disease-Anatomy邻接矩阵路径 (需要在local_config中设置)
     RGAT_DROPOUT = 0.1  # RGAT模块的dropout率
     RGAT_LOSS_WEIGHT = 1.0  # RGAT疾病分类损失的权重
+    ENABLE_RGAT_CLASSIFICATION_LOSS = True  # 是否启用RGAT分类损失分支
 
     # 编码器类型: "detection+vit"（现有方案）或 "vit_only"（新增方案, 不经目标检测，直接ViT编码）
     ENCODER_TYPE = "detection+vit"

@@ -647,14 +647,9 @@ def test_llm(
             if "label" in batch:
                 labels_list.extend(batch["label"].cpu().numpy().tolist())
                 
-            # 在这里先保存原始的findings字符串
-            original_findings = batch["findings"]
-            # 确保findings是字符串列表
-            if isinstance(original_findings, list) and all(isinstance(f, str) for f in original_findings):
-                target_texts = original_findings.copy()  # 直接使用原始字符串列表
-            else:
-                # 如果不是字符串列表，初始化为空列表，后续再填充
-                target_texts = []
+            # 评测时的GT将基于与训练相同的tokenization+截断规则生成
+            # 这里先初始化为空列表，稍后从target["findings"]的token ids中解码
+            target_texts = []
 
             # 准备批次数据
             source, target, _ = prepare_batch_data(
@@ -688,11 +683,34 @@ def test_llm(
                 source["image"].size(0) if "image" in source else len(batch["findings"])
             )
 
-            # 记录损失（如果有）
-            if (hasattr(outputs, "loss") and outputs.loss is not None):
-                loss = outputs.loss
-                running_loss += loss.item() * batch_size
-                total_samples += batch_size
+            # 基于训练时得到的编码结果，构造评测用GT文本
+            # 这样可以保证GT和训练时的MAX_LEN_FINDINGS截断保持一致
+            decoder_tokenizer = None
+            if hasattr(model, "findings_decoder"):
+                fd = model.findings_decoder
+                if hasattr(fd, "tokenizer") and fd.tokenizer is not None:
+                    decoder_tokenizer = fd.tokenizer
+                elif hasattr(fd, "decoder") and hasattr(fd.decoder, "tokenizer"):
+                    decoder_tokenizer = fd.decoder.tokenizer
+
+            if decoder_tokenizer is not None and "findings" in target and "input_ids" in target["findings"]:
+                try:
+                    ids = target["findings"]["input_ids"]  # [B, L]
+                    # 对于BatchEncoding或dict，优先获取attention_mask
+                    attn = None
+                    if "attention_mask" in target["findings"]:
+                        attn = target["findings"]["attention_mask"]
+                    for idx in range(batch_size):
+                        if attn is not None:
+                            valid_ids = ids[idx][attn[idx].bool()]
+                        else:
+                            valid_ids = ids[idx]
+                        text = decoder_tokenizer.decode(valid_ids, skip_special_tokens=True)
+                        target_texts.append(text)
+                except Exception:
+                    # 解码出现问题时退回到原有逻辑
+                    target_texts = []
+
 
             # 提取生成的文本
             if isinstance(outputs, dict) and "findings_text" in outputs:
@@ -705,8 +723,9 @@ def test_llm(
                 logger.error(f"不支持的输出格式: {type(outputs)}")
                 generated_texts = ["生成失败"] * batch_size
 
-            # 如果target_texts为空（不是字符串列表的情况），则需要解码获取
+            # 如果target_texts为空（无法通过token ids解码），则退回到原有逻辑
             if not target_texts:
+
                 # 检查batch["findings"]是否为字符串列表
                 if "findings" in batch and isinstance(batch["findings"], list) and len(batch["findings"]) > 0 and isinstance(batch["findings"][0], str):
                     target_texts = batch["findings"]

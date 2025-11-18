@@ -83,84 +83,87 @@ class BertCrossDecoder(nn.Module):
             history_input_ids = torch.empty((batch_size, 0), dtype=torch.long, device=device)
             history_attention_mask = torch.empty((batch_size, 0), dtype=torch.long, device=device)
         else:
+            # 保持与tokenizer一致的left padding格式，直接使用编码结果
             history_input_ids = history.input_ids.to(device)
             history_attention_mask = history.attention_mask.to(device)
-            
-            # 移除padding，获取实际的history序列
-            unpadded_inputs = []
-            unpadded_masks = []
-            actual_lengths = history_attention_mask.sum(dim=1)
-            for i in range(batch_size):
-                length = actual_lengths[i].item()
-                if length > 0:
-                    unpadded_inputs.append(history_input_ids[i, :length])
-                    unpadded_masks.append(history_attention_mask[i, :length])
-                else:
-                    unpadded_inputs.append(torch.empty((0,), dtype=torch.long, device=device))
-                    unpadded_masks.append(torch.empty((0,), dtype=torch.long, device=device))
-            
-            # 重新对齐
-            history_input_ids = pad_sequence(unpadded_inputs, batch_first=True, padding_value=self.tokenizer.pad_token_id)
-            history_attention_mask = pad_sequence(unpadded_masks, batch_first=True, padding_value=0)
+
 
         if mode == "train" and target_text is not None:
-            # 处理目标文本
+            # 处理目标文本（同样是left padding）
             target_input_ids = target_text.input_ids.to(device)
             target_attention_mask = target_text.attention_mask.to(device)
             
             if self.use_history:
-                actual_history_lengths = history_attention_mask.sum(dim=1)
-                actual_target_lengths = target_attention_mask.sum(dim=1)
-                
-                batch_size = history_input_ids.shape[0]
-                max_history_len = actual_history_lengths.max().item()
-                # target去掉[CLS]的长度（保留完整序列用于模型自动shift）
-                max_target_len = torch.clamp(actual_target_lengths - 1, min=0).max().item()  # 只去掉[CLS]
-                max_total_len = max_history_len + max_target_len
-                
-                # 初始化张量
-                full_input_ids = torch.full(
-                    (batch_size, max_total_len), 
-                    self.tokenizer.pad_token_id, 
-                    dtype=torch.long, 
-                    device=device
-                )
-                full_attention_mask = torch.zeros(
-                    (batch_size, max_total_len), 
-                    dtype=torch.long, 
-                    device=device
-                )
-                labels = torch.full(
-                    (batch_size, max_total_len), 
-                    -100, 
-                    dtype=torch.long, 
-                    device=device
-                )
-                
-                # 逐样本处理
+                # 基于attention_mask去除history和target中的padding，并将二者无缝拼接
+                sequences = []
+                history_lengths_list = []
+                target_lengths_list = []
+
                 for i in range(batch_size):
-                    h_len = actual_history_lengths[i].item()
-                    t_len = actual_target_lengths[i].item()
-                    
-                    # History部分：保留完整history（已包含[CLS] ... [SEP]）
-                    full_input_ids[i, :h_len] = history_input_ids[i, :h_len]
-                    full_attention_mask[i, :h_len] = 1
-                    
-                    # Target部分：去掉[CLS]，保留完整序列（t1 ... tm [EOS]）
-                    if t_len <= 1:  # 只有[CLS]或空
-                        continue
-                    
-                    # 跳过target的[CLS]（索引0），从t1开始到[EOS]
-                    target_tokens = t_len - 1  # 去掉[CLS]
-                    if target_tokens <= 0:
-                        continue
-                    
-                    start = h_len
-                    end = h_len + target_tokens
-                    
-                    full_input_ids[i, start:end] = target_input_ids[i, 1:1+target_tokens]
-                    full_attention_mask[i, start:end] = 1
-                    labels[i, start:end] = target_input_ids[i, 1:1+target_tokens]
+                    # History部分：按mask取出有效token（去掉左侧padding）
+                    if history_attention_mask.numel() > 0:
+                        h_mask = history_attention_mask[i].bool()
+                        history_tokens = history_input_ids[i][h_mask]
+                    else:
+                        history_tokens = target_input_ids.new_zeros((0,), dtype=torch.long)
+
+                    # Target部分：按mask取出有效token（去掉左侧padding）
+                    t_mask = target_attention_mask[i].bool()
+                    target_tokens = target_input_ids[i][t_mask]
+
+                    # 拼接history和target（中间不留padding）
+                    if history_tokens.numel() == 0 and target_tokens.numel() == 0:
+                        full_seq = target_input_ids.new_zeros((0,), dtype=torch.long)
+                    else:
+                        full_seq = torch.cat([history_tokens, target_tokens], dim=0)
+
+                    sequences.append(full_seq)
+                    history_lengths_list.append(history_tokens.size(0))
+                    target_lengths_list.append(target_tokens.size(0))
+
+                # 计算当前batch中的最大长度，并进行left padding（整体保持left padding风格）
+                max_total_len = max((seq.size(0) for seq in sequences), default=0)
+                if max_total_len == 0:
+                    # 极端情况下没有任何有效token，退回到仅使用target的逻辑
+                    full_input_ids = target_input_ids
+                    full_attention_mask = target_attention_mask
+                    labels = target_input_ids.clone()
+                    labels[target_attention_mask == 0] = -100
+                else:
+                    full_input_ids = torch.full(
+                        (batch_size, max_total_len),
+                        self.tokenizer.pad_token_id,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                    full_attention_mask = torch.zeros(
+                        (batch_size, max_total_len),
+                        dtype=torch.long,
+                        device=device,
+                    )
+                    labels = torch.full(
+                        (batch_size, max_total_len),
+                        -100,
+                        dtype=torch.long,
+                        device=device,
+                    )
+
+                    for i, seq in enumerate(sequences):
+                        seq_len = seq.size(0)
+                        if seq_len == 0:
+                            continue
+                        pad_len = max_total_len - seq_len
+                        # left padding：内容放在右侧
+                        full_input_ids[i, pad_len:] = seq
+                        full_attention_mask[i, pad_len:] = 1
+
+                        # 仅对target部分计算loss（history部分的label为-100）
+                        h_len = history_lengths_list[i]
+                        t_len = target_lengths_list[i]
+                        if t_len > 0:
+                            start = pad_len + h_len
+                            end = start + t_len
+                            labels[i, start:end] = seq[h_len:]
                     
             else:
                 full_input_ids = target_input_ids
