@@ -135,26 +135,20 @@ def prepare_batch_data(
         texts = batch[field]
         encoded = tokenizer(
             texts,
-            max_length=max_len,
-            padding="max_length",
+            max_length=max_len,  # 最大长度限制，超过会截断
+            padding="longest",  # 只padding到batch内最长序列（不超过max_length），提高效率
             truncation=True,
             return_tensors="pt",
         ).to(device)
         
         # 对于findings字段（训练目标），将[SEP]替换为[EOS]
         # BERT tokenizer默认添加[CLS]...[SEP]，我们需要将最后的[SEP]改为[EOS]用于生成结束判断
+        # 注意：使用left padding，最后一列（索引-1）总是最后一个有效token
         if field == "findings" and hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:
             input_ids = encoded.input_ids
-            attention_mask = encoded.attention_mask
-            # 逐样本处理
-            for i in range(input_ids.size(0)):
-                # 找到最后一个非padding token的位置
-                valid_length = attention_mask[i].sum().item()
-                if valid_length > 0:
-                    last_token_idx = valid_length - 1
-                    # 如果最后一个token是[SEP]，替换为[EOS]
-                    if input_ids[i, last_token_idx] == tokenizer.sep_token_id:
-                        input_ids[i, last_token_idx] = tokenizer.eos_token_id
+            # 直接替换最后一列的[SEP]为[EOS]（left padding保证最后一列是有效token）
+            sep_mask = (input_ids[:, -1] == tokenizer.sep_token_id)
+            input_ids[sep_mask, -1] = tokenizer.eos_token_id
         
         source[field] = encoded
         target[field] = encoded

@@ -150,7 +150,10 @@ def setup_tokenizer(config):
             "bos_token": "[DEC]",
             "eos_token": "[EOS]"
         })
+        # 设置left padding（用于decoder模型）
+        tokenizer.padding_side = 'left'
         print("✅ 使用BERT tokenizer")
+        print(f"   padding_side: {tokenizer.padding_side}")
         print(f"   pad_token: {tokenizer.pad_token} (ID: {tokenizer.pad_token_id})")
         print(f"   bos_token: {tokenizer.bos_token} (ID: {tokenizer.bos_token_id})")
         print(f"   eos_token: {tokenizer.eos_token} (ID: {tokenizer.eos_token_id})")

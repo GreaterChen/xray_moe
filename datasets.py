@@ -293,11 +293,6 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         self.load_shared_data(directory, ann_dir, mode, generation_target=generation_target)
 
         self.tokenizer = tokenizer
-        self.bos_token_id = self.tokenizer.bos_token_id
-        # 根据tokenizer类型选择EOS token (BERT使用[SEP], Qwen使用eos_token)
-        self.eos_token_id = getattr(self.tokenizer, 'sep_token_id', None) or self.tokenizer.eos_token_id
-        self.pad_token_id = self.tokenizer.pad_token_id
-
         self.sources = ["image", "findings", "history", "bbox_targets"]
         self.targets = ["findings", "label"]
 
@@ -313,9 +308,6 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         if random_transform:
             self.transform = transforms.Compose(
                 [
-                    # transforms.Resize(224),
-                    # transforms.RandomCrop(input_size),
-                    # transforms.RandomRotation(degrees=5),
                     transforms.ToTensor(),
                     transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
                 ]
@@ -323,8 +315,6 @@ class MIMIC(data.Dataset):  # MIMIC-CXR Dataset
         else:
             self.transform = transforms.Compose(
                 [
-                    # transforms.Resize(224),
-                    # transforms.CenterCrop(input_size),
                     transforms.ToTensor(),
                     transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
                 ]
@@ -627,11 +617,6 @@ class IUXRAY(data.Dataset):
         self.load_shared_data(ann_path)
         
         self.tokenizer = tokenizer
-        self.bos_token_id = self.tokenizer.bos_token_id
-        # 根据tokenizer类型选择EOS token (BERT使用[SEP], Qwen使用eos_token)
-        self.eos_token_id = getattr(self.tokenizer, 'sep_token_id', None) or self.tokenizer.eos_token_id
-        self.pad_token_id = self.tokenizer.pad_token_id
-        
         self.images_dir = images_dir
         self.input_size = input_size
         self.random_transform = random_transform
