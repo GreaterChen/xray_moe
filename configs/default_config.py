@@ -79,19 +79,19 @@ class DefaultConfig:
     VAL_BATCH_SIZE = 16
     NUM_WORKERS = 8
     EPOCHS = 50
-    LEARNING_RATE = 1e-4
+    LEARNING_RATE = 5e-5  # 降低学习率，更适合BERT微调
     MIN_LR = 1e-6
     WARMUP_LR = 5e-6
     WARMUP_STEPS = 2000
-    WEIGHT_DECAY = 0.01
+    WEIGHT_DECAY = 0.001  # 降低weight decay
     DROPOUT = 0.1
     GRAD_CLIP_NORM = 1.0  # 梯度裁剪阈值
 
     # 分层学习率设置（用于FINETUNE_BERT阶段的参数分组优化）
-    USE_LAYERWISE_LR = False  # 是否启用分层学习率
-    LORA_LR_SCALE = 1.0  # LoRA参数学习率倍数（相对于LEARNING_RATE）
-    VIT_LR_SCALE = 2.0  # ViT参数学习率倍数
-    OTHER_LR_SCALE = 3.0  # 其他参数（投影层、RGAT等）学习率倍数
+    USE_LAYERWISE_LR = True  # 启用分层学习率，BERT微调应该使用不同学习率
+    BERT_LR_SCALE = 0.1  # BERT参数学习率更低（相对于LEARNING_RATE）
+    VIT_LR_SCALE = 0.5  # ViT参数学习率中等
+    OTHER_LR_SCALE = 1.0  # 其他参数（投影层、RGAT等）使用标准学习率
 
     # 随机种子
     SEED = 123

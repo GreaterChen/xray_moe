@@ -94,31 +94,37 @@ class BertFinetuneTrainer(BaseTrainer):
             self.config.LEARNING_RATE
         ) if self.config.ADJUST_LR_FOR_MULTI_GPU else self.config.LEARNING_RATE
 
-        # 如果启用分层学习率且使用Qwen+LoRA，则按模块分组
-        if use_layerwise_lr and decoder_type in ['qwen2vl', 'qwenvl'] and use_lora:
+        # 如果启用分层学习率，则按模块分组
+        if use_layerwise_lr:
             self.logger.info("🔧 使用分层学习率构建优化器...")
 
             # 获取学习率倍数
+            bert_scale = getattr(self.config, 'BERT_LR_SCALE', 0.1)  # BERT参数使用更低的学习率
             lora_scale = getattr(self.config, 'LORA_LR_SCALE', 1.0)
-            vit_scale = getattr(self.config, 'VIT_LR_SCALE', 2.0)
-            other_scale = getattr(self.config, 'OTHER_LR_SCALE', 3.0)
+            vit_scale = getattr(self.config, 'VIT_LR_SCALE', 0.5)
+            other_scale = getattr(self.config, 'OTHER_LR_SCALE', 1.0)
 
             # 计算各组学习率
+            bert_lr = base_lr * bert_scale
             lora_lr = base_lr * lora_scale
             vit_lr = base_lr * vit_scale
             other_lr = base_lr * other_scale
 
             # 参数分组
+            bert_params = []
             lora_params = []
             decoder_non_lora_params = []
             vit_params = []
             other_params = []
 
-            # 1. 解码器参数：区分 LoRA 和 非LoRA
+            # 1. 解码器参数：区分 BERT、LoRA 和 其他
             for name, param in model.findings_decoder.named_parameters():
                 if param.requires_grad:
+                    # BERT解码器的text_decoder参数
+                    if 'text_decoder' in name or 'bert' in name.lower():
+                        bert_params.append(param)
                     # LoRA 参数通常名字包含 'lora'
-                    if 'lora' in name.lower():
+                    elif 'lora' in name.lower():
                         lora_params.append(param)
                     else:
                         decoder_non_lora_params.append(param)
@@ -134,6 +140,13 @@ class BertFinetuneTrainer(BaseTrainer):
             # 创建参数分组
             param_groups = []
 
+            if bert_params:
+                param_groups.append({
+                    'params': bert_params,
+                    'lr': bert_lr,
+                    'name': 'bert'
+                })
+
             if lora_params:
                 param_groups.append({
                     'params': lora_params,
@@ -148,7 +161,7 @@ class BertFinetuneTrainer(BaseTrainer):
                     'name': 'vit'
                 })
 
-            # 合并 decoder 非 LoRA 参数和其他参数
+            # 合并 decoder 非 LoRA/BERT 参数和其他参数
             combined_other_params = decoder_non_lora_params + other_params
             if combined_other_params:
                 param_groups.append({
@@ -164,13 +177,16 @@ class BertFinetuneTrainer(BaseTrainer):
             )
 
             # 统计和日志
+            bert_count = sum(p.numel() for p in bert_params)
             lora_count = sum(p.numel() for p in lora_params)
             vit_count = sum(p.numel() for p in vit_params)
             other_count = sum(p.numel() for p in combined_other_params)
-            total_count = lora_count + vit_count + other_count
+            total_count = bert_count + lora_count + vit_count + other_count
 
             self.logger.info("✅ 分层学习率优化器已创建:")
             self.logger.info(f"  📊 参数分组统计:")
+            if bert_params:
+                self.logger.info(f"    • BERT 参数: {bert_count:,} ({bert_count/total_count*100:.1f}%) - LR={bert_lr:.2e}")
             if lora_params:
                 self.logger.info(f"    • LoRA 参数: {lora_count:,} ({lora_count/total_count*100:.1f}%) - LR={lora_lr:.2e}")
             if vit_params:
