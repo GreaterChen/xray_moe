@@ -626,8 +626,11 @@ def test_llm(
     gc.collect()
     model.eval()
 
-    # 记录总测试损失和样本数
-    running_loss = 0
+    # 记录总测试损失（总loss、生成loss和RGAT分类loss）
+    running_total_loss = 0.0
+    running_gen_loss = 0.0
+    running_rgat_loss = 0.0
+    rgat_steps = 0
     total_samples = 0
 
     # 存储所有的预测结果和真实值以及元数据
@@ -675,20 +678,59 @@ def test_llm(
             image_ids = [os.path.basename(path).split('.')[0] for path in batch["image_path"]]
             source["image_ids"] = image_ids
 
-            # 模型推理（直接使用**kwargs传递）
-            outputs = model(**source)
+            # 文本生成（评估模式）
+            gen_outputs = model(**source)
+
+            # 计算文本生成损失和疾病分类损失（在禁用梯度的前提下复用训练分支）
+            source["mode"] = "train"
+            loss_outputs = model(**source)
 
             # 获取批次大小
             batch_size = (
                 source["image"].size(0) if "image" in source else len(batch["findings"])
             )
 
+            # 从loss_outputs中提取生成loss和RGAT疾病分类loss
+            gen_loss = None
+            rgat_loss = None
+            if hasattr(loss_outputs, "loss"):
+                gen_loss = loss_outputs.loss
+            elif isinstance(loss_outputs, dict) and "loss" in loss_outputs:
+                gen_loss = loss_outputs["loss"]
+
+            if hasattr(loss_outputs, "rgat_loss") and getattr(loss_outputs, "rgat_loss") is not None:
+                rgat_loss = loss_outputs.rgat_loss
+            elif isinstance(loss_outputs, dict) and "rgat_loss" in loss_outputs and loss_outputs["rgat_loss"] is not None:
+                rgat_loss = loss_outputs["rgat_loss"]
+
+            # 组合总loss（与训练阶段保持一致：生成loss + 加权RGAT分类loss）
+            total_loss_val = 0.0
+            if gen_loss is not None:
+                gen_val = gen_loss.item()
+                running_gen_loss += gen_val
+                total_loss_val += gen_val
+
+            enable_rgat = getattr(config, 'ENABLE_RGAT', True)
+            enable_rgat_cls = getattr(config, 'ENABLE_RGAT_CLASSIFICATION_LOSS', True)
+            rgat_weight = getattr(config, 'RGAT_LOSS_WEIGHT', 1.0)
+            if rgat_loss is not None and enable_rgat and enable_rgat_cls:
+                rgat_val = rgat_loss.item()
+                running_rgat_loss += rgat_val
+                rgat_steps += 1
+                total_loss_val += rgat_weight * rgat_val
+
+            running_total_loss += total_loss_val
+            total_samples += batch_size
+
             # 基于训练时得到的编码结果，构造评测用GT文本
             # 这样可以保证GT和训练时的MAX_LEN_FINDINGS截断保持一致
             decoder_tokenizer = None
             if hasattr(model, "findings_decoder"):
                 fd = model.findings_decoder
-                decoder_tokenizer = fd.tokenizer
+                if hasattr(fd, "tokenizer") and fd.tokenizer is not None:
+                    decoder_tokenizer = fd.tokenizer
+                elif hasattr(fd, "decoder") and hasattr(fd.decoder, "tokenizer"):
+                    decoder_tokenizer = fd.decoder.tokenizer
 
             if decoder_tokenizer is not None and "findings" in target and "input_ids" in target["findings"]:
                 try:
@@ -710,25 +752,73 @@ def test_llm(
 
 
             # 提取生成的文本
-            if isinstance(outputs, dict) and "findings_text" in outputs:
+            if isinstance(gen_outputs, dict) and "findings_text" in gen_outputs:
                 # 医学报告生成模型的输出格式
-                generated_texts = outputs["findings_text"]
-            elif hasattr(outputs, "decoded_texts"):
+                generated_texts = gen_outputs["findings_text"]
+            elif hasattr(gen_outputs, "decoded_texts"):
                 # BERT模型的输出格式
-                generated_texts = outputs.decoded_texts
+                generated_texts = gen_outputs.decoded_texts
             else:
-                logger.error(f"不支持的输出格式: {type(outputs)}")
+                logger.error(f"不支持的输出格式: {type(gen_outputs)}")
                 generated_texts = ["生成失败"] * batch_size
+
+            # 如果target_texts为空（无法通过token ids解码），则退回到原有逻辑
+            if not target_texts:
+
+                # 检查batch["findings"]是否为字符串列表
+                if "findings" in batch and isinstance(batch["findings"], list) and len(batch["findings"]) > 0 and isinstance(batch["findings"][0], str):
+                    target_texts = batch["findings"]
+                # 检查batch["findings"]是否为BatchEncoding类型
+                elif "findings" in batch and hasattr(batch["findings"], "input_ids"):
+                    # 处理BatchEncoding对象
+                    target_texts = []
+                    for idx in range(batch_size):
+                        findings_ids = batch["findings"].input_ids[idx]
+                        if hasattr(model.findings_decoder, "tokenizer"):
+                            tokenizer = model.findings_decoder.tokenizer
+                            target_texts.append(
+                                tokenizer.decode(findings_ids, skip_special_tokens=True)
+                            )
+                        elif hasattr(model.findings_decoder, "decoder") and hasattr(model.findings_decoder.decoder, "tokenizer"):
+                            tokenizer = model.findings_decoder.decoder.tokenizer
+                            target_texts.append(
+                                tokenizer.decode(findings_ids, skip_special_tokens=True)
+                            )
+                        else:
+                            target_texts.append(f"[BatchEncoding]")
+                # 检查target中的findings
+                elif "findings" in target and "input_ids" in target["findings"]:
+                    # 如果findings是已编码的token IDs，进行解码
+                    target_texts = []
+                    for idx in range(batch_size):
+                        findings_ids = target["findings"]["input_ids"][idx]
+                        # 尝试使用模型内部的tokenizer解码
+                        if hasattr(model.findings_decoder, "tokenizer"):
+                            tokenizer = model.findings_decoder.tokenizer
+                            target_texts.append(
+                                tokenizer.decode(findings_ids, skip_special_tokens=True)
+                            )
+                        elif hasattr(model.findings_decoder, "decoder") and hasattr(model.findings_decoder.decoder, "tokenizer"):
+                            # 针对BERT解码器的特殊处理
+                            tokenizer = model.findings_decoder.decoder.tokenizer
+                            target_texts.append(
+                                tokenizer.decode(findings_ids, skip_special_tokens=True)
+                            )
+                        else:
+                            # 如果无法直接访问tokenizer，可以将ID保存为字符串
+                            target_texts.append(f"[IDs:{findings_ids.tolist()}]")
+                else:
+                    target_texts = ["[无目标文本]"] * batch_size
 
             # 收集预测结果和真实值
             all_preds.extend(generated_texts)
             all_targets.extend(target_texts)
 
-            # 更新进度条
-            prog_bar.set_description(f"Loss: {running_loss/(batch_idx+1):.4f}")
+            # 更新进度条（显示总loss的batch平均值）
+            prog_bar.set_description(f"Loss: {running_total_loss/(batch_idx+1):.4f}")
             
             # 【修复】及时清理batch数据，防止内存累积
-            del source, target, outputs, batch, generated_texts, target_texts
+            del source, target, gen_outputs, loss_outputs, batch, generated_texts, target_texts
             
             # 定期深度清理
             if batch_idx % 50 == 0 and batch_idx > 0:
@@ -736,8 +826,11 @@ def test_llm(
                     torch.cuda.empty_cache()
                 gc.collect()
 
-    # 计算平均损失
-    avg_loss = running_loss / max(total_samples, 1)
+    # 计算平均损失（按batch平均）
+    num_batches = max(len(data_loader), 1)
+    avg_loss = running_total_loss / num_batches
+    avg_gen_loss = running_gen_loss / num_batches
+    avg_rgat_loss = running_rgat_loss / rgat_steps if rgat_steps > 0 else None
 
     # 创建结果数据字典
     results_data = {
@@ -795,7 +888,10 @@ def test_llm(
         "mode": mode,
         "epoch": epoch_str,
         "loss": avg_loss,
+        "generation_loss": avg_gen_loss,
     }
+    if avg_rgat_loss is not None:
+        metrics_data["rgat_loss"] = avg_rgat_loss
     
     # 添加常规评估指标
     if report_metrics:
@@ -827,6 +923,9 @@ def test_llm(
             
         # 记录损失
         writer.add_scalar(f"{mode}/loss", avg_loss, epoch)
+        writer.add_scalar(f"{mode}/Generation_Loss", avg_gen_loss, epoch)
+        if avg_rgat_loss is not None:
+            writer.add_scalar(f"{mode}/RGAT_Loss", avg_rgat_loss, epoch)
 
     # 汇总结果
     # 返回轻量级结果，避免将大型DataFrame对象保存在内存/检查点中
@@ -834,6 +933,8 @@ def test_llm(
         "report_generation_metrics": report_metrics,
         "chexbert_metrics": ce_metrics,
         "loss": avg_loss,
+        "generation_loss": avg_gen_loss,
+        "rgat_loss": avg_rgat_loss,
         "results_csv_path": results_csv_path,
         "metrics_csv_path": metrics_csv_path,
     }
