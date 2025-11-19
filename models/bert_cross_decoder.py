@@ -44,20 +44,23 @@ class BertCrossDecoder(nn.Module):
         decoder_config.add_cross_attention = True
         decoder_config.is_decoder = True
 
+        # 获取预训练模型名称（可配置使用医学领域模型）
+        pretrained_model = getattr(config, 'BERT_PRETRAINED_MODEL', 'bert-base-uncased')
+        
         # 初始化解码器（BertLMHeadModel原生支持交叉注意力）
         try:
             # 优先尝试从本地加载
             self.text_decoder = BertLMHeadModel.from_pretrained(
-                "bert-base-uncased", config=decoder_config, local_files_only=True
+                pretrained_model, config=decoder_config, local_files_only=True
             )
-            print("✅ 从本地缓存加载BERT预训练权重")
+            print(f"✅ 从本地缓存加载预训练权重: {pretrained_model}")
         except:
             # 如果本地没有，从网络下载
-            print("⚠️ 本地没有BERT权重，从Huggingface下载...")
+            print(f"⚠️ 本地没有权重，从Huggingface下载: {pretrained_model}...")
             self.text_decoder = BertLMHeadModel.from_pretrained(
-                "bert-base-uncased", config=decoder_config, local_files_only=False
+                pretrained_model, config=decoder_config, local_files_only=False
             )
-            print("✅ BERT预训练权重下载并加载完成")
+            print(f"✅ 预训练权重下载并加载完成: {pretrained_model}")
 
         # 调整词表大小
         self.text_decoder.resize_token_embeddings(len(self.tokenizer))

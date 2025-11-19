@@ -123,6 +123,17 @@ class DefaultConfig:
     CHEXBERT_CHECKPOINT_PATH = None  # CheXbert模型路径，需要在local_config中设置
     BERT_PRETRAINED_PATH = "bert-base-uncased"  # BERT预训练模型路径（用于CheXbert tokenizer和config），可以是Hugging Face模型名或本地路径
     
+    # BERT微调模型选择（医学领域模型效果更好）
+    # 推荐医学模型:
+    # - "emilyalsentzer/Bio_ClinicalBERT" (最推荐，MIMIC-III临床笔记预训练)
+    # - "bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12" (PubMed + MIMIC)
+    # - "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext" (PubMed预训练)
+    # - "allenai/scibert_scivocab_uncased" (科学文献预训练)
+    # 通用模型:
+    # - "bert-base-uncased" (原始BERT)
+    # - "roberta-base" (RoBERTa，性能更好)
+    BERT_PRETRAINED_MODEL = "emilyalsentzer/Bio_ClinicalBERT"  # 可在local_config中改为医学模型
+    
     # RGAT (Relational Graph Attention Network) 配置
     ENABLE_RGAT = True  # 是否启用RGAT模块（如果为False，decoder将只使用视觉特征）
     AA_ADJ_PATH = None  # Anatomy-Anatomy邻接矩阵路径 (需要在local_config中设置)

@@ -141,23 +141,43 @@ def setup_tokenizer(config):
         print(f"   eos_token: {tokenizer.eos_token} (ID: {tokenizer.eos_token_id})")
     else:
         # BERT tokenizer (默认)
-        tokenizer = BertTokenizer.from_pretrained(
-            "bert-base-uncased", 
-            local_files_only=True
-        )
+        from transformers import AutoTokenizer
+        
+        # 获取预训练模型名称（支持医学模型）
+        bert_model = getattr(config, 'BERT_PRETRAINED_MODEL', 'bert-base-uncased')
+        
+        # 使用AutoTokenizer自动选择合适的tokenizer类
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                bert_model, 
+                local_files_only=True
+            )
+            print(f"✅ 从本地加载tokenizer: {bert_model}")
+        except:
+            print(f"⚠️  本地没有tokenizer，从Huggingface下载: {bert_model}...")
+            tokenizer = AutoTokenizer.from_pretrained(
+                bert_model, 
+                local_files_only=False
+            )
+            print(f"✅ Tokenizer下载完成: {bert_model}")
+        
         # 添加特殊tokens：BOS用于解码开始，EOS用于生成结束
-        tokenizer.add_special_tokens({
-            "bos_token": "[DEC]",
-            "eos_token": "[EOS]"
-        })
+        special_tokens = {}
+        if not hasattr(tokenizer, 'bos_token') or tokenizer.bos_token is None:
+            special_tokens["bos_token"] = "[DEC]"
+        if not hasattr(tokenizer, 'eos_token') or tokenizer.eos_token is None:
+            special_tokens["eos_token"] = "[EOS]"
+        
+        if special_tokens:
+            tokenizer.add_special_tokens(special_tokens)
+            
         # 设置left padding（用于decoder模型）
         tokenizer.padding_side = 'left'
-        print("✅ 使用BERT tokenizer")
+        print(f"✅ 使用{bert_model.split('/')[-1]} tokenizer")
         print(f"   padding_side: {tokenizer.padding_side}")
         print(f"   pad_token: {tokenizer.pad_token} (ID: {tokenizer.pad_token_id})")
         print(f"   bos_token: {tokenizer.bos_token} (ID: {tokenizer.bos_token_id})")
         print(f"   eos_token: {tokenizer.eos_token} (ID: {tokenizer.eos_token_id})")
-        print(f"   sep_token: {tokenizer.sep_token} (ID: {tokenizer.sep_token_id})")
     
     return tokenizer
 
