@@ -162,14 +162,12 @@ def setup_tokenizer(config):
             print(f"✅ Tokenizer下载完成: {bert_model}")
         
         # 添加特殊tokens：BOS用于解码开始，EOS用于生成结束
-        special_tokens = {}
-        if not hasattr(tokenizer, 'bos_token') or tokenizer.bos_token is None:
-            special_tokens["bos_token"] = "[DEC]"
-        if not hasattr(tokenizer, 'eos_token') or tokenizer.eos_token is None:
-            special_tokens["eos_token"] = "[EOS]"
-        
-        if special_tokens:
-            tokenizer.add_special_tokens(special_tokens)
+        # 直接创建并添加，避免检查未设置的属性
+        special_tokens = {
+            "bos_token": "[DEC]",
+            "eos_token": "[EOS]"
+        }
+        num_added_tokens = tokenizer.add_special_tokens(special_tokens)
             
         # 设置left padding（用于decoder模型）
         tokenizer.padding_side = 'left'

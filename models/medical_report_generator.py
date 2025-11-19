@@ -569,11 +569,8 @@ class MedicalReportGenerator(nn.Module):
         # 合并所有负样本
         negative_mask = negative_mask_same_region_diff_status | negative_mask_same_sample_diff_region | negative_mask_diff_sample_diff_region
         
-        # 8. 移除对角线（自己不和自己对比）
-        eye_mask = torch.eye(N, device=device, dtype=torch.bool)
-        positive_mask = positive_mask & (~eye_mask)
-        
-        # 计算监督对比损失 (Supervised Contrastive Loss)
+        # 计算监督对比损失 (Supervised Contrastive Loss)。
+        # 此处保留对角线，使每个区域-文本自配对也记作正样本。
         loss = self._supervised_contrastive_loss(
             logits, positive_mask, negative_mask, device
         )
