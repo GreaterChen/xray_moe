@@ -270,7 +270,7 @@ def create_datasets(config, tokenizer):
             input_size=input_size,
             random_transform=False,
             tokenizer=tokenizer,
-            mode="validate",
+            mode="train",
             subset_size=50 if config.DEBUG else None,
             generation_target=config.GENERATION_TARGET
         )
@@ -283,8 +283,8 @@ def create_datasets(config, tokenizer):
             input_size=input_size,
             random_transform=False,
             tokenizer=tokenizer,
-            mode="test",
-            subset_size=50 if config.DEBUG else None,
+            mode="train",
+            subset_size=3000,
             generation_target=config.GENERATION_TARGET
         )
         

@@ -32,20 +32,16 @@ class BertCrossDecoder(nn.Module):
         # 使用传入的tokenizer或创建一个新的
         self.tokenizer = tokenizer
         
-        # 加载BERT配置，启用交叉注意力
-        bert_config_path = os.path.join(config.ROOT_DIR if hasattr(config, 'ROOT_DIR') else '.', "configs/bert_config.json")
-        if os.path.exists(bert_config_path):
-            decoder_config = BertConfig.from_json_file(bert_config_path)
-        else:
-            decoder_config = BertConfig.from_pretrained("bert-base-uncased")
+        # 获取预训练模型名称（可配置使用医学领域模型）
+        pretrained_model = getattr(config, 'BERT_PRETRAINED_MODEL', 'bert-base-uncased')
+        
+        # 从预训练模型加载配置，确保词表大小一致
+        decoder_config = BertConfig.from_pretrained(pretrained_model)
             
         # 配置交叉注意力参数
         decoder_config.encoder_width = hidden_dim
         decoder_config.add_cross_attention = True
         decoder_config.is_decoder = True
-
-        # 获取预训练模型名称（可配置使用医学领域模型）
-        pretrained_model = getattr(config, 'BERT_PRETRAINED_MODEL', 'bert-base-uncased')
         
         # 初始化解码器（BertLMHeadModel原生支持交叉注意力）
         try:

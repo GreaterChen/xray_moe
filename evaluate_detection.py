@@ -798,9 +798,14 @@ def create_test_data_loader():
     from transformers import BertTokenizer
     import torch.utils.data as data
 
-    # 创建tokenizer
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", local_files_only=True)
-    tokenizer.add_special_tokens({"bos_token": "[DEC]"})
+    # 创建tokenizer（使用与训练一致的模型）
+    from transformers import AutoTokenizer
+    bert_model = getattr(config, 'BERT_PRETRAINED_MODEL', 'emilyalsentzer/Bio_ClinicalBERT')
+    tokenizer = AutoTokenizer.from_pretrained(bert_model, local_files_only=False)
+    if not hasattr(tokenizer, 'bos_token') or tokenizer.bos_token is None:
+        tokenizer.add_special_tokens({"bos_token": "[DEC]"})
+    if not hasattr(tokenizer, 'eos_token') or tokenizer.eos_token is None:
+        tokenizer.add_special_tokens({"eos_token": "[EOS]"})
 
     # 加载共享数据
     MIMIC.load_shared_data(

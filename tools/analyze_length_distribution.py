@@ -116,7 +116,9 @@ def main():
     tokenizer = None
     if _HAS_TOKENIZER:
         try:
-            tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", local_files_only=True)
+            # 使用与主模型一致的tokenizer
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT", local_files_only=False)
         except Exception:
             tokenizer = None
 
