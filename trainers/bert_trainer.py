@@ -251,7 +251,7 @@ class BertFinetuneTrainer(BaseTrainer):
                 checkpoint_path=self.config.CHEXBERT_CHECKPOINT_PATH,
                 mbatch_size=self.config.VAL_BATCH_SIZE,
                 device=str(self.device_manager.device),
-                bert_pretrained_path=getattr(self.config, 'BERT_PRETRAINED_PATH', getattr(self.config, 'BERT_PRETRAINED_MODEL', 'bert-base-uncased'))
+                bert_pretrained_path=getattr(self.config, 'CHEXPERT_PRETRAIN_PATH', 'bert-base-uncased')
             )
             self.logger.info("✅ CheXbert评估器初始化成功")
         except Exception as e:

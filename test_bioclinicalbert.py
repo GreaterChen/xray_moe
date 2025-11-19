@@ -1,5 +1,6 @@
 """
 测试BioClinicalBERT配置是否正确
+以及CheXbert与主模型的兼容性
 """
 
 import torch
@@ -10,7 +11,10 @@ def test_bioclinicalbert():
     print("测试BioClinicalBERT配置")
     print("=" * 50)
     
+    # 主模型使用BioClinicalBERT
     model_name = "emilyalsentzer/Bio_ClinicalBERT"
+    # CheXbert继续使用bert-base-uncased
+    chexbert_model = "bert-base-uncased"
     
     # 1. 测试tokenizer加载
     print("\n1. 加载tokenizer...")
@@ -94,8 +98,32 @@ def test_bioclinicalbert():
         print(f"❌ 前向传播失败: {e}")
         return False
     
+    # 5. 测试CheXbert兼容性
+    print("\n5. 测试CheXbert兼容性...")
+    try:
+        # CheXbert使用bert-base-uncased tokenizer
+        chexbert_tokenizer = AutoTokenizer.from_pretrained(chexbert_model)
+        print(f"✅ CheXbert tokenizer加载成功")
+        print(f"   CheXbert词表大小: {len(chexbert_tokenizer)}")
+        
+        # 测试相同文本在两个tokenizer下的编码
+        test_text = "The chest x-ray shows clear lungs."
+        main_tokens = tokenizer(test_text, return_tensors="pt")
+        chexbert_tokens = chexbert_tokenizer(test_text, return_tensors="pt")
+        
+        print(f"   主模型token数: {main_tokens.input_ids.shape[1]}")
+        print(f"   CheXbert token数: {chexbert_tokens.input_ids.shape[1]}")
+        
+        # 两个模型相互独立，所以token数可能不同是正常的
+        print(f"✅ CheXbert与主模型相互独立，兼容性正常")
+    except Exception as e:
+        print(f"❌ CheXbert兼容性测试失败: {e}")
+        return False
+    
     print("\n" + "=" * 50)
-    print("✅ 所有测试通过！BioClinicalBERT配置正确")
+    print("✅ 所有测试通过！配置正确")
+    print("   - 主模型: BioClinicalBERT (28996 tokens)")
+    print("   - CheXbert: bert-base-uncased (30522 tokens)")
     print("=" * 50)
     return True
 

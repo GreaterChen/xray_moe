@@ -136,7 +136,7 @@ class IUXRAYFinetuneTrainer(BaseTrainer):
             try:
                 from metrics import CheXbertMetrics
                 self.chexbert_metrics = CheXbertMetrics(
-                    bert_path=self.config.BERT_PRETRAINED_PATH,
+                    bert_path=self.config.CHEXPERT_PRETRAIN_PATH,
                     checkpoint_path=self.config.CHEXBERT_CHECKPOINT_PATH,
                     device=self.device_manager.device
                 )

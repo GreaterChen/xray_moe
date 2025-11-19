@@ -121,7 +121,7 @@ class DefaultConfig:
     
     # CheXbert路径
     CHEXBERT_CHECKPOINT_PATH = None  # CheXbert模型路径，需要在local_config中设置
-    BERT_PRETRAINED_PATH = "bert-base-uncased"  # CheXbert专用，必须使用bert-base-uncased（CheXbert权重基于此训练）可以是Hugging Face模型名或本地路径
+    CHEXPERT_PRETRAIN_PATH = "bert-base-uncased"  # CheXbert专用，必须使用bert-base-uncased（CheXbert权重基于此训练）可以是Hugging Face模型名或本地路径
     
     # BERT微调模型选择（医学领域模型效果更好）
     # 推荐医学模型:
